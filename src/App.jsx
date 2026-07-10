@@ -672,7 +672,8 @@ export default function App() {
   }
 
   if (!hasAccount) {
-    return <SetupScreen onCreated={handleSetupCreated} />;
+   return <LoginScreen onLoggedIn={handleLoggedIn} />;
+
   }
 
   if (!currentUser || day === null) {
