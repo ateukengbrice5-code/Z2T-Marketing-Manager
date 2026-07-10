@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid } from "recharts";
 import * as store from "./lib/store.js";
+import { supabase } from "./lib/supabase.js";
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -357,15 +358,20 @@ function AuthShell({ children }) {
 }
 
 function SetupScreen({ onCreated }) {
-  const [username, setUsername] = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [pass1, setPass1] = useState("");
   const [pass2, setPass2] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
-    if (!username.trim() || !pass1) {
-      setError("Indique un nom d'utilisateur et un mot de passe.");
+    if (!name.trim() || !email.trim() || !pass1) {
+      setError("Remplis tous les champs.");
+      return;
+    }
+    if (!email.includes("@")) {
+      setError("Indique une adresse e-mail valide.");
       return;
     }
     if (pass1 !== pass2) {
@@ -379,7 +385,7 @@ function SetupScreen({ onCreated }) {
     setBusy(true);
     setError("");
     try {
-      await store.createFirstAdmin(username.trim(), pass1);
+      await store.createFirstAdmin({ name: name.trim(), email: email.trim(), password: pass1 });
       await onCreated();
     } catch (e) {
       setError(e.message || "Erreur lors de la création du compte.");
@@ -390,10 +396,14 @@ function SetupScreen({ onCreated }) {
   return (
     <AuthShell>
       <h2 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", color: "#1B2A4A", fontSize: 22 }}>Bienvenue</h2>
-      <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 6, marginBottom: 20 }}>Crée le compte administrateur pour commencer.</p>
+      <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 6, marginBottom: 20 }}>Crée le compte administrateur principal pour commencer.</p>
       <div style={{ marginBottom: 12 }}>
-        <Label>Nom d'utilisateur</Label>
-        <TextInput value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Ex. admin" />
+        <Label>Ton nom</Label>
+        <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex. Brice" />
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Adresse e-mail</Label>
+        <TextInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="toi@exemple.com" />
       </div>
       <div style={{ marginBottom: 12 }}>
         <Label>Mot de passe</Label>
@@ -412,17 +422,19 @@ function SetupScreen({ onCreated }) {
 }
 
 function LoginScreen({ onLoggedIn }) {
-  const [username, setUsername] = useState("");
+  const [mode, setMode] = useState("login"); // "login" | "forgot" | "sent"
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
 
   const submit = async () => {
-    if (!username.trim() || !password) return;
+    if (!identifier.trim() || !password) return;
     setBusy(true);
     setError("");
     try {
-      const profile = await store.signIn(username.trim(), password);
+      const profile = await store.signIn(identifier.trim(), password);
       if (!profile) {
         setError("Ce compte n'a pas de profil valide. Contacte l'administrateur.");
         setBusy(false);
@@ -435,22 +447,119 @@ function LoginScreen({ onLoggedIn }) {
     setBusy(false);
   };
 
+  const submitForgot = async () => {
+    if (!forgotEmail.includes("@")) {
+      setError("Indique l'adresse e-mail de ton compte administrateur.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await store.sendPasswordReset(forgotEmail.trim());
+      setMode("sent");
+    } catch (e) {
+      setError(e.message || "Erreur lors de l'envoi.");
+    }
+    setBusy(false);
+  };
+
   const onKeyDown = (e) => { if (e.key === "Enter") submit(); };
+
+  if (mode === "forgot" || mode === "sent") {
+    return (
+      <AuthShell>
+        <h2 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", color: "#1B2A4A", fontSize: 20 }}>Mot de passe oublié</h2>
+        {mode === "sent" ? (
+          <p style={{ color: "#3F8361", fontSize: 13.5, marginTop: 10 }}>
+            Si un compte administrateur existe avec cette adresse, un e-mail vient d'être envoyé avec un lien pour choisir un nouveau mot de passe.
+          </p>
+        ) : (
+          <>
+            <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 6, marginBottom: 18 }}>
+              Réservé aux comptes administrateurs (les comptes vendeur/gestionnaire n'ont pas d'e-mail associé — demande à l'administrateur de recréer ton accès).
+            </p>
+            <div style={{ marginBottom: 14 }}>
+              <Label>Ton adresse e-mail</Label>
+              <TextInput type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} placeholder="toi@exemple.com" />
+            </div>
+            {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+            <Button variant="primary" onClick={submitForgot} disabled={busy} style={{ width: "100%", justifyContent: "center" }}>
+              {busy ? "Envoi…" : "Envoyer le lien"}
+            </Button>
+          </>
+        )}
+        <button
+          onClick={() => { setMode("login"); setError(""); }}
+          style={{ background: "none", border: "none", color: "#5B6472", fontSize: 12.5, marginTop: 16, cursor: "pointer", textDecoration: "underline", padding: 0 }}
+        >
+          ← Retour à la connexion
+        </button>
+      </AuthShell>
+    );
+  }
 
   return (
     <AuthShell>
       <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 0, marginBottom: 20 }}>Connecte-toi pour continuer.</p>
       <div style={{ marginBottom: 12 }}>
-        <Label>Nom d'utilisateur</Label>
-        <TextInput value={username} onChange={(e) => setUsername(e.target.value)} onKeyDown={onKeyDown} />
+        <Label>E-mail (admin) ou nom d'utilisateur (vendeur/gestionnaire)</Label>
+        <TextInput value={identifier} onChange={(e) => setIdentifier(e.target.value)} onKeyDown={onKeyDown} />
       </div>
-      <div style={{ marginBottom: 10 }}>
+      <div style={{ marginBottom: 6 }}>
         <Label>Mot de passe</Label>
         <TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={onKeyDown} />
+      </div>
+      <div style={{ textAlign: "right", marginBottom: 10 }}>
+        <button
+          onClick={() => { setMode("forgot"); setError(""); }}
+          style={{ background: "none", border: "none", color: "#8A93A3", fontSize: 12, cursor: "pointer", textDecoration: "underline", padding: 0 }}
+        >
+          Mot de passe oublié ?
+        </button>
       </div>
       {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
       <Button variant="primary" onClick={submit} disabled={busy} style={{ width: "100%", justifyContent: "center", marginTop: 6 }}>
         {busy ? "Connexion…" : "Se connecter"}
+      </Button>
+    </AuthShell>
+  );
+}
+
+function ResetPasswordScreen({ onDone }) {
+  const [pass1, setPass1] = useState("");
+  const [pass2, setPass2] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (pass1.length < 6) { setError("Le mot de passe doit contenir au moins 6 caractères."); return; }
+    if (pass1 !== pass2) { setError("Les deux mots de passe ne correspondent pas."); return; }
+    setBusy(true);
+    setError("");
+    try {
+      await store.updateMyPassword(pass1);
+      await onDone();
+    } catch (e) {
+      setError(e.message || "Erreur lors de la mise à jour du mot de passe.");
+    }
+    setBusy(false);
+  };
+
+  return (
+    <AuthShell>
+      <h2 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", color: "#1B2A4A", fontSize: 20 }}>Nouveau mot de passe</h2>
+      <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 6, marginBottom: 18 }}>Choisis un nouveau mot de passe pour ton compte.</p>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Nouveau mot de passe</Label>
+        <TextInput type="password" value={pass1} onChange={(e) => setPass1(e.target.value)} />
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Label>Confirmer le mot de passe</Label>
+        <TextInput type="password" value={pass2} onChange={(e) => setPass2(e.target.value)} />
+      </div>
+      {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      <Button variant="primary" onClick={submit} disabled={busy} style={{ width: "100%", justifyContent: "center" }}>
+        {busy ? "Mise à jour…" : "Valider le nouveau mot de passe"}
       </Button>
     </AuthShell>
   );
@@ -514,6 +623,15 @@ export default function App() {
   const [withdrawals, setWithdrawals] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [tick, setTick] = useState(0);
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
+
+  // Détecte le clic sur le lien "mot de passe oublié" reçu par e-mail
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "PASSWORD_RECOVERY") setPasswordRecovery(true);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
 
   // Force un nouveau rendu toutes les minutes pour détecter le changement de jour à 00h
   useEffect(() => {
@@ -653,13 +771,28 @@ export default function App() {
     setCurrentUser(profile);
     setCurrentVendor(vendor);
     setTab(profile.role === "vendor" ? "retour" : "dashboard");
+    store.logActivity(profile, "login", `${profile.username} s'est connecté.`);
   };
 
   const handleLogout = async () => {
+    if (currentUser) store.logActivity(currentUser, "logout", `${currentUser.username} s'est déconnecté.`);
     await store.signOut();
     setCurrentUser(null);
     setCurrentVendor(null);
   };
+
+  const handlePasswordResetDone = async () => {
+    setPasswordRecovery(false);
+    const profile = await store.getMyProfile();
+    if (profile) {
+      setCurrentUser(profile);
+      setTab(profile.role === "vendor" ? "retour" : "dashboard");
+    }
+  };
+
+  if (passwordRecovery) {
+    return <ResetPasswordScreen onDone={handlePasswordResetDone} />;
+  }
 
   if (loading || hasAccount === null) {
     return (
@@ -685,8 +818,10 @@ export default function App() {
   const isAdmin = currentUser.role === "admin";
   const isManager = currentUser.role === "manager";
   const canManage = isAdmin || isManager; // accès Tableau de bord / Finances / Stock / Personnel
-  const nav = isAdmin ? NAV_ADMIN : isManager ? NAV_MANAGER : NAV_VENDOR;
-  const roleLabel = isAdmin ? "admin" : isManager ? "gestionnaire" : "vendeur";
+  const nav = isAdmin
+    ? (currentUser.isPrimary ? [...NAV_ADMIN, { id: "journal", label: "Journal d'activité", icon: History }] : NAV_ADMIN)
+    : isManager ? NAV_MANAGER : NAV_VENDOR;
+  const roleLabel = isAdmin ? (currentUser.isPrimary ? "admin principal" : "admin") : isManager ? "gestionnaire" : "vendeur";
   const activeVendor = currentUser.role === "vendor" ? currentVendor : null;
 
   return (
@@ -755,7 +890,7 @@ export default function App() {
         {tab === "produits" && isAdmin && <Produits products={products} setProducts={persistProducts} />}
         {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} />}
         {tab === "vendeurs" && canManage && (
-          <Vendeurs vendors={vendors} reloadVendors={reloadVendors} isAdmin={isAdmin} />
+          <Vendeurs vendors={vendors} reloadVendors={reloadVendors} isAdmin={isAdmin} currentUser={currentUser} />
         )}
         {tab === "distribution" && isAdmin && (
           <Distribution products={products} setProducts={persistProducts} vendors={vendors} day={day} setDay={persistDay} ensureTodayInList={ensureTodayInList} daysList={daysList} />
@@ -775,6 +910,7 @@ export default function App() {
           <Caisse vendors={vendors} day={day} setDay={persistDay} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} daysList={daysList} today={today} />
         )}
         {tab === "historique" && isAdmin && <Historique daysList={daysList} today={today} />}
+        {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
       </div>
     </div>
   );
@@ -1246,7 +1382,7 @@ function Stock({ products, setProducts }) {
 // Vendeurs & comptes
 // ---------------------------------------------------------------------------
 
-function Vendeurs({ vendors, reloadVendors, isAdmin }) {
+function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
   const [nom, setNom] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -1258,13 +1394,21 @@ function Vendeurs({ vendors, reloadVendors, isAdmin }) {
   const [mgrError, setMgrError] = useState("");
   const [mgrBusy, setMgrBusy] = useState(false);
 
+  const [adminName, setAdminName] = useState("");
+  const [adminEmail, setAdminEmail] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+  const [adminError, setAdminError] = useState("");
+  const [adminBusy, setAdminBusy] = useState(false);
+
   const [vendorAccounts, setVendorAccounts] = useState([]);
   const [managers, setManagers] = useState([]);
+  const [secondaryAdmins, setSecondaryAdmins] = useState([]);
 
   const reloadAccounts = async () => {
-    const [va, ma] = await Promise.all([store.getVendorAccounts(), store.getManagerAccounts()]);
+    const [va, ma, sa] = await Promise.all([store.getVendorAccounts(), store.getManagerAccounts(), store.getSecondaryAdmins()]);
     setVendorAccounts(va);
     setManagers(ma);
+    setSecondaryAdmins(sa);
   };
 
   useEffect(() => { reloadAccounts(); }, [vendors]);
@@ -1282,6 +1426,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin }) {
       }
       await reloadVendors();
       await reloadAccounts();
+      store.logActivity(currentUser, "add_vendor", `Vendeur ajouté : ${nom.trim()}.`);
       setNom(""); setUsername(""); setPassword("");
     } catch (e) {
       setError(e.message || "Erreur lors de la création.");
@@ -1289,13 +1434,14 @@ function Vendeurs({ vendors, reloadVendors, isAdmin }) {
     setBusy(false);
   };
 
-  const remove = async (id) => {
+  const remove = async (id, nomVendeur) => {
     const linkedAccount = vendorAccounts.find((u) => u.vendorId === id);
     try {
       if (linkedAccount) await store.deleteAccount(linkedAccount.id);
       await store.deleteVendor(id);
       await reloadVendors();
       await reloadAccounts();
+      store.logActivity(currentUser, "delete_vendor", `Vendeur supprimé : ${nomVendeur}.`);
     } catch (e) {
       setError(e.message || "Erreur lors de la suppression.");
     }
@@ -1309,6 +1455,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin }) {
     try {
       await store.createAccount({ username: mgrUsername.trim(), password: mgrPassword, role: "manager" });
       await reloadAccounts();
+      store.logActivity(currentUser, "add_manager", `Compte gestionnaire créé : ${mgrUsername.trim()}.`);
       setMgrUsername(""); setMgrPassword("");
     } catch (e) {
       setMgrError(e.message || "Erreur lors de la création.");
@@ -1316,12 +1463,38 @@ function Vendeurs({ vendors, reloadVendors, isAdmin }) {
     setMgrBusy(false);
   };
 
-  const removeManager = async (id) => {
+  const removeManager = async (id, name) => {
+    try {
+      await store.deleteAccount(id);
+      await reloadAccounts();
+      store.logActivity(currentUser, "delete_manager", `Compte gestionnaire supprimé : ${name}.`);
+    } catch (e) {
+      setMgrError(e.message || "Erreur lors de la suppression.");
+    }
+  };
+
+  const addAdmin = async () => {
+    if (!adminName.trim() || !adminEmail.trim() || !adminPassword) { setAdminError("Remplis tous les champs."); return; }
+    if (!adminEmail.includes("@")) { setAdminError("Indique une adresse e-mail valide."); return; }
+    if (adminPassword.length < 6) { setAdminError("Le mot de passe doit contenir au moins 6 caractères."); return; }
+    setAdminError("");
+    setAdminBusy(true);
+    try {
+      await store.createAccount({ username: adminName.trim(), email: adminEmail.trim(), password: adminPassword, role: "admin" });
+      await reloadAccounts();
+      setAdminName(""); setAdminEmail(""); setAdminPassword("");
+    } catch (e) {
+      setAdminError(e.message || "Erreur lors de la création.");
+    }
+    setAdminBusy(false);
+  };
+
+  const removeAdmin = async (id) => {
     try {
       await store.deleteAccount(id);
       await reloadAccounts();
     } catch (e) {
-      setMgrError(e.message || "Erreur lors de la suppression.");
+      setAdminError(e.message || "Erreur lors de la suppression.");
     }
   };
 
@@ -1364,7 +1537,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin }) {
               const u = vendorAccounts.find((u) => u.vendorId === v.id);
               return [
                 v.nom, u ? u.username : "— aucun —",
-                <button key="del" onClick={() => remove(v.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
+                <button key="del" onClick={() => remove(v.id, v.nom)} style={iconBtnStyle}><Trash2 size={15} /></button>,
               ];
             })}
           />
@@ -1395,7 +1568,44 @@ function Vendeurs({ vendors, reloadVendors, isAdmin }) {
                 headers={["Nom d'utilisateur", ""]}
                 rows={managers.map((m) => [
                   m.username,
-                  <button key="del" onClick={() => removeManager(m.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
+                  <button key="del" onClick={() => removeManager(m.id, m.username)} style={iconBtnStyle}><Trash2 size={15} /></button>,
+                ])}
+              />
+            </div>
+          )}
+        </Card>
+      )}
+
+      {currentUser?.isPrimary && (
+        <Card title="Comptes administrateurs secondaires">
+          <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
+            Un administrateur secondaire a exactement les mêmes accès que toi. Ses connexions et ses
+            actions importantes sont enregistrées dans le Journal d'activité, visible seulement par toi.
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div style={{ flex: "1 1 140px" }}>
+              <Label>Nom</Label>
+              <TextInput value={adminName} onChange={(e) => setAdminName(e.target.value)} />
+            </div>
+            <div style={{ flex: "1 1 180px" }}>
+              <Label>Adresse e-mail</Label>
+              <TextInput type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} />
+            </div>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Mot de passe</Label>
+              <TextInput type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} />
+            </div>
+            <Button onClick={addAdmin} disabled={adminBusy}><Plus size={15} /> {adminBusy ? "Création…" : "Créer le compte"}</Button>
+          </div>
+          {adminError && <div style={{ color: "#C1554A", fontSize: 12.5, marginTop: 10 }}>{adminError}</div>}
+
+          {secondaryAdmins.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <Table
+                headers={["Nom", "E-mail", ""]}
+                rows={secondaryAdmins.map((a) => [
+                  a.username, a.email,
+                  <button key="del" onClick={() => removeAdmin(a.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
                 ])}
               />
             </div>
@@ -1929,6 +2139,71 @@ function Historique({ daysList, today }) {
           </div>
         );
       })}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Journal d'activité — connexions et actions des admins secondaires
+// (visible uniquement par l'administrateur principal)
+// ---------------------------------------------------------------------------
+
+const EVENT_LABELS = {
+  login: "Connexion",
+  logout: "Déconnexion",
+  add_vendor: "Vendeur ajouté",
+  delete_vendor: "Vendeur supprimé",
+  add_manager: "Gestionnaire ajouté",
+  delete_manager: "Gestionnaire supprimé",
+};
+
+function eventBadgeColor(eventType) {
+  if (eventType === "login") return "#3F8361";
+  if (eventType === "logout") return "#8A93A3";
+  if (eventType.startsWith("delete")) return "#C1554A";
+  return "#1B2A4A";
+}
+
+function JournalActivite() {
+  const [entries, setEntries] = useState(null);
+  const [filterUser, setFilterUser] = useState("");
+
+  useEffect(() => {
+    (async () => setEntries(await store.getActivityLog()))();
+  }, []);
+
+  if (entries === null) return <EmptyState text="Chargement du journal…" />;
+
+  const usernames = Array.from(new Set(entries.map((e) => e.username)));
+  const filtered = filterUser ? entries.filter((e) => e.username === filterUser) : entries;
+
+  return (
+    <Card
+      title="Journal d'activité des administrateurs secondaires"
+      right={
+        usernames.length > 1 && (
+          <Select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} style={{ width: 200 }}>
+            <option value="">Tous les comptes</option>
+            {usernames.map((u) => <option key={u} value={u}>{u}</option>)}
+          </Select>
+        )
+      }
+    >
+      {filtered.length === 0 ? (
+        <EmptyState text="Aucune activité enregistrée pour l'instant." />
+      ) : (
+        <Table
+          headers={["Date", "Compte", "Événement", "Détail"]}
+          rows={filtered.map((e) => [
+            new Date(e.createdAt).toLocaleString("fr-FR"),
+            e.username,
+            <span key="b" style={{ fontSize: 12, fontWeight: 700, color: eventBadgeColor(e.eventType) }}>
+              {EVENT_LABELS[e.eventType] || e.eventType}
+            </span>,
+            e.description,
+          ])}
+        />
+      )}
     </Card>
   );
 }
