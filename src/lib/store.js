@@ -4,8 +4,19 @@ import { supabase } from "./supabase.js";
 // Authentification
 // -----------------------------------------------------------------------------
 
+// Vendeurs/gestionnaires se connectent avec un simple nom d'utilisateur (pas
+// de vrai e-mail) ; on fabrique une adresse technique en interne pour Supabase.
 function usernameToEmail(username) {
   return `${username.trim().toLowerCase()}@z2t.local`;
+}
+
+// Les comptes administrateurs utilisent une vraie adresse e-mail (nécessaire
+// pour la récupération de mot de passe). On détecte le type d'identifiant à
+// la connexion : présence d'un "@" tapé par la personne = e-mail réel.
+function resolveLoginEmail(identifier) {
+  const trimmed = identifier.trim();
+  if (trimmed.includes("@")) return trimmed.toLowerCase();
+  return usernameToEmail(trimmed);
 }
 
 export async function getSession() {
@@ -18,7 +29,10 @@ export async function getMyProfile() {
   if (!auth?.user) return null;
   const { data, error } = await supabase.from("profiles").select("*").eq("id", auth.user.id).single();
   if (error) return null;
-  return { id: data.id, username: data.username, role: data.role, vendorId: data.vendor_id };
+  return {
+    id: data.id, username: data.username, email: data.email, role: data.role,
+    vendorId: data.vendor_id, isPrimary: data.is_primary,
+  };
 }
 
 export async function hasAnyAccount() {
@@ -27,20 +41,21 @@ export async function hasAnyAccount() {
   return (count || 0) > 0;
 }
 
-// Tout premier compte administrateur (aucun compte n'existe encore)
-export async function createFirstAdmin(username, password) {
-  const email = usernameToEmail(username);
-  const { data, error } = await supabase.auth.signUp({ email, password });
+// Tout premier compte administrateur (aucun compte n'existe encore) — vraie adresse e-mail
+export async function createFirstAdmin({ name, email, password }) {
+  const { data, error } = await supabase.auth.signUp({ email: email.trim().toLowerCase(), password });
   if (error) throw new Error(error.message);
   const userId = data.user?.id;
-  if (!userId) throw new Error("Création du compte impossible (vérifie que la confirmation par e-mail est désactivée dans Supabase).");
-  const { error: profileError } = await supabase.from("profiles").insert({ id: userId, username: username.trim(), role: "admin", vendor_id: null });
+  if (!userId) throw new Error("Création du compte impossible (vérifie que les inscriptions par e-mail sont activées dans Supabase).");
+  const { error: profileError } = await supabase.from("profiles").insert({
+    id: userId, username: name.trim(), email: email.trim().toLowerCase(), role: "admin", vendor_id: null, is_primary: true,
+  });
   if (profileError) throw new Error(profileError.message);
   return true;
 }
 
-export async function signIn(username, password) {
-  const email = usernameToEmail(username);
+export async function signIn(identifier, password) {
+  const email = resolveLoginEmail(identifier);
   const { error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) throw new Error("Identifiant ou mot de passe incorrect.");
   return getMyProfile();
@@ -50,14 +65,29 @@ export async function signOut() {
   await supabase.auth.signOut();
 }
 
-// Création d'un compte vendeur ou gestionnaire par un admin/manager déjà connecté.
-// Passe par une fonction Supabase Edge (voir supabase/functions/manage-user) pour
-// ne pas déconnecter la session de l'administrateur en cours.
-export async function createAccount({ username, password, role, vendorId }) {
+// Envoie un e-mail de récupération de mot de passe (comptes administrateurs
+// uniquement, puisqu'eux seuls ont une vraie adresse e-mail).
+export async function sendPasswordReset(email) {
+  const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
+    redirectTo: window.location.origin,
+  });
+  if (error) throw new Error(error.message);
+}
+
+// Appelé depuis l'écran affiché après avoir cliqué sur le lien reçu par e-mail
+export async function updateMyPassword(newPassword) {
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) throw new Error(error.message);
+}
+
+// Création d'un compte vendeur, gestionnaire ou administrateur secondaire par
+// un admin/manager déjà connecté. Passe par une fonction Supabase Edge (voir
+// supabase/functions/manage-user) pour ne pas déconnecter la session en cours.
+export async function createAccount({ username, email, password, role, vendorId }) {
   const { data: sessionData } = await supabase.auth.getSession();
   const token = sessionData?.session?.access_token;
   const { data, error } = await supabase.functions.invoke("manage-user", {
-    body: { action: "create", username, password, role, vendorId: vendorId || null },
+    body: { action: "create", username, email, password, role, vendorId: vendorId || null },
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   });
   if (error) throw new Error(error.message || "Erreur lors de la création du compte.");
@@ -75,6 +105,38 @@ export async function deleteAccount(userId) {
   if (error) throw new Error(error.message || "Erreur lors de la suppression du compte.");
   if (data?.error) throw new Error(data.error);
   return true;
+}
+
+export async function getSecondaryAdmins() {
+  const { data, error } = await supabase.from("profiles").select("*").eq("role", "admin").eq("is_primary", false);
+  if (error) throw error;
+  return (data || []).map((u) => ({ id: u.id, username: u.username, email: u.email }));
+}
+
+// -----------------------------------------------------------------------------
+// Journal d'activité (comptes administrateurs secondaires uniquement)
+// -----------------------------------------------------------------------------
+
+// N'enregistre rien pour l'admin principal — voir App.jsx, appelé seulement
+// quand currentUser est un admin secondaire.
+export async function logActivity(currentUser, eventType, description) {
+  if (!currentUser || currentUser.role !== "admin" || currentUser.isPrimary) return;
+  try {
+    await supabase.from("activity_log").insert({
+      user_id: currentUser.id, username: currentUser.username, event_type: eventType, description,
+    });
+  } catch (e) {
+    console.error("Erreur d'enregistrement du journal d'activité", e);
+  }
+}
+
+export async function getActivityLog() {
+  const { data, error } = await supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(300);
+  if (error) throw error;
+  return (data || []).map((a) => ({
+    id: a.id, userId: a.user_id, username: a.username, eventType: a.event_type,
+    description: a.description, createdAt: a.created_at,
+  }));
 }
 
 // -----------------------------------------------------------------------------
