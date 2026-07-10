@@ -6,7 +6,6 @@ import {
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid } from "recharts";
 import * as store from "./lib/store.js";
-import { supabase } from "./lib/supabase.js";
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -358,20 +357,15 @@ function AuthShell({ children }) {
 }
 
 function SetupScreen({ onCreated }) {
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [pass1, setPass1] = useState("");
   const [pass2, setPass2] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
-    if (!name.trim() || !email.trim() || !pass1) {
-      setError("Remplis tous les champs.");
-      return;
-    }
-    if (!email.includes("@")) {
-      setError("Indique une adresse e-mail valide.");
+    if (!username.trim() || !pass1) {
+      setError("Indique un nom d'utilisateur et un mot de passe.");
       return;
     }
     if (pass1 !== pass2) {
@@ -385,7 +379,7 @@ function SetupScreen({ onCreated }) {
     setBusy(true);
     setError("");
     try {
-      await store.createFirstAdmin({ name: name.trim(), email: email.trim(), password: pass1 });
+      await store.createFirstAdmin(username.trim(), pass1);
       await onCreated();
     } catch (e) {
       setError(e.message || "Erreur lors de la création du compte.");
@@ -398,12 +392,8 @@ function SetupScreen({ onCreated }) {
       <h2 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", color: "#1B2A4A", fontSize: 22 }}>Bienvenue</h2>
       <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 6, marginBottom: 20 }}>Crée le compte administrateur principal pour commencer.</p>
       <div style={{ marginBottom: 12 }}>
-        <Label>Ton nom</Label>
-        <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex. Brice" />
-      </div>
-      <div style={{ marginBottom: 12 }}>
-        <Label>Adresse e-mail</Label>
-        <TextInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="toi@exemple.com" />
+        <Label>Nom d'utilisateur</Label>
+        <TextInput value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Ex. admin" />
       </div>
       <div style={{ marginBottom: 12 }}>
         <Label>Mot de passe</Label>
@@ -422,19 +412,17 @@ function SetupScreen({ onCreated }) {
 }
 
 function LoginScreen({ onLoggedIn }) {
-  const [mode, setMode] = useState("login"); // "login" | "forgot" | "sent"
-  const [identifier, setIdentifier] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [forgotEmail, setForgotEmail] = useState("");
 
   const submit = async () => {
-    if (!identifier.trim() || !password) return;
+    if (!username.trim() || !password) return;
     setBusy(true);
     setError("");
     try {
-      const profile = await store.signIn(identifier.trim(), password);
+      const profile = await store.signIn(username.trim(), password);
       if (!profile) {
         setError("Ce compte n'a pas de profil valide. Contacte l'administrateur.");
         setBusy(false);
@@ -447,119 +435,22 @@ function LoginScreen({ onLoggedIn }) {
     setBusy(false);
   };
 
-  const submitForgot = async () => {
-    if (!forgotEmail.includes("@")) {
-      setError("Indique l'adresse e-mail de ton compte administrateur.");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await store.sendPasswordReset(forgotEmail.trim());
-      setMode("sent");
-    } catch (e) {
-      setError(e.message || "Erreur lors de l'envoi.");
-    }
-    setBusy(false);
-  };
-
   const onKeyDown = (e) => { if (e.key === "Enter") submit(); };
-
-  if (mode === "forgot" || mode === "sent") {
-    return (
-      <AuthShell>
-        <h2 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", color: "#1B2A4A", fontSize: 20 }}>Mot de passe oublié</h2>
-        {mode === "sent" ? (
-          <p style={{ color: "#3F8361", fontSize: 13.5, marginTop: 10 }}>
-            Si un compte administrateur existe avec cette adresse, un e-mail vient d'être envoyé avec un lien pour choisir un nouveau mot de passe.
-          </p>
-        ) : (
-          <>
-            <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 6, marginBottom: 18 }}>
-              Réservé aux comptes administrateurs (les comptes vendeur/gestionnaire n'ont pas d'e-mail associé — demande à l'administrateur de recréer ton accès).
-            </p>
-            <div style={{ marginBottom: 14 }}>
-              <Label>Ton adresse e-mail</Label>
-              <TextInput type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} placeholder="toi@exemple.com" />
-            </div>
-            {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
-            <Button variant="primary" onClick={submitForgot} disabled={busy} style={{ width: "100%", justifyContent: "center" }}>
-              {busy ? "Envoi…" : "Envoyer le lien"}
-            </Button>
-          </>
-        )}
-        <button
-          onClick={() => { setMode("login"); setError(""); }}
-          style={{ background: "none", border: "none", color: "#5B6472", fontSize: 12.5, marginTop: 16, cursor: "pointer", textDecoration: "underline", padding: 0 }}
-        >
-          ← Retour à la connexion
-        </button>
-      </AuthShell>
-    );
-  }
 
   return (
     <AuthShell>
       <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 0, marginBottom: 20 }}>Connecte-toi pour continuer.</p>
       <div style={{ marginBottom: 12 }}>
-        <Label>E-mail (admin) ou nom d'utilisateur (vendeur/gestionnaire)</Label>
-        <TextInput value={identifier} onChange={(e) => setIdentifier(e.target.value)} onKeyDown={onKeyDown} />
+        <Label>Nom d'utilisateur</Label>
+        <TextInput value={username} onChange={(e) => setUsername(e.target.value)} onKeyDown={onKeyDown} />
       </div>
-      <div style={{ marginBottom: 6 }}>
+      <div style={{ marginBottom: 10 }}>
         <Label>Mot de passe</Label>
         <TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={onKeyDown} />
-      </div>
-      <div style={{ textAlign: "right", marginBottom: 10 }}>
-        <button
-          onClick={() => { setMode("forgot"); setError(""); }}
-          style={{ background: "none", border: "none", color: "#8A93A3", fontSize: 12, cursor: "pointer", textDecoration: "underline", padding: 0 }}
-        >
-          Mot de passe oublié ?
-        </button>
       </div>
       {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
       <Button variant="primary" onClick={submit} disabled={busy} style={{ width: "100%", justifyContent: "center", marginTop: 6 }}>
         {busy ? "Connexion…" : "Se connecter"}
-      </Button>
-    </AuthShell>
-  );
-}
-
-function ResetPasswordScreen({ onDone }) {
-  const [pass1, setPass1] = useState("");
-  const [pass2, setPass2] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const submit = async () => {
-    if (pass1.length < 6) { setError("Le mot de passe doit contenir au moins 6 caractères."); return; }
-    if (pass1 !== pass2) { setError("Les deux mots de passe ne correspondent pas."); return; }
-    setBusy(true);
-    setError("");
-    try {
-      await store.updateMyPassword(pass1);
-      await onDone();
-    } catch (e) {
-      setError(e.message || "Erreur lors de la mise à jour du mot de passe.");
-    }
-    setBusy(false);
-  };
-
-  return (
-    <AuthShell>
-      <h2 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", color: "#1B2A4A", fontSize: 20 }}>Nouveau mot de passe</h2>
-      <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 6, marginBottom: 18 }}>Choisis un nouveau mot de passe pour ton compte.</p>
-      <div style={{ marginBottom: 12 }}>
-        <Label>Nouveau mot de passe</Label>
-        <TextInput type="password" value={pass1} onChange={(e) => setPass1(e.target.value)} />
-      </div>
-      <div style={{ marginBottom: 16 }}>
-        <Label>Confirmer le mot de passe</Label>
-        <TextInput type="password" value={pass2} onChange={(e) => setPass2(e.target.value)} />
-      </div>
-      {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
-      <Button variant="primary" onClick={submit} disabled={busy} style={{ width: "100%", justifyContent: "center" }}>
-        {busy ? "Mise à jour…" : "Valider le nouveau mot de passe"}
       </Button>
     </AuthShell>
   );
@@ -623,15 +514,6 @@ export default function App() {
   const [withdrawals, setWithdrawals] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [tick, setTick] = useState(0);
-  const [passwordRecovery, setPasswordRecovery] = useState(false);
-
-  // Détecte le clic sur le lien "mot de passe oublié" reçu par e-mail
-  useEffect(() => {
-    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "PASSWORD_RECOVERY") setPasswordRecovery(true);
-    });
-    return () => sub.subscription.unsubscribe();
-  }, []);
 
   // Force un nouveau rendu toutes les minutes pour détecter le changement de jour à 00h
   useEffect(() => {
@@ -780,19 +662,6 @@ export default function App() {
     setCurrentUser(null);
     setCurrentVendor(null);
   };
-
-  const handlePasswordResetDone = async () => {
-    setPasswordRecovery(false);
-    const profile = await store.getMyProfile();
-    if (profile) {
-      setCurrentUser(profile);
-      setTab(profile.role === "vendor" ? "retour" : "dashboard");
-    }
-  };
-
-  if (passwordRecovery) {
-    return <ResetPasswordScreen onDone={handlePasswordResetDone} />;
-  }
 
   if (loading || hasAccount === null) {
     return (
@@ -1395,7 +1264,6 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
   const [mgrBusy, setMgrBusy] = useState(false);
 
   const [adminName, setAdminName] = useState("");
-  const [adminEmail, setAdminEmail] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
   const [adminError, setAdminError] = useState("");
   const [adminBusy, setAdminBusy] = useState(false);
@@ -1474,15 +1342,14 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
   };
 
   const addAdmin = async () => {
-    if (!adminName.trim() || !adminEmail.trim() || !adminPassword) { setAdminError("Remplis tous les champs."); return; }
-    if (!adminEmail.includes("@")) { setAdminError("Indique une adresse e-mail valide."); return; }
+    if (!adminName.trim() || !adminPassword) { setAdminError("Remplis tous les champs."); return; }
     if (adminPassword.length < 6) { setAdminError("Le mot de passe doit contenir au moins 6 caractères."); return; }
     setAdminError("");
     setAdminBusy(true);
     try {
-      await store.createAccount({ username: adminName.trim(), email: adminEmail.trim(), password: adminPassword, role: "admin" });
+      await store.createAccount({ username: adminName.trim(), password: adminPassword, role: "admin" });
       await reloadAccounts();
-      setAdminName(""); setAdminEmail(""); setAdminPassword("");
+      setAdminName(""); setAdminPassword("");
     } catch (e) {
       setAdminError(e.message || "Erreur lors de la création.");
     }
@@ -1583,13 +1450,9 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
             actions importantes sont enregistrées dans le Journal d'activité, visible seulement par toi.
           </div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-            <div style={{ flex: "1 1 140px" }}>
-              <Label>Nom</Label>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Nom d'utilisateur</Label>
               <TextInput value={adminName} onChange={(e) => setAdminName(e.target.value)} />
-            </div>
-            <div style={{ flex: "1 1 180px" }}>
-              <Label>Adresse e-mail</Label>
-              <TextInput type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} />
             </div>
             <div style={{ flex: "1 1 160px" }}>
               <Label>Mot de passe</Label>
@@ -1602,9 +1465,9 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
           {secondaryAdmins.length > 0 && (
             <div style={{ marginTop: 16 }}>
               <Table
-                headers={["Nom", "E-mail", ""]}
+                headers={["Nom d'utilisateur", ""]}
                 rows={secondaryAdmins.map((a) => [
-                  a.username, a.email,
+                  a.username,
                   <button key="del" onClick={() => removeAdmin(a.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
                 ])}
               />
