@@ -13,10 +13,8 @@ create extension if not exists "pgcrypto";
 create table profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   username text unique not null,
-  email text unique,
   role text not null check (role in ('admin', 'manager', 'vendor')),
   vendor_id uuid,
-  is_primary boolean not null default false,
   created_at timestamptz default now()
 );
 
@@ -80,18 +78,6 @@ create table notifications (
   created_at timestamptz default now()
 );
 
--- -----------------------------------------------------------------------------
--- Journal d'activité (comptes administrateurs secondaires uniquement)
--- -----------------------------------------------------------------------------
-create table activity_log (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid references profiles(id) on delete set null,
-  username text not null,
-  event_type text not null,
-  description text not null,
-  created_at timestamptz default now()
-);
-
 -- =============================================================================
 -- Fonction utilitaire : rôle de l'utilisateur connecté
 -- =============================================================================
@@ -103,10 +89,6 @@ create or replace function my_vendor_id() returns uuid as $$
   select vendor_id from profiles where id = auth.uid();
 $$ language sql stable security definer;
 
-create or replace function is_primary_admin() returns boolean as $$
-  select coalesce((select is_primary from profiles where id = auth.uid() and role = 'admin'), false);
-$$ language sql stable security definer;
-
 -- =============================================================================
 -- Activation de la sécurité au niveau des lignes (RLS)
 -- =============================================================================
@@ -116,7 +98,6 @@ alter table products enable row level security;
 alter table days enable row level security;
 alter table withdrawals enable row level security;
 alter table notifications enable row level security;
-alter table activity_log enable row level security;
 
 -- ---- profiles ----
 create policy "lecture profils pour tous les connectés" on profiles
@@ -161,9 +142,3 @@ create policy "admin et manager créent des notifications" on notifications
   for insert with check (my_role() in ('admin', 'manager'));
 create policy "vendeur marque ses notifications comme lues" on notifications
   for update using (vendor_id = my_vendor_id() or my_role() in ('admin', 'manager'));
-
--- ---- activity_log ----
-create policy "admin principal lit le journal d'activité" on activity_log
-  for select using (is_primary_admin());
-create policy "un admin peut inscrire ses propres actions" on activity_log
-  for insert with check (my_role() = 'admin');

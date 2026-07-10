@@ -1,9 +1,7 @@
 import { supabase } from "./supabase.js";
 
 // -----------------------------------------------------------------------------
-// Authentification — tout le monde se connecte avec un simple nom
-// d'utilisateur (aucun vrai e-mail requis, pour rester simple). En coulisses,
-// on fabrique une adresse technique invisible pour Supabase.
+// Authentification
 // -----------------------------------------------------------------------------
 
 function usernameToEmail(username) {
@@ -20,10 +18,7 @@ export async function getMyProfile() {
   if (!auth?.user) return null;
   const { data, error } = await supabase.from("profiles").select("*").eq("id", auth.user.id).single();
   if (error) return null;
-  return {
-    id: data.id, username: data.username, role: data.role,
-    vendorId: data.vendor_id, isPrimary: data.is_primary,
-  };
+  return { id: data.id, username: data.username, role: data.role, vendorId: data.vendor_id };
 }
 
 export async function hasAnyAccount() {
@@ -38,10 +33,8 @@ export async function createFirstAdmin(username, password) {
   const { data, error } = await supabase.auth.signUp({ email, password });
   if (error) throw new Error(error.message);
   const userId = data.user?.id;
-  if (!userId) throw new Error("Création du compte impossible (vérifie que les inscriptions par e-mail sont activées dans Supabase).");
-  const { error: profileError } = await supabase.from("profiles").insert({
-    id: userId, username: username.trim(), role: "admin", vendor_id: null, is_primary: true,
-  });
+  if (!userId) throw new Error("Création du compte impossible (vérifie que la confirmation par e-mail est désactivée dans Supabase).");
+  const { error: profileError } = await supabase.from("profiles").insert({ id: userId, username: username.trim(), role: "admin", vendor_id: null });
   if (profileError) throw new Error(profileError.message);
   return true;
 }
@@ -57,9 +50,9 @@ export async function signOut() {
   await supabase.auth.signOut();
 }
 
-// Création d'un compte vendeur, gestionnaire ou administrateur secondaire par
-// un admin/manager déjà connecté. Passe par une fonction Supabase Edge (voir
-// supabase/functions/manage-user) pour ne pas déconnecter la session en cours.
+// Création d'un compte vendeur ou gestionnaire par un admin/manager déjà connecté.
+// Passe par une fonction Supabase Edge (voir supabase/functions/manage-user) pour
+// ne pas déconnecter la session de l'administrateur en cours.
 export async function createAccount({ username, password, role, vendorId }) {
   const { data: sessionData } = await supabase.auth.getSession();
   const token = sessionData?.session?.access_token;
@@ -82,38 +75,6 @@ export async function deleteAccount(userId) {
   if (error) throw new Error(error.message || "Erreur lors de la suppression du compte.");
   if (data?.error) throw new Error(data.error);
   return true;
-}
-
-export async function getSecondaryAdmins() {
-  const { data, error } = await supabase.from("profiles").select("*").eq("role", "admin").eq("is_primary", false);
-  if (error) throw error;
-  return (data || []).map((u) => ({ id: u.id, username: u.username }));
-}
-
-// -----------------------------------------------------------------------------
-// Journal d'activité (comptes administrateurs secondaires uniquement)
-// -----------------------------------------------------------------------------
-
-// N'enregistre rien pour l'admin principal — voir App.jsx, appelé seulement
-// quand currentUser est un admin secondaire.
-export async function logActivity(currentUser, eventType, description) {
-  if (!currentUser || currentUser.role !== "admin" || currentUser.isPrimary) return;
-  try {
-    await supabase.from("activity_log").insert({
-      user_id: currentUser.id, username: currentUser.username, event_type: eventType, description,
-    });
-  } catch (e) {
-    console.error("Erreur d'enregistrement du journal d'activité", e);
-  }
-}
-
-export async function getActivityLog() {
-  const { data, error } = await supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(300);
-  if (error) throw error;
-  return (data || []).map((a) => ({
-    id: a.id, userId: a.user_id, username: a.username, eventType: a.event_type,
-    description: a.description, createdAt: a.created_at,
-  }));
 }
 
 // -----------------------------------------------------------------------------

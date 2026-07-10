@@ -390,7 +390,7 @@ function SetupScreen({ onCreated }) {
   return (
     <AuthShell>
       <h2 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", color: "#1B2A4A", fontSize: 22 }}>Bienvenue</h2>
-      <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 6, marginBottom: 20 }}>Crée le compte administrateur principal pour commencer.</p>
+      <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 6, marginBottom: 20 }}>Crée le compte administrateur pour commencer.</p>
       <div style={{ marginBottom: 12 }}>
         <Label>Nom d'utilisateur</Label>
         <TextInput value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Ex. admin" />
@@ -653,11 +653,9 @@ export default function App() {
     setCurrentUser(profile);
     setCurrentVendor(vendor);
     setTab(profile.role === "vendor" ? "retour" : "dashboard");
-    store.logActivity(profile, "login", `${profile.username} s'est connecté.`);
   };
 
   const handleLogout = async () => {
-    if (currentUser) store.logActivity(currentUser, "logout", `${currentUser.username} s'est déconnecté.`);
     await store.signOut();
     setCurrentUser(null);
     setCurrentVendor(null);
@@ -687,10 +685,8 @@ export default function App() {
   const isAdmin = currentUser.role === "admin";
   const isManager = currentUser.role === "manager";
   const canManage = isAdmin || isManager; // accès Tableau de bord / Finances / Stock / Personnel
-  const nav = isAdmin
-    ? (currentUser.isPrimary ? [...NAV_ADMIN, { id: "journal", label: "Journal d'activité", icon: History }] : NAV_ADMIN)
-    : isManager ? NAV_MANAGER : NAV_VENDOR;
-  const roleLabel = isAdmin ? (currentUser.isPrimary ? "admin principal" : "admin") : isManager ? "gestionnaire" : "vendeur";
+  const nav = isAdmin ? NAV_ADMIN : isManager ? NAV_MANAGER : NAV_VENDOR;
+  const roleLabel = isAdmin ? "admin" : isManager ? "gestionnaire" : "vendeur";
   const activeVendor = currentUser.role === "vendor" ? currentVendor : null;
 
   return (
@@ -759,7 +755,7 @@ export default function App() {
         {tab === "produits" && isAdmin && <Produits products={products} setProducts={persistProducts} />}
         {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} />}
         {tab === "vendeurs" && canManage && (
-          <Vendeurs vendors={vendors} reloadVendors={reloadVendors} isAdmin={isAdmin} currentUser={currentUser} />
+          <Vendeurs vendors={vendors} reloadVendors={reloadVendors} isAdmin={isAdmin} />
         )}
         {tab === "distribution" && isAdmin && (
           <Distribution products={products} setProducts={persistProducts} vendors={vendors} day={day} setDay={persistDay} ensureTodayInList={ensureTodayInList} daysList={daysList} />
@@ -779,7 +775,6 @@ export default function App() {
           <Caisse vendors={vendors} day={day} setDay={persistDay} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} daysList={daysList} today={today} />
         )}
         {tab === "historique" && isAdmin && <Historique daysList={daysList} today={today} />}
-        {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
       </div>
     </div>
   );
@@ -1251,7 +1246,7 @@ function Stock({ products, setProducts }) {
 // Vendeurs & comptes
 // ---------------------------------------------------------------------------
 
-function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
+function Vendeurs({ vendors, reloadVendors, isAdmin }) {
   const [nom, setNom] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -1263,20 +1258,13 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
   const [mgrError, setMgrError] = useState("");
   const [mgrBusy, setMgrBusy] = useState(false);
 
-  const [adminName, setAdminName] = useState("");
-  const [adminPassword, setAdminPassword] = useState("");
-  const [adminError, setAdminError] = useState("");
-  const [adminBusy, setAdminBusy] = useState(false);
-
   const [vendorAccounts, setVendorAccounts] = useState([]);
   const [managers, setManagers] = useState([]);
-  const [secondaryAdmins, setSecondaryAdmins] = useState([]);
 
   const reloadAccounts = async () => {
-    const [va, ma, sa] = await Promise.all([store.getVendorAccounts(), store.getManagerAccounts(), store.getSecondaryAdmins()]);
+    const [va, ma] = await Promise.all([store.getVendorAccounts(), store.getManagerAccounts()]);
     setVendorAccounts(va);
     setManagers(ma);
-    setSecondaryAdmins(sa);
   };
 
   useEffect(() => { reloadAccounts(); }, [vendors]);
@@ -1294,7 +1282,6 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
       }
       await reloadVendors();
       await reloadAccounts();
-      store.logActivity(currentUser, "add_vendor", `Vendeur ajouté : ${nom.trim()}.`);
       setNom(""); setUsername(""); setPassword("");
     } catch (e) {
       setError(e.message || "Erreur lors de la création.");
@@ -1302,14 +1289,13 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
     setBusy(false);
   };
 
-  const remove = async (id, nomVendeur) => {
+  const remove = async (id) => {
     const linkedAccount = vendorAccounts.find((u) => u.vendorId === id);
     try {
       if (linkedAccount) await store.deleteAccount(linkedAccount.id);
       await store.deleteVendor(id);
       await reloadVendors();
       await reloadAccounts();
-      store.logActivity(currentUser, "delete_vendor", `Vendeur supprimé : ${nomVendeur}.`);
     } catch (e) {
       setError(e.message || "Erreur lors de la suppression.");
     }
@@ -1323,7 +1309,6 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
     try {
       await store.createAccount({ username: mgrUsername.trim(), password: mgrPassword, role: "manager" });
       await reloadAccounts();
-      store.logActivity(currentUser, "add_manager", `Compte gestionnaire créé : ${mgrUsername.trim()}.`);
       setMgrUsername(""); setMgrPassword("");
     } catch (e) {
       setMgrError(e.message || "Erreur lors de la création.");
@@ -1331,37 +1316,12 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
     setMgrBusy(false);
   };
 
-  const removeManager = async (id, name) => {
+  const removeManager = async (id) => {
     try {
       await store.deleteAccount(id);
       await reloadAccounts();
-      store.logActivity(currentUser, "delete_manager", `Compte gestionnaire supprimé : ${name}.`);
     } catch (e) {
       setMgrError(e.message || "Erreur lors de la suppression.");
-    }
-  };
-
-  const addAdmin = async () => {
-    if (!adminName.trim() || !adminPassword) { setAdminError("Remplis tous les champs."); return; }
-    if (adminPassword.length < 6) { setAdminError("Le mot de passe doit contenir au moins 6 caractères."); return; }
-    setAdminError("");
-    setAdminBusy(true);
-    try {
-      await store.createAccount({ username: adminName.trim(), password: adminPassword, role: "admin" });
-      await reloadAccounts();
-      setAdminName(""); setAdminPassword("");
-    } catch (e) {
-      setAdminError(e.message || "Erreur lors de la création.");
-    }
-    setAdminBusy(false);
-  };
-
-  const removeAdmin = async (id) => {
-    try {
-      await store.deleteAccount(id);
-      await reloadAccounts();
-    } catch (e) {
-      setAdminError(e.message || "Erreur lors de la suppression.");
     }
   };
 
@@ -1404,7 +1364,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
               const u = vendorAccounts.find((u) => u.vendorId === v.id);
               return [
                 v.nom, u ? u.username : "— aucun —",
-                <button key="del" onClick={() => remove(v.id, v.nom)} style={iconBtnStyle}><Trash2 size={15} /></button>,
+                <button key="del" onClick={() => remove(v.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
               ];
             })}
           />
@@ -1435,40 +1395,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
                 headers={["Nom d'utilisateur", ""]}
                 rows={managers.map((m) => [
                   m.username,
-                  <button key="del" onClick={() => removeManager(m.id, m.username)} style={iconBtnStyle}><Trash2 size={15} /></button>,
-                ])}
-              />
-            </div>
-          )}
-        </Card>
-      )}
-
-      {currentUser?.isPrimary && (
-        <Card title="Comptes administrateurs secondaires">
-          <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
-            Un administrateur secondaire a exactement les mêmes accès que toi. Ses connexions et ses
-            actions importantes sont enregistrées dans le Journal d'activité, visible seulement par toi.
-          </div>
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-            <div style={{ flex: "1 1 160px" }}>
-              <Label>Nom d'utilisateur</Label>
-              <TextInput value={adminName} onChange={(e) => setAdminName(e.target.value)} />
-            </div>
-            <div style={{ flex: "1 1 160px" }}>
-              <Label>Mot de passe</Label>
-              <TextInput type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} />
-            </div>
-            <Button onClick={addAdmin} disabled={adminBusy}><Plus size={15} /> {adminBusy ? "Création…" : "Créer le compte"}</Button>
-          </div>
-          {adminError && <div style={{ color: "#C1554A", fontSize: 12.5, marginTop: 10 }}>{adminError}</div>}
-
-          {secondaryAdmins.length > 0 && (
-            <div style={{ marginTop: 16 }}>
-              <Table
-                headers={["Nom d'utilisateur", ""]}
-                rows={secondaryAdmins.map((a) => [
-                  a.username,
-                  <button key="del" onClick={() => removeAdmin(a.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
+                  <button key="del" onClick={() => removeManager(m.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
                 ])}
               />
             </div>
@@ -2002,71 +1929,6 @@ function Historique({ daysList, today }) {
           </div>
         );
       })}
-    </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Journal d'activité — connexions et actions des admins secondaires
-// (visible uniquement par l'administrateur principal)
-// ---------------------------------------------------------------------------
-
-const EVENT_LABELS = {
-  login: "Connexion",
-  logout: "Déconnexion",
-  add_vendor: "Vendeur ajouté",
-  delete_vendor: "Vendeur supprimé",
-  add_manager: "Gestionnaire ajouté",
-  delete_manager: "Gestionnaire supprimé",
-};
-
-function eventBadgeColor(eventType) {
-  if (eventType === "login") return "#3F8361";
-  if (eventType === "logout") return "#8A93A3";
-  if (eventType.startsWith("delete")) return "#C1554A";
-  return "#1B2A4A";
-}
-
-function JournalActivite() {
-  const [entries, setEntries] = useState(null);
-  const [filterUser, setFilterUser] = useState("");
-
-  useEffect(() => {
-    (async () => setEntries(await store.getActivityLog()))();
-  }, []);
-
-  if (entries === null) return <EmptyState text="Chargement du journal…" />;
-
-  const usernames = Array.from(new Set(entries.map((e) => e.username)));
-  const filtered = filterUser ? entries.filter((e) => e.username === filterUser) : entries;
-
-  return (
-    <Card
-      title="Journal d'activité des administrateurs secondaires"
-      right={
-        usernames.length > 1 && (
-          <Select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} style={{ width: 200 }}>
-            <option value="">Tous les comptes</option>
-            {usernames.map((u) => <option key={u} value={u}>{u}</option>)}
-          </Select>
-        )
-      }
-    >
-      {filtered.length === 0 ? (
-        <EmptyState text="Aucune activité enregistrée pour l'instant." />
-      ) : (
-        <Table
-          headers={["Date", "Compte", "Événement", "Détail"]}
-          rows={filtered.map((e) => [
-            new Date(e.createdAt).toLocaleString("fr-FR"),
-            e.username,
-            <span key="b" style={{ fontSize: 12, fontWeight: 700, color: eventBadgeColor(e.eventType) }}>
-              {EVENT_LABELS[e.eventType] || e.eventType}
-            </span>,
-            e.description,
-          ])}
-        />
-      )}
     </Card>
   );
 }

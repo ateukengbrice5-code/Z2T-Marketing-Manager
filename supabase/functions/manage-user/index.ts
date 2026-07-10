@@ -29,7 +29,7 @@ Deno.serve(async (req) => {
     }
 
     const { data: callerProfile } = await callerClient
-      .from("profiles").select("role, is_primary").eq("id", authData.user.id).single();
+      .from("profiles").select("role").eq("id", authData.user.id).single();
 
     if (!callerProfile || !["admin", "manager"].includes(callerProfile.role)) {
       return new Response(JSON.stringify({ error: "Non autorisé." }), { status: 403, headers: cors });
@@ -43,17 +43,9 @@ Deno.serve(async (req) => {
       const { userId } = body;
       if (!userId) return new Response(JSON.stringify({ error: "Identifiant manquant." }), { status: 400, headers: cors });
 
-      const { data: targetProfile } = await adminClient.from("profiles").select("role, is_primary").eq("id", userId).single();
+      const { data: targetProfile } = await adminClient.from("profiles").select("role").eq("id", userId).single();
       if (targetProfile?.role === "manager" && callerProfile.role !== "admin") {
         return new Response(JSON.stringify({ error: "Seul un administrateur peut supprimer un compte gestionnaire." }), { status: 403, headers: cors });
-      }
-      if (targetProfile?.role === "admin") {
-        if (!callerProfile.is_primary) {
-          return new Response(JSON.stringify({ error: "Seul l'administrateur principal peut supprimer un compte administrateur." }), { status: 403, headers: cors });
-        }
-        if (targetProfile.is_primary) {
-          return new Response(JSON.stringify({ error: "Impossible de supprimer le compte administrateur principal." }), { status: 403, headers: cors });
-        }
       }
 
       await adminClient.from("profiles").delete().eq("id", userId);
@@ -68,31 +60,27 @@ Deno.serve(async (req) => {
     if (!username || !password || !role) {
       return new Response(JSON.stringify({ error: "Champs manquants." }), { status: 400, headers: cors });
     }
-    if (!["vendor", "manager", "admin"].includes(role)) {
+    if (!["vendor", "manager"].includes(role)) {
       return new Response(JSON.stringify({ error: "Rôle invalide." }), { status: 400, headers: cors });
     }
     if (role === "manager" && callerProfile.role !== "admin") {
       return new Response(JSON.stringify({ error: "Seul un administrateur peut créer un compte gestionnaire." }), { status: 403, headers: cors });
     }
-    if (role === "admin" && !callerProfile.is_primary) {
-      return new Response(JSON.stringify({ error: "Seul l'administrateur principal peut créer un compte administrateur." }), { status: 403, headers: cors });
-    }
     if (role === "vendor" && !vendorId) {
       return new Response(JSON.stringify({ error: "Un vendeur associé est requis." }), { status: 400, headers: cors });
     }
 
-    const authEmail = `${String(username).trim().toLowerCase()}@z2t.local`;
+    const email = `${String(username).trim().toLowerCase()}@z2t.local`;
 
     const { data: created, error: createErr } = await adminClient.auth.admin.createUser({
-      email: authEmail, password, email_confirm: true,
+      email, password, email_confirm: true,
     });
     if (createErr) {
       return new Response(JSON.stringify({ error: createErr.message }), { status: 400, headers: cors });
     }
 
     const { error: profileErr } = await adminClient.from("profiles").insert({
-      id: created.user.id, username: String(username).trim(),
-      role, vendor_id: role === "vendor" ? vendorId : null, is_primary: false,
+      id: created.user.id, username: String(username).trim(), role, vendor_id: role === "vendor" ? vendorId : null,
     });
     if (profileErr) {
       return new Response(JSON.stringify({ error: profileErr.message }), { status: 400, headers: cors });
