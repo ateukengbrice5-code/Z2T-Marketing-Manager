@@ -64,7 +64,7 @@ Deno.serve(async (req) => {
     }
 
     // action === "create"
-    const { username, email, password, role, vendorId } = body;
+    const { username, password, role, vendorId } = body;
     if (!username || !password || !role) {
       return new Response(JSON.stringify({ error: "Champs manquants." }), { status: 400, headers: cors });
     }
@@ -80,11 +80,8 @@ Deno.serve(async (req) => {
     if (role === "vendor" && !vendorId) {
       return new Response(JSON.stringify({ error: "Un vendeur associé est requis." }), { status: 400, headers: cors });
     }
-    if (role === "admin" && !email) {
-      return new Response(JSON.stringify({ error: "Une adresse e-mail est requise pour un compte administrateur." }), { status: 400, headers: cors });
-    }
 
-    const authEmail = role === "admin" ? String(email).trim().toLowerCase() : `${String(username).trim().toLowerCase()}@z2t.local`;
+    const authEmail = `${String(username).trim().toLowerCase()}@z2t.local`;
 
     const { data: created, error: createErr } = await adminClient.auth.admin.createUser({
       email: authEmail, password, email_confirm: true,
@@ -95,7 +92,6 @@ Deno.serve(async (req) => {
 
     const { error: profileErr } = await adminClient.from("profiles").insert({
       id: created.user.id, username: String(username).trim(),
-      email: role === "admin" ? authEmail : null,
       role, vendor_id: role === "vendor" ? vendorId : null, is_primary: false,
     });
     if (profileErr) {
