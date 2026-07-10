@@ -1,0 +1,1934 @@
+import React, { useState, useEffect, useCallback } from "react";
+import {
+  LayoutDashboard, Package, Boxes, Users, Truck, MoonStar, Wallet, History,
+  Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown,
+  Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye,
+} from "lucide-react";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid } from "recharts";
+import * as store from "./lib/store.js";
+
+// ---------------------------------------------------------------------------
+// Constantes
+// ---------------------------------------------------------------------------
+
+const NAV_ADMIN = [
+  { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
+  { id: "produits", label: "Produits", icon: Package },
+  { id: "stock", label: "Stock", icon: Boxes },
+  { id: "vendeurs", label: "Vendeurs & comptes", icon: Users },
+  { id: "distribution", label: "Distribution", icon: Truck },
+  { id: "retour", label: "Retour du soir", icon: MoonStar },
+  { id: "caisse", label: "Caisse", icon: Wallet },
+  { id: "historique", label: "Historique", icon: History },
+];
+
+const NAV_VENDOR = [
+  { id: "dashboard", label: "Mon tableau de bord", icon: LayoutDashboard },
+  { id: "retour", label: "Mon retour du soir", icon: MoonStar },
+];
+
+const NAV_MANAGER = [
+  { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
+  { id: "caisse", label: "Finances", icon: Wallet },
+  { id: "stock", label: "Stock", icon: Boxes },
+  { id: "vendeurs", label: "Personnel", icon: Users },
+];
+
+// ---------------------------------------------------------------------------
+// Helpers de date / argent / identifiants
+// ---------------------------------------------------------------------------
+
+function isoFromDate(d) {
+  const off = d.getTimezoneOffset();
+  const local = new Date(d.getTime() - off * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
+function todayISO() {
+  return isoFromDate(new Date());
+}
+
+function addDays(iso, n) {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + n);
+  return isoFromDate(d);
+}
+
+function getMonday(iso) {
+  const d = new Date(iso + "T00:00:00");
+  const day = d.getDay();
+  const diff = (day === 0 ? -6 : 1) - day;
+  d.setDate(d.getDate() + diff);
+  return isoFromDate(d);
+}
+
+function getPreviousDayRange(iso) {
+  const y = addDays(iso, -1);
+  return [y, y];
+}
+
+function getPreviousWeekRange(iso) {
+  const thisMonday = getMonday(iso);
+  const prevMonday = addDays(thisMonday, -7);
+  const prevSunday = addDays(thisMonday, -1);
+  return [prevMonday, prevSunday];
+}
+
+function getPreviousMonthRange(iso) {
+  const d = new Date(iso + "T00:00:00");
+  const firstOfThisMonth = new Date(d.getFullYear(), d.getMonth(), 1);
+  const lastOfPrevMonth = new Date(firstOfThisMonth.getTime() - 86400000);
+  const firstOfPrevMonth = new Date(lastOfPrevMonth.getFullYear(), lastOfPrevMonth.getMonth(), 1);
+  return [isoFromDate(firstOfPrevMonth), isoFromDate(lastOfPrevMonth)];
+}
+
+function getPreviousYearRange(iso) {
+  const y = parseInt(iso.slice(0, 4), 10) - 1;
+  return [`${y}-01-01`, `${y}-12-31`];
+}
+
+function getCurrentWeekRange(iso) {
+  return [getMonday(iso), iso];
+}
+
+function getCurrentMonthRange(iso) {
+  const d = new Date(iso + "T00:00:00");
+  const first = new Date(d.getFullYear(), d.getMonth(), 1);
+  return [isoFromDate(first), iso];
+}
+
+function inRange(dateIso, range) {
+  return dateIso >= range[0] && dateIso <= range[1];
+}
+
+// Somme, pour UN vendeur, le chiffre d'affaires / vendu / distribué sur une période
+function sumVendorOverRange(days, vendorId, range) {
+  let ca = 0, vendu = 0, distribue = 0;
+  days.forEach((day) => {
+    if (!day || !inRange(day.date, range)) return;
+    day.lines.forEach((l) => {
+      if (l.vendorId !== vendorId) return;
+      distribue += l.quantiteRemise || 0;
+      if (l.quantiteVendue != null) {
+        vendu += l.quantiteVendue;
+        ca += l.montantAttendu || 0;
+      }
+    });
+  });
+  return { ca, vendu, distribue };
+}
+
+// Historique jour par jour (pour un graphique) sur les N derniers jours pour un vendeur
+function buildVendorDailySeries(days, vendorId, today, numDays) {
+  const byDate = {};
+  days.forEach((d) => { if (d) byDate[d.date] = d; });
+  const series = [];
+  for (let i = numDays - 1; i >= 0; i--) {
+    const date = addDays(today, -i);
+    const d = byDate[date];
+    let ca = 0, vendu = 0, distribue = 0;
+    if (d) {
+      d.lines.forEach((l) => {
+        if (l.vendorId !== vendorId) return;
+        distribue += l.quantiteRemise || 0;
+        if (l.quantiteVendue != null) { vendu += l.quantiteVendue; ca += l.montantAttendu || 0; }
+      });
+    }
+    series.push({ date, label: date.slice(8, 10) + "/" + date.slice(5, 7), ca, vendu, distribue });
+  }
+  return series;
+}
+
+function sumExpensesOverRange(days, range) {
+  let total = 0;
+  days.forEach((d) => {
+    if (!d || !inRange(d.date, range)) return;
+    total += (d.expenses || []).reduce((s, e) => s + (Number(e.montant) || 0), 0);
+  });
+  return total;
+}
+function computeVendorBonusTotal(days, vendorId) {
+  let total = 0;
+  days.forEach((day) => {
+    if (!day) return;
+    const summary = computeVersementSummary(day, vendorId);
+    if (summary.finalise && summary.statut === "exces") total += summary.ecart;
+  });
+  return total;
+}
+
+function formatDateFR(iso) {
+  const [y, m, d] = iso.split("-");
+  const months = [
+    "janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+  ];
+  return `${parseInt(d, 10)} ${months[parseInt(m, 10) - 1]} ${y}`;
+}
+
+function fmtMoney(n) {
+  const v = Number(n) || 0;
+  return v.toLocaleString("fr-FR", { maximumFractionDigits: 0 }) + " F";
+}
+
+function uid() {
+  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+}
+
+function emptyDay(date) {
+  return { date, lines: [], versements: {}, expenses: [] };
+}
+
+// ---------------------------------------------------------------------------
+// Petits composants d'interface réutilisables
+// ---------------------------------------------------------------------------
+
+function Badge({ ok, okText = "Équilibré", warnText = "Écart" }) {
+  return (
+    <span
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 10px",
+        borderRadius: 999, fontSize: 12, fontWeight: 600,
+        background: ok ? "#EAF4EE" : "#FBECEA", color: ok ? "#3F8361" : "#C1554A",
+        border: `1px solid ${ok ? "#CDE7D6" : "#F0CFC9"}`,
+      }}
+    >
+      {ok ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
+      {ok ? okText : warnText}
+    </span>
+  );
+}
+
+function StatCard({ label, value, sub, accent }) {
+  return (
+    <div style={{ background: "#fff", border: "1px solid #E7E9EE", borderRadius: 14, padding: "18px 20px", flex: "1 1 200px", minWidth: 190 }}>
+      <div style={{ fontSize: 12.5, color: "#5B6472", fontWeight: 600, letterSpacing: 0.2 }}>{label}</div>
+      <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 28, fontWeight: 700, color: accent || "#1B2A4A", marginTop: 6, lineHeight: 1.1 }}>
+        {value}
+      </div>
+      {sub && <div style={{ fontSize: 12, color: "#8A93A3", marginTop: 5 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function Card({ title, right, children }) {
+  return (
+    <div style={{ background: "#fff", border: "1px solid #E7E9EE", borderRadius: 14, padding: 22, marginBottom: 20 }}>
+      {title && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <h3 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", fontSize: 17, color: "#1B2A4A", fontWeight: 700 }}>{title}</h3>
+          {right}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+function TextInput(props) {
+  return (
+    <input
+      {...props}
+      style={{
+        width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #D8DCE3",
+        fontSize: 14, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A",
+        outline: "none", boxSizing: "border-box", ...props.style,
+      }}
+    />
+  );
+}
+
+function Select(props) {
+  return (
+    <select
+      {...props}
+      style={{
+        width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #D8DCE3",
+        fontSize: 14, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A",
+        outline: "none", background: "#fff", boxSizing: "border-box", ...props.style,
+      }}
+    >
+      {props.children}
+    </select>
+  );
+}
+
+function Button({ children, variant = "primary", ...rest }) {
+  const styles = {
+    primary: { background: "#1B2A4A", color: "#fff", border: "1px solid #1B2A4A" },
+    gold: { background: "#D9A441", color: "#1B2A4A", border: "1px solid #D9A441" },
+    ghost: { background: "#fff", color: "#C1554A", border: "1px solid #F0CFC9" },
+  };
+  return (
+    <button
+      {...rest}
+      style={{
+        padding: "9px 16px", borderRadius: 8, fontSize: 13.5, fontWeight: 600, cursor: "pointer",
+        display: "inline-flex", alignItems: "center", gap: 6, ...styles[variant], ...rest.style,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function EmptyState({ text }) {
+  return <div style={{ padding: "24px 10px", textAlign: "center", color: "#9AA2B1", fontSize: 13.5, fontStyle: "italic" }}>{text}</div>;
+}
+
+function Table({ headers, rows }) {
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+        <thead>
+          <tr>
+            {headers.map((h, i) => (
+              <th key={i} style={{ textAlign: "left", padding: "8px 10px", color: "#8A93A3", fontSize: 11.5, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", borderBottom: "2px solid #EEF0F4" }}>
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i}>
+              {row.map((cell, j) => (
+                <td key={j} style={{ padding: "10px 10px", borderBottom: "1px solid #F3F4F7", color: "#1B2A4A" }}>{cell}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Label({ children }) {
+  return <div style={{ fontSize: 12, fontWeight: 600, color: "#5B6472", marginBottom: 5 }}>{children}</div>;
+}
+
+function Toggle({ on, onChange, label }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => onChange(!on)}>
+      <div style={{ width: 40, height: 22, borderRadius: 999, background: on ? "#D9A441" : "#D8DCE3", position: "relative", transition: "background 0.15s" }}>
+        <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: on ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)" }} />
+      </div>
+      {label && <span style={{ fontSize: 13.5, fontWeight: 600, color: "#1B2A4A" }}>{label}</span>}
+    </div>
+  );
+}
+
+const iconBtnStyle = { background: "none", border: "none", color: "#C1554A", cursor: "pointer", padding: 4, display: "flex" };
+
+function Logo({ size = 32 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" style={{ flexShrink: 0 }}>
+      <defs>
+        <linearGradient id="z2tGrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#E8B95A" />
+          <stop offset="100%" stopColor="#C98F2C" />
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width="32" height="32" rx="8" fill="url(#z2tGrad)" />
+      <path d="M8 10h13l-9.5 12H21" stroke="#152039" strokeWidth="2.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="24" cy="9" r="2.6" fill="#152039" />
+    </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Écrans d'authentification
+// ---------------------------------------------------------------------------
+
+function AuthShell({ children }) {
+  return (
+    <div style={{ minHeight: 640, display: "flex", alignItems: "center", justifyContent: "center", background: "#F7F8FA", borderRadius: 16, border: "1px solid #E7E9EE" }}>
+      <div style={{ background: "#fff", border: "1px solid #E7E9EE", borderRadius: 14, padding: "36px 40px", width: 360 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+          <Logo size={38} />
+          <div style={{ fontFamily: "Cambria, Georgia, serif", fontWeight: 700, fontSize: 15, color: "#1B2A4A", lineHeight: 1.15 }}>
+            Z2T<br /><span style={{ fontSize: 11, fontWeight: 600, color: "#8A93A3", fontFamily: "Calibri, sans-serif" }}>Marketing Manager</span>
+          </div>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SetupScreen({ onCreated }) {
+  const [username, setUsername] = useState("");
+  const [pass1, setPass1] = useState("");
+  const [pass2, setPass2] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!username.trim() || !pass1) {
+      setError("Indique un nom d'utilisateur et un mot de passe.");
+      return;
+    }
+    if (pass1 !== pass2) {
+      setError("Les deux mots de passe ne correspondent pas.");
+      return;
+    }
+    if (pass1.length < 6) {
+      setError("Le mot de passe doit contenir au moins 6 caractères.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await store.createFirstAdmin(username.trim(), pass1);
+      await onCreated();
+    } catch (e) {
+      setError(e.message || "Erreur lors de la création du compte.");
+    }
+    setBusy(false);
+  };
+
+  return (
+    <AuthShell>
+      <h2 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", color: "#1B2A4A", fontSize: 22 }}>Bienvenue</h2>
+      <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 6, marginBottom: 20 }}>Crée le compte administrateur pour commencer.</p>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Nom d'utilisateur</Label>
+        <TextInput value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Ex. admin" />
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Mot de passe</Label>
+        <TextInput type="password" value={pass1} onChange={(e) => setPass1(e.target.value)} />
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Label>Confirmer le mot de passe</Label>
+        <TextInput type="password" value={pass2} onChange={(e) => setPass2(e.target.value)} />
+      </div>
+      {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      <Button variant="primary" onClick={submit} disabled={busy} style={{ width: "100%", justifyContent: "center" }}>
+        {busy ? "Création…" : "Créer le compte"}
+      </Button>
+    </AuthShell>
+  );
+}
+
+function LoginScreen({ onLoggedIn }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!username.trim() || !password) return;
+    setBusy(true);
+    setError("");
+    try {
+      const profile = await store.signIn(username.trim(), password);
+      if (!profile) {
+        setError("Ce compte n'a pas de profil valide. Contacte l'administrateur.");
+        setBusy(false);
+        return;
+      }
+      await onLoggedIn(profile);
+    } catch (e) {
+      setError(e.message || "Identifiant ou mot de passe incorrect.");
+    }
+    setBusy(false);
+  };
+
+  const onKeyDown = (e) => { if (e.key === "Enter") submit(); };
+
+  return (
+    <AuthShell>
+      <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 0, marginBottom: 20 }}>Connecte-toi pour continuer.</p>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Nom d'utilisateur</Label>
+        <TextInput value={username} onChange={(e) => setUsername(e.target.value)} onKeyDown={onKeyDown} />
+      </div>
+      <div style={{ marginBottom: 10 }}>
+        <Label>Mot de passe</Label>
+        <TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={onKeyDown} />
+      </div>
+      {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      <Button variant="primary" onClick={submit} disabled={busy} style={{ width: "100%", justifyContent: "center", marginTop: 6 }}>
+        {busy ? "Connexion…" : "Se connecter"}
+      </Button>
+    </AuthShell>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Agrégation pour le tableau de bord (meilleur vendeur / produits par période)
+// ---------------------------------------------------------------------------
+
+function aggregateRange(days, range) {
+  const vendorTotals = {};
+  const productTotals = {};
+  days.forEach((day) => {
+    if (!day || !inRange(day.date, range)) return;
+    day.lines.forEach((l) => {
+      if (l.quantiteVendue == null) return;
+      if (!vendorTotals[l.vendorId]) vendorTotals[l.vendorId] = { nom: l.vendorNom, total: 0 };
+      vendorTotals[l.vendorId].total += l.montantAttendu || 0;
+      if (!productTotals[l.productId]) productTotals[l.productId] = { nom: l.productNom, qty: 0 };
+      productTotals[l.productId].qty += l.quantiteVendue || 0;
+    });
+  });
+  const bestVendor = Object.values(vendorTotals).sort((a, b) => b.total - a.total)[0] || null;
+  const topProducts = Object.values(productTotals).sort((a, b) => b.qty - a.qty).slice(0, 4);
+  return { bestVendor, topProducts };
+}
+
+// Calcule le résumé de versement (espèces + mobile) d'un vendeur pour un jour donné
+function computeVersementSummary(day, vendorId) {
+  const lines = (day?.lines || []).filter((l) => l.vendorId === vendorId && l.quantiteRestante !== null);
+  const montantAttendu = lines.reduce((s, l) => s + (l.montantAttendu || 0), 0);
+  const versement = day?.versements?.[vendorId] || { mobilePayments: [], montantVerseEspeces: null };
+  const totalMobile = (versement.mobilePayments || []).reduce((s, m) => s + (Number(m.montant) || 0), 0);
+  const montantAVerserEspeces = montantAttendu - totalMobile;
+  const finalise = versement.montantVerseEspeces !== null && versement.montantVerseEspeces !== undefined;
+  const ecart = finalise ? versement.montantVerseEspeces - montantAVerserEspeces : null;
+  let statut = null;
+  if (finalise) statut = Math.abs(ecart) < 1 ? "equilibre" : ecart > 0 ? "exces" : "manque";
+  return {
+    lines, montantAttendu, mobilePayments: versement.mobilePayments || [], totalMobile,
+    montantAVerserEspeces, montantVerseEspeces: finalise ? versement.montantVerseEspeces : null,
+    finalise, ecart, statut,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Composant principal
+// ---------------------------------------------------------------------------
+
+export default function App() {
+  const [loading, setLoading] = useState(true);
+  const [hasAccount, setHasAccount] = useState(null); // null = pas encore vérifié
+  const [currentUser, setCurrentUser] = useState(null);
+  const [currentVendor, setCurrentVendor] = useState(null);
+
+  const [tab, setTab] = useState("dashboard");
+  const [products, setProducts] = useState([]);
+  const [vendors, setVendors] = useState([]);
+  const [daysList, setDaysList] = useState([]);
+  const [day, setDay] = useState(null);
+  const [withdrawals, setWithdrawals] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [tick, setTick] = useState(0);
+
+  // Force un nouveau rendu toutes les minutes pour détecter le changement de jour à 00h
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  const today = todayISO();
+
+  // Restaure la session si l'utilisateur est déjà connecté (rechargement de page)
+  useEffect(() => {
+    (async () => {
+      const exists = await store.hasAnyAccount();
+      setHasAccount(exists);
+      const session = await store.getSession();
+      if (session) {
+        const profile = await store.getMyProfile();
+        if (profile) {
+          let vendor = null;
+          if (profile.role === "vendor") {
+            const allVendors = await store.getVendors();
+            vendor = allVendors.find((v) => v.id === profile.vendorId) || null;
+          }
+          setCurrentUser(profile);
+          setCurrentVendor(vendor);
+          setTab(profile.role === "vendor" ? "retour" : "dashboard");
+        }
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  // Charge les données une fois connecté
+  useEffect(() => {
+    if (!currentUser) return;
+    (async () => {
+      const [p, v, dl, d, w, n] = await Promise.all([
+        store.getProducts(),
+        store.getVendors(),
+        store.getDaysList(),
+        store.getDay(today),
+        store.getWithdrawals(),
+        store.getNotifications(),
+      ]);
+      setProducts(p);
+      setVendors(v);
+      setDaysList(dl);
+      setDay(d);
+      setWithdrawals(w);
+      setNotifications(n);
+    })();
+  }, [currentUser]);
+
+  // Passage à un nouveau jour (minuit) : la distribution du jour repart à zéro,
+  // tout l'historique précédent reste intact dans la base de données.
+  useEffect(() => {
+    if (day && day.date !== today) {
+      (async () => {
+        const d = await store.getDay(today);
+        setDay(d);
+      })();
+    }
+  }, [today, day]);
+
+  const reloadProducts = useCallback(async () => { setProducts(await store.getProducts()); }, []);
+  const reloadVendors = useCallback(async () => { setVendors(await store.getVendors()); }, []);
+
+  // Ces fonctions gardent la même signature que dans la version précédente
+  // (on passe le tableau "complet" attendu) mais traduisent le changement en
+  // vraies écritures Supabase (ajout / suppression / mise à jour ciblée).
+  const persistProducts = async (next) => {
+    const prevById = Object.fromEntries(products.map((p) => [p.id, p]));
+    for (const p of next) {
+      if (!prevById[p.id]) await store.addProduct({ nom: p.nom, prix: p.prix, stock: p.stock });
+      else if (prevById[p.id].stock !== p.stock) await store.updateProductStock(p.id, p.stock);
+    }
+    for (const p of products) {
+      if (!next.find((x) => x.id === p.id)) await store.deleteProduct(p.id);
+    }
+    setProducts(await store.getProducts());
+  };
+
+  const persistDay = async (next) => {
+    setDay(next);
+    await store.setDay(next);
+  };
+
+  const persistWithdrawals = async (next) => {
+    const prevById = Object.fromEntries(withdrawals.map((w) => [w.id, w]));
+    for (const w of next) {
+      if (!prevById[w.id]) {
+        await store.createWithdrawal({
+          vendorId: w.vendorId, vendorNom: w.vendorNom, montant: w.montant,
+          methode: w.methode, numeroMobile: w.numeroMobile, date: w.date,
+        });
+      } else if (prevById[w.id].statut !== w.statut) {
+        await store.updateWithdrawalStatus(w.id, w.statut);
+      }
+    }
+    setWithdrawals(await store.getWithdrawals());
+  };
+
+  const persistNotifications = async (next) => {
+    const prevById = Object.fromEntries(notifications.map((n) => [n.id, n]));
+    for (const n of next) {
+      if (!prevById[n.id]) await store.createNotification({ vendorId: n.vendorId, message: n.message });
+      else if (!prevById[n.id].read && n.read) await store.markNotificationRead(n.id);
+    }
+    setNotifications(await store.getNotifications());
+  };
+
+  const ensureTodayInList = useCallback(async (currentList) => {
+    if (!currentList.includes(today)) {
+      const next = [today, ...currentList];
+      setDaysList(next);
+      return next;
+    }
+    return currentList;
+  }, [today]);
+
+  const handleSetupCreated = async () => {
+    setHasAccount(true);
+    const profile = await store.getMyProfile();
+    if (profile) {
+      setCurrentUser(profile);
+      setCurrentVendor(null);
+      setTab("dashboard");
+    }
+  };
+
+  const handleLoggedIn = async (profile) => {
+    let vendor = null;
+    if (profile.role === "vendor") {
+      const allVendors = await store.getVendors();
+      vendor = allVendors.find((v) => v.id === profile.vendorId) || null;
+    }
+    setCurrentUser(profile);
+    setCurrentVendor(vendor);
+    setTab(profile.role === "vendor" ? "retour" : "dashboard");
+  };
+
+  const handleLogout = async () => {
+    await store.signOut();
+    setCurrentUser(null);
+    setCurrentVendor(null);
+  };
+
+  if (loading || hasAccount === null) {
+    return (
+      <div style={{ padding: 60, textAlign: "center", color: "#5B6472", fontFamily: "Calibri, sans-serif" }}>
+        Chargement des données du magasin…
+      </div>
+    );
+  }
+
+  if (!hasAccount) {
+    return <SetupScreen onCreated={handleSetupCreated} />;
+  }
+
+  if (!currentUser || day === null) {
+    if (!currentUser) return <LoginScreen onLoggedIn={handleLoggedIn} />;
+    return (
+      <div style={{ padding: 60, textAlign: "center", color: "#5B6472", fontFamily: "Calibri, sans-serif" }}>
+        Chargement des données du magasin…
+      </div>
+    );
+  }
+
+  const isAdmin = currentUser.role === "admin";
+  const isManager = currentUser.role === "manager";
+  const canManage = isAdmin || isManager; // accès Tableau de bord / Finances / Stock / Personnel
+  const nav = isAdmin ? NAV_ADMIN : isManager ? NAV_MANAGER : NAV_VENDOR;
+  const roleLabel = isAdmin ? "admin" : isManager ? "gestionnaire" : "vendeur";
+  const activeVendor = currentUser.role === "vendor" ? currentVendor : null;
+
+  return (
+    <div style={{ display: "flex", minHeight: 640, fontFamily: "Calibri, Arial, sans-serif", background: "#F7F8FA", borderRadius: 16, overflow: "hidden", border: "1px solid #E7E9EE" }}>
+      {/* Barre latérale */}
+      <div style={{ width: 220, background: "#152039", color: "#fff", padding: "22px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 8px 4px 8px" }}>
+          <Logo size={32} />
+          <div style={{ fontFamily: "Cambria, Georgia, serif", fontWeight: 700, fontSize: 14, lineHeight: 1.15 }}>
+            Z2T<br /><span style={{ fontSize: 10, fontWeight: 500, color: "#9AA6C2" }}>Marketing Manager</span>
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: "#8B95AC", padding: "0 8px 16px 8px" }}>
+          {currentUser.username} · {roleLabel}
+        </div>
+
+        {nav.map((n) => {
+          const Icon = n.icon;
+          const active = tab === n.id;
+          return (
+            <button
+              key={n.id}
+              onClick={() => setTab(n.id)}
+              style={{
+                display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left",
+                padding: "10px 12px", marginBottom: 3, borderRadius: 8, border: "none", cursor: "pointer",
+                background: active ? "rgba(217,164,65,0.16)" : "transparent", color: active ? "#D9A441" : "#C7CCDA",
+                fontSize: 13.5, fontWeight: active ? 700 : 500,
+              }}
+            >
+              <Icon size={16} />
+              {n.label}
+            </button>
+          );
+        })}
+
+        <button
+          onClick={handleLogout}
+          style={{
+            display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left",
+            padding: "10px 12px", marginTop: "auto", borderRadius: 8, border: "none", cursor: "pointer",
+            background: "transparent", color: "#E28A80", fontSize: 13.5, fontWeight: 600,
+          }}
+        >
+          <LogOut size={16} />
+          Déconnexion
+        </button>
+        <div style={{ padding: "10px 8px 0 8px", fontSize: 11, color: "#6B7690" }}>Données partagées entre tous les postes</div>
+      </div>
+
+      {/* Contenu principal */}
+      <div style={{ flex: 1, padding: "26px 30px", overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 22 }}>
+          <h1 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", fontSize: 24, color: "#1B2A4A" }}>
+            {nav.find((n) => n.id === tab)?.label}
+          </h1>
+          <div style={{ fontSize: 13, color: "#8A93A3", textTransform: "capitalize" }}>{formatDateFR(today)}</div>
+        </div>
+
+        {tab === "dashboard" && canManage && (
+          <Dashboard products={products} vendors={vendors} day={day} daysList={daysList} today={today} />
+        )}
+        {tab === "dashboard" && !canManage && (
+          <VendorDashboard vendor={activeVendor} daysList={daysList} today={today} day={day} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} />
+        )}
+        {tab === "produits" && isAdmin && <Produits products={products} setProducts={persistProducts} />}
+        {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} />}
+        {tab === "vendeurs" && canManage && (
+          <Vendeurs vendors={vendors} reloadVendors={reloadVendors} isAdmin={isAdmin} />
+        )}
+        {tab === "distribution" && isAdmin && (
+          <Distribution products={products} setProducts={persistProducts} vendors={vendors} day={day} setDay={persistDay} ensureTodayInList={ensureTodayInList} daysList={daysList} />
+        )}
+        {tab === "retour" && (
+          <RetourDuSoir
+            isAdmin={isAdmin}
+            vendors={vendors}
+            products={products}
+            setProducts={persistProducts}
+            day={day}
+            setDay={persistDay}
+            activeVendor={activeVendor}
+          />
+        )}
+        {tab === "caisse" && canManage && (
+          <Caisse vendors={vendors} day={day} setDay={persistDay} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} daysList={daysList} today={today} />
+        )}
+        {tab === "historique" && isAdmin && <Historique daysList={daysList} today={today} />}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tableau de bord
+// ---------------------------------------------------------------------------
+
+function Dashboard({ products, vendors, day, daysList, today }) {
+  const [period, setPeriod] = useState("month"); // "day" | "week" | "month"
+  const [history, setHistory] = useState({ day: null, week: null, month: null });
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [expensesToday, setExpensesToday] = useState(0);
+
+  const totalVendu = day.lines.reduce((s, l) => s + (l.quantiteVendue || 0), 0);
+  const totalAttendu = day.lines.reduce((s, l) => s + (l.montantAttendu || 0), 0);
+
+  // Totaux espèces / mobile du jour (issus des versements par vendeur)
+  let totalEspeces = 0;
+  let totalMobile = 0;
+  vendors.forEach((v) => {
+    const summary = computeVersementSummary(day, v.id);
+    totalMobile += summary.totalMobile;
+    if (summary.finalise) totalEspeces += summary.montantVerseEspeces;
+  });
+  const totalDepenses = (day.expenses || []).reduce((s, e) => s + (Number(e.montant) || 0), 0);
+  const totalEncaisse = totalEspeces + totalMobile;
+  const ecart = totalEncaisse - totalDepenses - totalAttendu;
+  const balanced = Math.abs(ecart) < 1;
+
+  const lowStock = products.filter((p) => Number(p.stock) <= 5);
+  const stockValue = products.reduce((s, p) => s + Number(p.stock || 0) * Number(p.prix || 0), 0);
+
+  useEffect(() => {
+    (async () => {
+      const dayPrev = getPreviousDayRange(today);
+      const weekPrev = getPreviousWeekRange(today);
+      const monthPrev = getPreviousMonthRange(today);
+      const ranges = [dayPrev, weekPrev, monthPrev];
+      const relevantDates = daysList.filter((date) => ranges.some((r) => inRange(date, r)));
+      const loaded = await store.getDaysInRange(relevantDates);
+      setHistory({
+        day: aggregateRange(loaded, dayPrev),
+        week: aggregateRange(loaded, weekPrev),
+        month: aggregateRange(loaded, monthPrev),
+      });
+      setLoadingHistory(false);
+    })();
+  }, [daysList, today]);
+
+  const periodLabels = { day: "Hier", week: "Semaine dernière", month: "Mois dernier" };
+  const current = history[period];
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 22 }}>
+        <StatCard label="ARTICLES VENDUS AUJOURD'HUI" value={totalVendu} sub={`${day.lines.length} distribution(s) en cours`} />
+        <StatCard label="MONTANT ATTENDU" value={fmtMoney(totalAttendu)} />
+        <StatCard label="TOTAL ESPÈCES ENCAISSÉ" value={fmtMoney(totalEspeces)} />
+        <StatCard label="TOTAL PAIEMENT MOBILE" value={fmtMoney(totalMobile)} />
+        <StatCard
+          label="ÉCART GLOBAL (après dépenses)"
+          value={fmtMoney(ecart)}
+          accent={balanced ? "#3F8361" : "#C1554A"}
+          sub={balanced ? "Caisse équilibrée" : ecart > 0 ? "Excédent" : "Manquant"}
+        />
+        <StatCard label="VENDEURS DANS L'ÉQUIPE" value={vendors.length} />
+      </div>
+
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+        <div style={{ flex: "2 1 380px" }}>
+          <Card title="Ventes du jour par vendeur">
+            {vendors.length === 0 ? (
+              <EmptyState text="Ajoute des vendeurs pour voir apparaître les ventes ici." />
+            ) : (
+              <VendorBars vendors={vendors} day={day} />
+            )}
+          </Card>
+
+          <Card
+            title="Performances passées"
+            right={
+              <div style={{ display: "flex", gap: 6 }}>
+                {["day", "week", "month"].map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setPeriod(p)}
+                    style={{
+                      padding: "5px 11px", borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                      border: period === p ? "1px solid #1B2A4A" : "1px solid #E7E9EE",
+                      background: period === p ? "#1B2A4A" : "#fff", color: period === p ? "#fff" : "#5B6472",
+                    }}
+                  >
+                    {periodLabels[p]}
+                  </button>
+                ))}
+              </div>
+            }
+          >
+            {loadingHistory ? (
+              <EmptyState text="Chargement de l'historique…" />
+            ) : (
+              <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+                <div style={{ flex: "1 1 220px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                    <Trophy size={16} color="#D9A441" />
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#1B2A4A" }}>Meilleur vendeur — {periodLabels[period]}</span>
+                  </div>
+                  {current?.bestVendor ? (
+                    <div>
+                      <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 20, fontWeight: 700, color: "#1B2A4A" }}>
+                        {current.bestVendor.nom}
+                      </div>
+                      <div style={{ fontSize: 13, color: "#8A93A3" }}>{fmtMoney(current.bestVendor.total)} de ventes</div>
+                    </div>
+                  ) : (
+                    <EmptyState text="Aucune donnée pour cette période." />
+                  )}
+                </div>
+
+                <div style={{ flex: "2 1 300px" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#1B2A4A", marginBottom: 10 }}>
+                    Top produits — {periodLabels[period]}
+                  </div>
+                  {current?.topProducts?.length ? (
+                    <div style={{ height: 140 }}>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={current.topProducts} layout="vertical" margin={{ left: 10, right: 20 }}>
+                          <XAxis type="number" hide />
+                          <YAxis type="category" dataKey="nom" width={110} tick={{ fontSize: 12, fill: "#1B2A4A" }} />
+                          <Tooltip formatter={(v) => `${v} unités`} />
+                          <Bar dataKey="qty" fill="#D9A441" radius={[0, 6, 6, 0]} barSize={16} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  ) : (
+                    <EmptyState text="Aucune donnée pour cette période." />
+                  )}
+                </div>
+              </div>
+            )}
+          </Card>
+        </div>
+
+        <div style={{ flex: "1 1 260px" }}>
+          <Card title="Alertes stock">
+            {lowStock.length === 0 ? (
+              <EmptyState text="Aucun produit en stock faible." />
+            ) : (
+              lowStock.map((p) => (
+                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: "1px solid #F0F1F4", fontSize: 13.5 }}>
+                  <span style={{ color: "#1B2A4A", fontWeight: 600 }}>{p.nom}</span>
+                  <Badge ok={false} warnText={`${p.stock} restant(s)`} />
+                </div>
+              ))
+            )}
+          </Card>
+
+          <Card title="Valeur du stock">
+            <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 24, fontWeight: 700, color: "#1B2A4A" }}>{fmtMoney(stockValue)}</div>
+            <div style={{ fontSize: 12.5, color: "#8A93A3", marginTop: 4 }}>Sur la base du stock actuel et des prix unitaires</div>
+          </Card>
+
+          {totalDepenses > 0 && (
+            <Card title="Dépenses du jour">
+              <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 22, fontWeight: 700, color: "#C1554A" }}>{fmtMoney(totalDepenses)}</div>
+            </Card>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VendorBars({ vendors, day }) {
+  const data = vendors.map((v) => {
+    const lines = day.lines.filter((l) => l.vendorId === v.id);
+    const montant = lines.reduce((s, l) => s + (l.montantAttendu || 0), 0);
+    return { nom: v.nom, montant };
+  });
+  const max = Math.max(1, ...data.map((d) => d.montant));
+
+  return (
+    <div>
+      {data.map((d, i) => (
+        <div key={i} style={{ marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+            <span style={{ color: "#1B2A4A", fontWeight: 600 }}>{d.nom}</span>
+            <span style={{ color: "#5B6472" }}>{fmtMoney(d.montant)}</span>
+          </div>
+          <div style={{ height: 8, background: "#EEF0F4", borderRadius: 6, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${(d.montant / max) * 100}%`, background: "#D9A441", borderRadius: 6 }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tableau de bord du vendeur (lecture seule + demande de retrait d'excédent)
+// ---------------------------------------------------------------------------
+
+function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdrawals, notifications, setNotifications }) {
+  const [allDays, setAllDays] = useState(null);
+  const [withdrawAmount, setWithdrawAmount] = useState("");
+  const [withdrawMethod, setWithdrawMethod] = useState("especes"); // "especes" | "mobile"
+  const [withdrawNumero, setWithdrawNumero] = useState("");
+  const [requestError, setRequestError] = useState("");
+  const [requestOk, setRequestOk] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const loaded = await store.getDaysInRange(daysList);
+      setAllDays(loaded);
+    })();
+  }, [daysList]);
+
+  if (!vendor) return <EmptyState text="Compte non lié à un vendeur." />;
+
+  if (allDays === null) {
+    return <EmptyState text="Chargement de tes statistiques…" />;
+  }
+
+  // Inclut le jour courant (peut ne pas encore être dans daysList/allDays)
+  const daysWithToday = allDays.some((d) => d.date === today) ? allDays : [...allDays, day];
+
+  const caJour = sumVendorOverRange(daysWithToday, vendor.id, [today, today]);
+  const caSemaine = sumVendorOverRange(daysWithToday, vendor.id, getCurrentWeekRange(today));
+  const caMois = sumVendorOverRange(daysWithToday, vendor.id, getCurrentMonthRange(today));
+  const caTotal = daysWithToday.reduce((s, d) => {
+    const r = sumVendorOverRange([d], vendor.id, [d.date, d.date]);
+    return s + r.ca;
+  }, 0);
+
+  const serie15j = buildVendorDailySeries(daysWithToday, vendor.id, today, 15);
+
+  const bonusTotal = computeVendorBonusTotal(daysWithToday, vendor.id);
+  const dejaDemande = (withdrawals || [])
+    .filter((w) => w.vendorId === vendor.id && (w.statut === "en_attente" || w.statut === "approuve"))
+    .reduce((s, w) => s + w.montant, 0);
+  const soldeDisponible = Math.max(0, bonusTotal - dejaDemande);
+
+  const mesRetraits = (withdrawals || []).filter((w) => w.vendorId === vendor.id).slice().reverse();
+  const mesNotifications = (notifications || []).filter((n) => n.vendorId === vendor.id).slice().reverse();
+  const nonLues = mesNotifications.filter((n) => !n.read);
+
+  const demanderRetrait = async () => {
+    const m = Number(withdrawAmount);
+    setRequestError(""); setRequestOk(false);
+    if (!m || m <= 0) { setRequestError("Indique un montant valide."); return; }
+    if (m > soldeDisponible) { setRequestError("Ce montant dépasse ton solde disponible."); return; }
+    if (withdrawMethod === "mobile" && !withdrawNumero.trim()) { setRequestError("Indique le numéro mobile qui recevra le paiement."); return; }
+    const next = [...(withdrawals || []), {
+      id: uid(), vendorId: vendor.id, vendorNom: vendor.nom, montant: m, date: today, statut: "en_attente",
+      methode: withdrawMethod, numeroMobile: withdrawMethod === "mobile" ? withdrawNumero.trim() : null,
+    }];
+    await setWithdrawals(next);
+    setWithdrawAmount(""); setWithdrawNumero("");
+    setRequestOk(true);
+  };
+
+  const marquerLue = async (id) => {
+    await setNotifications((notifications || []).map((n) => (n.id === id ? { ...n, read: true } : n)));
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, color: "#8A93A3", fontSize: 12.5 }}>
+        <Eye size={14} /> Espace de consultation — tes ventes sont saisies par l'administration.
+      </div>
+
+      {mesNotifications.length > 0 && (
+        <Card title={`Notifications${nonLues.length > 0 ? ` (${nonLues.length} nouvelle${nonLues.length > 1 ? "s" : ""})` : ""}`}>
+          {mesNotifications.slice(0, 8).map((n) => (
+            <div
+              key={n.id}
+              onClick={() => !n.read && marquerLue(n.id)}
+              style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+                padding: "10px 4px", borderBottom: "1px solid #F0F1F4", cursor: n.read ? "default" : "pointer",
+                background: n.read ? "transparent" : "#FBF6EA",
+              }}
+            >
+              <span style={{ fontSize: 13, color: "#1B2A4A", fontWeight: n.read ? 400 : 600 }}>{n.message}</span>
+              {!n.read && <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#D9A441", flexShrink: 0 }} />}
+            </div>
+          ))}
+        </Card>
+      )}
+
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+        <StatCard label="CHIFFRE D'AFFAIRES — AUJOURD'HUI" value={fmtMoney(caJour.ca)} sub={`${caJour.vendu} article(s) vendu(s)`} />
+        <StatCard label="CHIFFRE D'AFFAIRES — CETTE SEMAINE" value={fmtMoney(caSemaine.ca)} />
+        <StatCard label="CHIFFRE D'AFFAIRES — CE MOIS" value={fmtMoney(caMois.ca)} />
+        <StatCard label="CHIFFRE D'AFFAIRES TOTAL CUMULÉ" value={fmtMoney(caTotal)} accent="#D9A441" />
+      </div>
+
+      <Card title="Évolution sur les 15 derniers jours">
+        <div style={{ height: 220 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={serie15j} margin={{ left: 0, right: 10, top: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#EEF0F4" />
+              <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#8A93A3" }} />
+              <YAxis tick={{ fontSize: 11, fill: "#8A93A3" }} />
+              <Tooltip formatter={(v, n) => [n === "ca" ? fmtMoney(v) : v, n === "ca" ? "Chiffre d'affaires" : n === "vendu" ? "Vendu" : "Distribué"]} />
+              <Line type="monotone" dataKey="ca" stroke="#D9A441" strokeWidth={2} dot={false} name="ca" />
+              <Line type="monotone" dataKey="distribue" stroke="#1B2A4A" strokeWidth={1.5} dot={false} name="distribue" strokeDasharray="4 3" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 12, color: "#5B6472" }}>
+          <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#D9A441", borderRadius: 2, marginRight: 5 }} />Chiffre d'affaires</span>
+          <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#1B2A4A", borderRadius: 2, marginRight: 5 }} />Quantité distribuée</span>
+        </div>
+      </Card>
+
+      <Card title="Solde et retrait d'excédent">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <span style={{ fontSize: 13.5, color: "#5B6472" }}>Solde d'excédent disponible</span>
+          <span style={{ fontSize: 22, fontWeight: 700, fontFamily: "Cambria, Georgia, serif", color: "#3F8361" }}>{fmtMoney(soldeDisponible)}</span>
+        </div>
+        {soldeDisponible > 0 ? (
+          <div>
+            <div style={{ display: "flex", gap: 20, marginBottom: 12 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                <input type="radio" checked={withdrawMethod === "especes"} onChange={() => setWithdrawMethod("especes")} />
+                Recevoir en espèces
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                <input type="radio" checked={withdrawMethod === "mobile"} onChange={() => setWithdrawMethod("mobile")} />
+                Recevoir par paiement mobile
+              </label>
+            </div>
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+              <div style={{ flex: "1 1 140px" }}>
+                <Label>Montant à retirer</Label>
+                <TextInput type="number" value={withdrawAmount} onChange={(e) => setWithdrawAmount(e.target.value)} placeholder="0" />
+              </div>
+              {withdrawMethod === "mobile" && (
+                <div style={{ flex: "1 1 160px" }}>
+                  <Label>Numéro mobile de réception</Label>
+                  <TextInput value={withdrawNumero} onChange={(e) => setWithdrawNumero(e.target.value)} placeholder="Ex. 6XX XX XX XX" />
+                </div>
+              )}
+              <Button variant="gold" onClick={demanderRetrait}><ArrowDownToLine size={15} /> Demander un retrait</Button>
+            </div>
+          </div>
+        ) : (
+          <EmptyState text="Aucun excédent disponible pour le moment." />
+        )}
+        {requestError && <div style={{ color: "#C1554A", fontSize: 12.5, marginTop: 10 }}>{requestError}</div>}
+        {requestOk && <div style={{ color: "#3F8361", fontSize: 12.5, marginTop: 10 }}>Demande envoyée à l'administration. Tu recevras une notification une fois traitée.</div>}
+
+        {mesRetraits.length > 0 && (
+          <div style={{ marginTop: 18 }}>
+            <Table
+              headers={["Date", "Montant", "Mode de paiement", "Statut"]}
+              rows={mesRetraits.map((w) => [
+                formatDateFR(w.date), fmtMoney(w.montant),
+                w.methode === "mobile" ? `Mobile — ${w.numeroMobile}` : "Espèces",
+                w.statut === "en_attente" ? (
+                  <Badge key="b" ok={false} warnText="En attente" />
+                ) : (
+                  <Badge key="b" ok={w.statut === "approuve"} okText="Approuvé" warnText="Refusé" />
+                ),
+              ])}
+            />
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Produits
+// ---------------------------------------------------------------------------
+
+function Produits({ products, setProducts }) {
+  const [nom, setNom] = useState("");
+  const [prix, setPrix] = useState("");
+  const [stock, setStock] = useState("");
+
+  const add = async () => {
+    if (!nom.trim() || !prix) return;
+    const next = [...products, { id: uid(), nom: nom.trim(), prix: Number(prix), stock: Number(stock) || 0 }];
+    await setProducts(next);
+    setNom(""); setPrix(""); setStock("");
+  };
+
+  const remove = async (id) => { await setProducts(products.filter((p) => p.id !== id)); };
+
+  return (
+    <div>
+      <Card title="Ajouter un produit">
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div style={{ flex: "2 1 200px" }}>
+            <Label>Nom du produit</Label>
+            <TextInput value={nom} onChange={(e) => setNom(e.target.value)} placeholder="Ex. Savon parfumé" />
+          </div>
+          <div style={{ flex: "1 1 120px" }}>
+            <Label>Prix unitaire (F)</Label>
+            <TextInput type="number" value={prix} onChange={(e) => setPrix(e.target.value)} placeholder="500" />
+          </div>
+          <div style={{ flex: "1 1 120px" }}>
+            <Label>Stock initial</Label>
+            <TextInput type="number" value={stock} onChange={(e) => setStock(e.target.value)} placeholder="0" />
+          </div>
+          <Button variant="primary" onClick={add}><Plus size={15} /> Ajouter</Button>
+        </div>
+      </Card>
+
+      <Card title={`Catalogue (${products.length})`}>
+        {products.length === 0 ? (
+          <EmptyState text="Aucun produit pour le moment. Ajoute ton premier produit ci-dessus." />
+        ) : (
+          <Table
+            headers={["Produit", "Prix unitaire", "Stock actuel", ""]}
+            rows={products.map((p) => [
+              p.nom, fmtMoney(p.prix), p.stock,
+              <button key="del" onClick={() => remove(p.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
+            ])}
+          />
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Stock
+// ---------------------------------------------------------------------------
+
+function Stock({ products, setProducts }) {
+  const [adjust, setAdjust] = useState({});
+
+  const reappro = async (id) => {
+    const qty = Number(adjust[id]);
+    if (!qty) return;
+    const next = products.map((p) => (p.id === id ? { ...p, stock: Number(p.stock) + qty } : p));
+    await setProducts(next);
+    setAdjust((a) => ({ ...a, [id]: "" }));
+  };
+
+  return (
+    <Card title="Niveaux de stock">
+      {products.length === 0 ? (
+        <EmptyState text="Ajoute des produits dans l'onglet Produits pour gérer le stock." />
+      ) : (
+        <Table
+          headers={["Produit", "Stock actuel", "Statut", "Réapprovisionner"]}
+          rows={products.map((p) => [
+            p.nom, p.stock,
+            <Badge key="b" ok={Number(p.stock) > 5} okText="OK" warnText="Faible" />,
+            <div key="r" style={{ display: "flex", gap: 8 }}>
+              <TextInput type="number" placeholder="Qté" style={{ width: 80 }} value={adjust[p.id] || ""} onChange={(e) => setAdjust((a) => ({ ...a, [p.id]: e.target.value }))} />
+              <Button variant="gold" onClick={() => reappro(p.id)}>Ajouter</Button>
+            </div>,
+          ])}
+        />
+      )}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Vendeurs & comptes
+// ---------------------------------------------------------------------------
+
+function Vendeurs({ vendors, reloadVendors, isAdmin }) {
+  const [nom, setNom] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const [mgrUsername, setMgrUsername] = useState("");
+  const [mgrPassword, setMgrPassword] = useState("");
+  const [mgrError, setMgrError] = useState("");
+  const [mgrBusy, setMgrBusy] = useState(false);
+
+  const [vendorAccounts, setVendorAccounts] = useState([]);
+  const [managers, setManagers] = useState([]);
+
+  const reloadAccounts = async () => {
+    const [va, ma] = await Promise.all([store.getVendorAccounts(), store.getManagerAccounts()]);
+    setVendorAccounts(va);
+    setManagers(ma);
+  };
+
+  useEffect(() => { reloadAccounts(); }, [vendors]);
+
+  const add = async () => {
+    if (!nom.trim()) { setError("Indique un nom de vendeur."); return; }
+    if (username.trim() && !password) { setError("Indique un mot de passe pour ce compte."); return; }
+    if (password && password.length < 6) { setError("Le mot de passe doit contenir au moins 6 caractères."); return; }
+    setError("");
+    setBusy(true);
+    try {
+      const vendor = await store.addVendor(nom.trim());
+      if (username.trim()) {
+        await store.createAccount({ username: username.trim(), password, role: "vendor", vendorId: vendor.id });
+      }
+      await reloadVendors();
+      await reloadAccounts();
+      setNom(""); setUsername(""); setPassword("");
+    } catch (e) {
+      setError(e.message || "Erreur lors de la création.");
+    }
+    setBusy(false);
+  };
+
+  const remove = async (id) => {
+    const linkedAccount = vendorAccounts.find((u) => u.vendorId === id);
+    try {
+      if (linkedAccount) await store.deleteAccount(linkedAccount.id);
+      await store.deleteVendor(id);
+      await reloadVendors();
+      await reloadAccounts();
+    } catch (e) {
+      setError(e.message || "Erreur lors de la suppression.");
+    }
+  };
+
+  const addManager = async () => {
+    if (!mgrUsername.trim() || !mgrPassword) { setMgrError("Indique un nom d'utilisateur et un mot de passe."); return; }
+    if (mgrPassword.length < 6) { setMgrError("Le mot de passe doit contenir au moins 6 caractères."); return; }
+    setMgrError("");
+    setMgrBusy(true);
+    try {
+      await store.createAccount({ username: mgrUsername.trim(), password: mgrPassword, role: "manager" });
+      await reloadAccounts();
+      setMgrUsername(""); setMgrPassword("");
+    } catch (e) {
+      setMgrError(e.message || "Erreur lors de la création.");
+    }
+    setMgrBusy(false);
+  };
+
+  const removeManager = async (id) => {
+    try {
+      await store.deleteAccount(id);
+      await reloadAccounts();
+    } catch (e) {
+      setMgrError(e.message || "Erreur lors de la suppression.");
+    }
+  };
+
+  return (
+    <div>
+      <Card title="Ajouter un vendeur">
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div style={{ flex: "1 1 180px" }}>
+            <Label>Nom du vendeur</Label>
+            <TextInput value={nom} onChange={(e) => setNom(e.target.value)} placeholder="Ex. Awa" />
+          </div>
+          <Button onClick={add} disabled={busy}><Plus size={15} /> {busy ? "Ajout…" : "Ajouter"}</Button>
+        </div>
+
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #F0F1F4" }}>
+          <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
+            Accès de connexion (facultatif) — laisse vide si ce vendeur n'a pas besoin de se connecter
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Nom d'utilisateur</Label>
+              <TextInput value={username} onChange={(e) => setUsername(e.target.value)} />
+            </div>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Mot de passe</Label>
+              <TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            </div>
+          </div>
+        </div>
+        {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginTop: 10 }}>{error}</div>}
+      </Card>
+
+      <Card title={`Équipe (${vendors.length})`}>
+        {vendors.length === 0 ? (
+          <EmptyState text="Aucun vendeur enregistré." />
+        ) : (
+          <Table
+            headers={["Nom", "Compte de connexion", ""]}
+            rows={vendors.map((v) => {
+              const u = vendorAccounts.find((u) => u.vendorId === v.id);
+              return [
+                v.nom, u ? u.username : "— aucun —",
+                <button key="del" onClick={() => remove(v.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
+              ];
+            })}
+          />
+        )}
+      </Card>
+
+      {isAdmin && (
+        <Card title="Comptes gestionnaires (Finances / Manager)">
+          <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
+            Un gestionnaire a accès au Tableau de bord, aux Finances (Caisse), au Stock et au Personnel — rien d'autre.
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Nom d'utilisateur</Label>
+              <TextInput value={mgrUsername} onChange={(e) => setMgrUsername(e.target.value)} />
+            </div>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Mot de passe</Label>
+              <TextInput type="password" value={mgrPassword} onChange={(e) => setMgrPassword(e.target.value)} />
+            </div>
+            <Button onClick={addManager} disabled={mgrBusy}><Plus size={15} /> {mgrBusy ? "Création…" : "Créer le compte"}</Button>
+          </div>
+          {mgrError && <div style={{ color: "#C1554A", fontSize: 12.5, marginTop: 10 }}>{mgrError}</div>}
+
+          {managers.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <Table
+                headers={["Nom d'utilisateur", ""]}
+                rows={managers.map((m) => [
+                  m.username,
+                  <button key="del" onClick={() => removeManager(m.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
+                ])}
+              />
+            </div>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Distribution (matin)
+// ---------------------------------------------------------------------------
+
+function Distribution({ products, setProducts, vendors, day, setDay, ensureTodayInList, daysList }) {
+  const [vendorId, setVendorId] = useState("");
+  const [productId, setProductId] = useState("");
+  const [qty, setQty] = useState("");
+
+  const distribute = async () => {
+    const q = Number(qty);
+    if (!vendorId || !productId || !q) return;
+    const product = products.find((p) => p.id === productId);
+    if (!product || product.stock < q) return;
+    const vendor = vendors.find((v) => v.id === vendorId);
+
+    const line = {
+      id: uid(), vendorId, vendorNom: vendor.nom, productId, productNom: product.nom, prix: product.prix,
+      quantiteRemise: q, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
+    };
+    await setDay({ ...day, lines: [...day.lines, line] });
+    await setProducts(products.map((p) => (p.id === productId ? { ...p, stock: p.stock - q } : p)));
+    await ensureTodayInList(daysList);
+    setQty("");
+  };
+
+  return (
+    <div>
+      <Card title="Remettre des produits à un vendeur">
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div style={{ flex: "1 1 180px" }}>
+            <Label>Vendeur</Label>
+            <Select value={vendorId} onChange={(e) => setVendorId(e.target.value)}>
+              <option value="">Choisir…</option>
+              {vendors.map((v) => <option key={v.id} value={v.id}>{v.nom}</option>)}
+            </Select>
+          </div>
+          <div style={{ flex: "1 1 180px" }}>
+            <Label>Produit</Label>
+            <Select value={productId} onChange={(e) => setProductId(e.target.value)}>
+              <option value="">Choisir…</option>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.nom} — {p.stock} en stock</option>)}
+            </Select>
+          </div>
+          <div style={{ flex: "1 1 100px" }}>
+            <Label>Quantité remise</Label>
+            <TextInput type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="20" />
+          </div>
+          <Button onClick={distribute}><Truck size={15} /> Remettre</Button>
+        </div>
+        {vendors.length === 0 && <div style={{ marginTop: 10, fontSize: 12.5, color: "#C1554A" }}>Ajoute d'abord un vendeur dans l'onglet Vendeurs & comptes.</div>}
+      </Card>
+
+      <Card title="Distributions du jour">
+        {day.lines.length === 0 ? (
+          <EmptyState text="Aucune distribution enregistrée aujourd'hui." />
+        ) : (
+          <Table
+            headers={["Vendeur", "Produit", "Qté remise", "Statut"]}
+            rows={day.lines.map((l) => [
+              l.vendorNom, l.productNom, l.quantiteRemise,
+              <Badge key="b" ok={l.quantiteRestante !== null} okText="Retour fait" warnText="En cours" />,
+            ])}
+          />
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Retour du soir — tous les produits d'un vendeur d'un coup, + versement
+// ---------------------------------------------------------------------------
+
+function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, activeVendor }) {
+  const [selectedVendorId, setSelectedVendorId] = useState(isAdmin ? (vendors[0]?.id || "") : (activeVendor?.id || ""));
+  const [pendingInputs, setPendingInputs] = useState({});
+  const [mobileOn, setMobileOn] = useState(false);
+  const [mobileNumero, setMobileNumero] = useState("");
+  const [mobileMontant, setMobileMontant] = useState("");
+  const [montantVerseInput, setMontantVerseInput] = useState("");
+
+  const vendor = isAdmin ? vendors.find((v) => v.id === selectedVendorId) : activeVendor;
+
+  useEffect(() => {
+    setPendingInputs({});
+    setMobileNumero("");
+    setMobileMontant("");
+    if (vendor) {
+      const summary = computeVersementSummary(day, vendor.id);
+      setMobileOn(summary.mobilePayments.length > 0);
+      setMontantVerseInput(summary.montantVerseEspeces !== null ? String(summary.montantVerseEspeces) : "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vendor?.id]);
+
+  if (isAdmin && vendors.length === 0) {
+    return <Card title="Retour du soir"><EmptyState text="Ajoute d'abord un vendeur dans l'onglet Vendeurs & comptes." /></Card>;
+  }
+  if (!vendor) {
+    return <Card title="Retour du soir"><EmptyState text="Aucun vendeur sélectionné." /></Card>;
+  }
+
+  const lines = day.lines.filter((l) => l.vendorId === vendor.id);
+  const pending = lines.filter((l) => l.quantiteRestante === null);
+  const done = lines.filter((l) => l.quantiteRestante !== null);
+  const summary = computeVersementSummary(day, vendor.id);
+
+  const validerTout = async () => {
+    if (!isAdmin) return;
+    let changed = false;
+    const stockIncrements = {};
+    const nextLines = day.lines.map((l) => {
+      if (l.vendorId !== vendor.id || l.quantiteRestante !== null) return l;
+      const val = pendingInputs[l.id];
+      if (val === undefined || val === "") return l;
+      const restante = Number(val);
+      if (Number.isNaN(restante)) return l;
+      changed = true;
+      const vendue = Math.max(0, l.quantiteRemise - restante);
+      if (restante > 0) stockIncrements[l.productId] = (stockIncrements[l.productId] || 0) + restante;
+      return { ...l, quantiteRestante: restante, quantiteVendue: vendue, montantAttendu: vendue * l.prix };
+    });
+    if (!changed) return;
+    await setDay({ ...day, lines: nextLines });
+    if (Object.keys(stockIncrements).length > 0) {
+      const nextProducts = products.map((p) => (stockIncrements[p.id] ? { ...p, stock: p.stock + stockIncrements[p.id] } : p));
+      await setProducts(nextProducts);
+    }
+    setPendingInputs({});
+  };
+
+  const addMobilePayment = async () => {
+    if (!isAdmin) return;
+    const montant = Number(mobileMontant);
+    if (!mobileNumero.trim() || !montant) return;
+    const versements = { ...(day.versements || {}) };
+    const current = versements[vendor.id] || { mobilePayments: [], montantVerseEspeces: null };
+    versements[vendor.id] = { ...current, mobilePayments: [...(current.mobilePayments || []), { id: uid(), numero: mobileNumero.trim(), montant }] };
+    await setDay({ ...day, versements });
+    setMobileNumero(""); setMobileMontant("");
+  };
+
+  const removeMobilePayment = async (id) => {
+    if (!isAdmin) return;
+    const versements = { ...(day.versements || {}) };
+    const current = versements[vendor.id] || { mobilePayments: [], montantVerseEspeces: null };
+    versements[vendor.id] = { ...current, mobilePayments: (current.mobilePayments || []).filter((m) => m.id !== id) };
+    await setDay({ ...day, versements });
+  };
+
+  const enregistrerVersement = async () => {
+    if (!isAdmin) return;
+    const montant = Number(montantVerseInput);
+    if (Number.isNaN(montant) || montantVerseInput === "") return;
+    const versements = { ...(day.versements || {}) };
+    const current = versements[vendor.id] || { mobilePayments: [], montantVerseEspeces: null };
+    versements[vendor.id] = { ...current, montantVerseEspeces: montant };
+    await setDay({ ...day, versements });
+  };
+
+  return (
+    <div>
+      {!isAdmin && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, color: "#8A93A3", fontSize: 12.5 }}>
+          <Eye size={14} /> Espace de consultation — seul l'administrateur peut saisir ou modifier ces informations.
+        </div>
+      )}
+
+      <Card title="Retour du soir">
+        {isAdmin ? (
+          <div style={{ maxWidth: 280 }}>
+            <Label>Choisir un vendeur</Label>
+            <Select value={selectedVendorId} onChange={(e) => setSelectedVendorId(e.target.value)}>
+              {vendors.map((v) => <option key={v.id} value={v.id}>{v.nom}</option>)}
+            </Select>
+          </div>
+        ) : (
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#1B2A4A" }}>Vendeur : {vendor.nom}</div>
+        )}
+      </Card>
+
+      <Card title={`Produits distribués à ${vendor.nom} aujourd'hui`}>
+        {pending.length === 0 ? (
+          <EmptyState text="Aucun retour en attente pour ce vendeur." />
+        ) : isAdmin ? (
+          <>
+            <Table
+              headers={["Produit", "Remis le matin", "Restant ce soir"]}
+              rows={pending.map((l) => [
+                l.productNom, l.quantiteRemise,
+                <TextInput key="i" type="number" style={{ width: 100 }} placeholder="Qté" value={pendingInputs[l.id] || ""} onChange={(e) => setPendingInputs((s) => ({ ...s, [l.id]: e.target.value }))} />,
+              ])}
+            />
+            <Button variant="gold" onClick={validerTout} style={{ marginTop: 14 }}>Valider tous les retours saisis</Button>
+          </>
+        ) : (
+          <>
+            <Table headers={["Produit", "Remis le matin"]} rows={pending.map((l) => [l.productNom, l.quantiteRemise])} />
+            <div style={{ marginTop: 12, fontSize: 12.5, color: "#8A93A3", fontStyle: "italic" }}>En attente de traitement par l'administration.</div>
+          </>
+        )}
+      </Card>
+
+      {done.length > 0 && (
+        <Card title={`Retours déjà enregistrés pour ${vendor.nom}`}>
+          <Table
+            headers={["Produit", "Remis", "Restant", "Vendu", "Montant attendu", "Stock"]}
+            rows={done.map((l) => [
+              l.productNom, l.quantiteRemise, l.quantiteRestante, l.quantiteVendue, fmtMoney(l.montantAttendu),
+              l.quantiteRestante > 0 ? (
+                <span key="s" style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "#3F8361" }}>
+                  <RotateCcw size={12} /> {l.quantiteRestante} retour au stock
+                </span>
+              ) : "—",
+            ])}
+          />
+        </Card>
+      )}
+
+      {done.length > 0 && (
+        <Card title="Versement">
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14 }}>
+            <span style={{ fontSize: 13.5, color: "#5B6472" }}>Total attendu (ventes du jour)</span>
+            <span style={{ fontSize: 15, fontWeight: 700, color: "#1B2A4A" }}>{fmtMoney(summary.montantAttendu)}</span>
+          </div>
+
+          {isAdmin ? (
+            <Toggle on={mobileOn} onChange={setMobileOn} label="Paiement mobile reçu sur le terrain ?" />
+          ) : (
+            <div style={{ fontSize: 13.5, color: "#5B6472" }}>
+              Paiement mobile reçu : <strong style={{ color: "#1B2A4A" }}>{summary.mobilePayments.length > 0 ? "Oui" : "Non"}</strong>
+            </div>
+          )}
+
+          {(isAdmin ? mobileOn : summary.mobilePayments.length > 0) && (
+            <div style={{ marginTop: 14 }}>
+              {summary.mobilePayments.length > 0 && (
+                <Table
+                  headers={isAdmin ? ["Numéro mobile", "Montant", ""] : ["Numéro mobile", "Montant"]}
+                  rows={summary.mobilePayments.map((m) => (
+                    isAdmin
+                      ? [m.numero, fmtMoney(m.montant), <button key="del" onClick={() => removeMobilePayment(m.id)} style={iconBtnStyle}><Trash2 size={14} /></button>]
+                      : [m.numero, fmtMoney(m.montant)]
+                  ))}
+                />
+              )}
+              {isAdmin && (
+                <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "flex-end" }}>
+                  <div style={{ flex: "1 1 160px" }}>
+                    <Label>Numéro mobile</Label>
+                    <TextInput value={mobileNumero} onChange={(e) => setMobileNumero(e.target.value)} placeholder="Ex. 6XX XX XX XX" />
+                  </div>
+                  <div style={{ flex: "1 1 120px" }}>
+                    <Label>Montant reçu</Label>
+                    <TextInput type="number" value={mobileMontant} onChange={(e) => setMobileMontant(e.target.value)} placeholder="0" />
+                  </div>
+                  <Button variant="ghost" onClick={addMobilePayment} style={{ borderColor: "#D9A441", color: "#1B2A4A" }}><Smartphone size={14} /> Ajouter</Button>
+                </div>
+              )}
+              <div style={{ marginTop: 12, fontSize: 13, color: "#5B6472" }}>
+                Total paiement mobile : <strong style={{ color: "#1B2A4A" }}>{fmtMoney(summary.totalMobile)}</strong>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "space-between", margin: "16px 0", paddingTop: 14, borderTop: "1px solid #F0F1F4" }}>
+            <span style={{ fontSize: 13.5, color: "#5B6472" }}>Montant à verser en espèces</span>
+            <span style={{ fontSize: 18, fontWeight: 700, color: "#1B2A4A", fontFamily: "Cambria, Georgia, serif" }}>{fmtMoney(summary.montantAVerserEspeces)}</span>
+          </div>
+
+          {isAdmin ? (
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
+              <div style={{ flex: "1 1 160px" }}>
+                <Label>Montant réellement remis en espèces</Label>
+                <TextInput type="number" value={montantVerseInput} onChange={(e) => setMontantVerseInput(e.target.value)} placeholder="0" />
+              </div>
+              <Button onClick={enregistrerVersement}>Enregistrer le versement</Button>
+            </div>
+          ) : (
+            !summary.finalise && <div style={{ fontSize: 12.5, color: "#8A93A3", fontStyle: "italic" }}>En attente de saisie du versement par l'administration.</div>
+          )}
+
+          {summary.finalise && (
+            <div
+              style={{
+                marginTop: 18, padding: "14px 16px", borderRadius: 10,
+                background: summary.statut === "manque" ? "#FBECEA" : "#EAF4EE",
+                border: `1px solid ${summary.statut === "manque" ? "#F0CFC9" : "#CDE7D6"}`,
+              }}
+            >
+              <div style={{ fontSize: 12.5, color: "#5B6472", fontWeight: 600, marginBottom: 4 }}>ÉCART DE VERSEMENT</div>
+              <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "Cambria, Georgia, serif", color: summary.statut === "manque" ? "#C1554A" : "#3F8361" }}>
+                {summary.ecart > 0 ? "+" : ""}{fmtMoney(summary.ecart)}
+              </div>
+              <div style={{ fontSize: 12.5, color: "#5B6472", marginTop: 4 }}>
+                {summary.statut === "manque" && "Manquant — ce montant sera déduit du salaire du vendeur."}
+                {summary.statut === "exces" && "Excédent — ce montant sera enregistré comme bonus à verser au vendeur."}
+                {summary.statut === "equilibre" && "Versement équilibré, aucun écart."}
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Caisse — total espèces / mobile par vendeur, dépenses, totaux du jour
+// ---------------------------------------------------------------------------
+
+function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notifications, setNotifications, daysList, today }) {
+  const [label, setLabel] = useState("");
+  const [montant, setMontant] = useState("");
+  const [allDays, setAllDays] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      const loaded = await store.getDaysInRange(daysList || []);
+      setAllDays(loaded);
+    })();
+  }, [daysList]);
+
+  const summaries = vendors.map((v) => ({ vendor: v, summary: computeVersementSummary(day, v.id) })).filter((s) => s.summary.lines.length > 0);
+
+  const totalEspeces = summaries.reduce((s, x) => s + (x.summary.finalise ? x.summary.montantVerseEspeces : 0), 0);
+  const totalMobile = summaries.reduce((s, x) => s + x.summary.totalMobile, 0);
+  const totalDepenses = (day.expenses || []).reduce((s, e) => s + (Number(e.montant) || 0), 0);
+  const especesNettes = totalEspeces - totalDepenses;
+
+  const daysWithToday = allDays ? (allDays.some((d) => d.date === today) ? allDays : [...allDays, day]) : [day];
+  const depensesSemaine = sumExpensesOverRange(daysWithToday, getCurrentWeekRange(today));
+  const depensesMois = sumExpensesOverRange(daysWithToday, getCurrentMonthRange(today));
+
+  const addExpense = async () => {
+    const m = Number(montant);
+    if (!label.trim() || !m) return;
+    const next = { ...day, expenses: [...(day.expenses || []), { id: uid(), label: label.trim(), montant: m }] };
+    await setDay(next);
+    setLabel(""); setMontant("");
+  };
+
+  const removeExpense = async (id) => {
+    await setDay({ ...day, expenses: (day.expenses || []).filter((e) => e.id !== id) });
+  };
+
+  const pendingWithdrawals = (withdrawals || []).filter((w) => w.statut === "en_attente");
+  const historyWithdrawals = (withdrawals || []).filter((w) => w.statut !== "en_attente");
+
+  const resolveWithdrawal = async (id, statut) => {
+    const w = (withdrawals || []).find((x) => x.id === id);
+    await setWithdrawals((withdrawals || []).map((x) => (x.id === id ? { ...x, statut } : x)));
+    if (w) {
+      const modePaiement = w.methode === "mobile" ? `par paiement mobile au ${w.numeroMobile}` : "en espèces";
+      const message = statut === "approuve"
+        ? `Ta demande de retrait de ${fmtMoney(w.montant)} a été approuvée — versement prévu ${modePaiement}.`
+        : `Ta demande de retrait de ${fmtMoney(w.montant)} a été refusée.`;
+      await setNotifications([...(notifications || []), { id: uid(), vendorId: w.vendorId, message, read: false, createdAt: Date.now() }]);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+        <StatCard label="TOTAL ESPÈCES (net des dépenses)" value={fmtMoney(especesNettes)} accent="#3F8361" />
+        <StatCard label="TOTAL PAIEMENT MOBILE" value={fmtMoney(totalMobile)} accent="#1B2A4A" />
+      </div>
+
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+        <StatCard label="DÉPENSES — AUJOURD'HUI" value={fmtMoney(totalDepenses)} accent="#C1554A" />
+        <StatCard label="DÉPENSES — CETTE SEMAINE" value={fmtMoney(depensesSemaine)} accent="#C1554A" />
+        <StatCard label="DÉPENSES — CE MOIS" value={fmtMoney(depensesMois)} accent="#C1554A" />
+      </div>
+
+      {pendingWithdrawals.length > 0 && (
+        <Card title="Demandes de retrait en attente">
+          <Table
+            headers={["Vendeur", "Montant demandé", "Mode de paiement souhaité", "Date", "Action"]}
+            rows={pendingWithdrawals.map((w) => [
+              w.vendorNom, fmtMoney(w.montant),
+              w.methode === "mobile" ? `Paiement mobile — ${w.numeroMobile}` : "Espèces",
+              formatDateFR(w.date),
+              <div key="a" style={{ display: "flex", gap: 8 }}>
+                <Button variant="gold" onClick={() => resolveWithdrawal(w.id, "approuve")}>Approuver</Button>
+                <Button variant="ghost" onClick={() => resolveWithdrawal(w.id, "refuse")}>Refuser</Button>
+              </div>,
+            ])}
+          />
+        </Card>
+      )}
+
+      {historyWithdrawals.length > 0 && (
+        <Card title="Historique des retraits">
+          <Table
+            headers={["Vendeur", "Montant", "Mode de paiement", "Date", "Statut"]}
+            rows={historyWithdrawals.map((w) => [
+              w.vendorNom, fmtMoney(w.montant),
+              w.methode === "mobile" ? `Mobile — ${w.numeroMobile}` : "Espèces",
+              formatDateFR(w.date),
+              <Badge key="b" ok={w.statut === "approuve"} okText="Approuvé" warnText="Refusé" />,
+            ])}
+          />
+        </Card>
+      )}
+
+      <Card title="Versements par vendeur — aujourd'hui">
+        {summaries.length === 0 ? (
+          <EmptyState text="Aucun vendeur avec un retour du soir clôturé pour l'instant." />
+        ) : (
+          <Table
+            headers={["Vendeur", "Montant attendu", "Mobile", "Espèces versées", "Écart"]}
+            rows={summaries.map(({ vendor, summary }) => [
+              vendor.nom,
+              fmtMoney(summary.montantAttendu),
+              fmtMoney(summary.totalMobile),
+              summary.finalise ? fmtMoney(summary.montantVerseEspeces) : "—",
+              summary.finalise ? (
+                <Badge key="b" ok={summary.statut === "equilibre"} okText="Équilibré" warnText={`${summary.ecart > 0 ? "+" : ""}${fmtMoney(summary.ecart)}`} />
+              ) : "—",
+            ])}
+          />
+        )}
+      </Card>
+
+      <Card title="Dépenses du jour">
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 14 }}>
+          <div style={{ flex: "2 1 200px" }}>
+            <Label>Libellé de la dépense</Label>
+            <TextInput value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Ex. Transport, sacs plastiques…" />
+          </div>
+          <div style={{ flex: "1 1 120px" }}>
+            <Label>Montant (F)</Label>
+            <TextInput type="number" value={montant} onChange={(e) => setMontant(e.target.value)} placeholder="0" />
+          </div>
+          <Button onClick={addExpense}><Plus size={15} /> Ajouter</Button>
+        </div>
+        {(day.expenses || []).length === 0 ? (
+          <EmptyState text="Aucune dépense enregistrée aujourd'hui." />
+        ) : (
+          <Table
+            headers={["Libellé", "Montant", ""]}
+            rows={(day.expenses || []).map((e) => [
+              e.label, fmtMoney(e.montant),
+              <button key="del" onClick={() => removeExpense(e.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
+            ])}
+          />
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Historique
+// ---------------------------------------------------------------------------
+
+function Historique({ daysList, today }) {
+  const [expanded, setExpanded] = useState(null);
+  const [cache, setCache] = useState({});
+
+  const toggle = async (date) => {
+    if (expanded === date) { setExpanded(null); return; }
+    setExpanded(date);
+    if (!cache[date]) {
+      const d = await store.getDay(date);
+      setCache((c) => ({ ...c, [date]: d }));
+    }
+  };
+
+  if (daysList.length === 0) {
+    return <Card title="Historique des journées"><EmptyState text="L'historique se remplira automatiquement dès qu'une distribution sera enregistrée." /></Card>;
+  }
+
+  return (
+    <Card title="Historique des journées">
+      {daysList.map((date) => {
+        const d = cache[date];
+        const isOpen = expanded === date;
+        const totalAttendu = d ? d.lines.reduce((s, l) => s + (l.montantAttendu || 0), 0) : null;
+        const totalEspeces = d ? Object.keys(d.versements || {}).reduce((s, vid) => {
+          const summary = computeVersementSummary(d, vid);
+          return s + (summary.finalise ? summary.montantVerseEspeces : 0);
+        }, 0) : null;
+        const totalMobile = d ? Object.keys(d.versements || {}).reduce((s, vid) => s + computeVersementSummary(d, vid).totalMobile, 0) : null;
+
+        return (
+          <div key={date} style={{ borderBottom: "1px solid #F0F1F4" }}>
+            <button
+              onClick={() => toggle(date)}
+              style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 4px", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}
+            >
+              <span style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, color: "#1B2A4A" }}>
+                {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                {formatDateFR(date)}
+                {date === today && <span style={{ fontSize: 11, color: "#D9A441", fontWeight: 700 }}>AUJOURD'HUI</span>}
+              </span>
+              {d && (
+                <span style={{ fontSize: 13, color: "#5B6472" }}>
+                  {fmtMoney(totalAttendu)} attendu · {fmtMoney(totalEspeces)} espèces · {fmtMoney(totalMobile)} mobile
+                </span>
+              )}
+            </button>
+
+            {isOpen && d && (
+              <div style={{ padding: "4px 4px 16px 23px" }}>
+                {d.lines.length === 0 ? (
+                  <EmptyState text="Aucune activité ce jour-là." />
+                ) : (
+                  <Table
+                    headers={["Vendeur", "Produit", "Remis", "Restant", "Vendu", "Montant attendu"]}
+                    rows={d.lines.map((l) => [
+                      l.vendorNom, l.productNom, l.quantiteRemise,
+                      l.quantiteRestante ?? "—", l.quantiteVendue ?? "—",
+                      l.montantAttendu ? fmtMoney(l.montantAttendu) : "—",
+                    ])}
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </Card>
+  );
+}
