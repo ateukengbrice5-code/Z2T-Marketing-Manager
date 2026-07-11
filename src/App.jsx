@@ -340,18 +340,99 @@ function Logo({ size = 32 }) {
 // Écrans d'authentification
 // ---------------------------------------------------------------------------
 
+function AuthIllustration() {
+  return (
+    <svg viewBox="0 0 520 640" width="100%" height="100%" preserveAspectRatio="xMidYMid slice" style={{ display: "block" }}>
+      <defs>
+        <linearGradient id="authBg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#152039" />
+          <stop offset="100%" stopColor="#1B2A4A" />
+        </linearGradient>
+        <linearGradient id="authGold" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#F0C878" />
+          <stop offset="100%" stopColor="#D9A441" />
+        </linearGradient>
+      </defs>
+
+      <rect width="520" height="640" fill="url(#authBg)" />
+
+      {/* Grand monogramme Z */}
+      <g opacity="0.95">
+        <path d="M 150 190 L 350 190 L 190 400 L 370 400" fill="none" stroke="url(#authGold)" strokeWidth="34" strokeLinecap="round" strokeLinejoin="round" />
+      </g>
+
+      {/* Pièces de monnaie flottantes (flux d'argent) */}
+      <g fontFamily="Georgia, serif" fontWeight="700">
+        <circle cx="110" cy="150" r="22" fill="url(#authGold)" />
+        <text x="110" y="158" textAnchor="middle" fontSize="20" fill="#152039">€</text>
+
+        <circle cx="410" cy="470" r="24" fill="url(#authGold)" />
+        <text x="410" y="479" textAnchor="middle" fontSize="22" fill="#152039">$</text>
+
+        <circle cx="90" cy="470" r="16" fill="#2A3B5C" stroke="#D9A441" strokeWidth="2" />
+        <text x="90" y="476" textAnchor="middle" fontSize="14" fill="#D9A441">$</text>
+
+        <circle cx="430" cy="170" r="15" fill="#2A3B5C" stroke="#D9A441" strokeWidth="2" />
+        <text x="430" y="176" textAnchor="middle" fontSize="13" fill="#D9A441">€</text>
+      </g>
+
+      {/* Flèches de flux */}
+      <g stroke="#D9A441" strokeWidth="3" fill="none" opacity="0.8">
+        <path d="M 60 150 L 90 150" markerEnd="url(#arrow)" />
+        <path d="M 380 470 L 405 470" markerEnd="url(#arrow)" />
+      </g>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#D9A441" />
+        </marker>
+      </defs>
+
+      <g fontFamily="Calibri, Arial, sans-serif" fontSize="12" fill="#8B95AC">
+        <text x="60" y="140">125,00 € reçu</text>
+        <text x="345" y="500">75 000 F envoyé</text>
+      </g>
+
+      {/* Tapis roulant / boîtes (logistique) */}
+      <g transform="translate(60, 540)">
+        <rect x="0" y="18" width="400" height="4" rx="2" fill="#2A3B5C" />
+        {[0, 55, 110, 165, 220, 275, 330].map((x, i) => (
+          <rect key={i} x={x} y={i % 2 === 0 ? -14 : -10} width={i % 2 === 0 ? 34 : 26} height={i % 2 === 0 ? 34 : 26} rx="3"
+            fill={i % 3 === 0 ? "#D9A441" : "#2A3B5C"} stroke="#8B95AC" strokeWidth="1" />
+        ))}
+        {[10, 20, 30, 40].map((cx, i) => (
+          <circle key={i} cx={cx * 12} cy="24" r="5" fill="#152039" stroke="#D9A441" strokeWidth="1.5" />
+        ))}
+      </g>
+
+      <g fontFamily="Cambria, Georgia, serif" fontSize="15" fill="#C7CCDA" opacity="0.85">
+        <text x="60" y="600">Ventes, stock et caisse — un seul endroit</text>
+      </g>
+    </svg>
+  );
+}
+
 function AuthShell({ children }) {
   return (
-    <div style={{ minHeight: 640, display: "flex", alignItems: "center", justifyContent: "center", background: "#F7F8FA", borderRadius: 16, border: "1px solid #E7E9EE" }}>
-      <div style={{ background: "#fff", border: "1px solid #E7E9EE", borderRadius: 14, padding: "36px 40px", width: 360 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
-          <Logo size={38} />
-          <div style={{ fontFamily: "Cambria, Georgia, serif", fontWeight: 700, fontSize: 15, color: "#1B2A4A", lineHeight: 1.15 }}>
-            Z2T<br /><span style={{ fontSize: 11, fontWeight: 600, color: "#8A93A3", fontFamily: "Calibri, sans-serif" }}>Marketing Manager</span>
-          </div>
-        </div>
-        {children}
+    <div style={{ minHeight: 640, display: "flex", background: "#F7F8FA", borderRadius: 16, border: "1px solid #E7E9EE", overflow: "hidden" }}>
+      <div className="auth-illustration" style={{ flex: "1 1 0", minWidth: 0, background: "#152039" }}>
+        <AuthIllustration />
       </div>
+      <div style={{ flex: "1 1 0", minWidth: 320, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <div style={{ background: "#fff", border: "1px solid #E7E9EE", borderRadius: 14, padding: "36px 40px", width: 360 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+            <Logo size={38} />
+            <div style={{ fontFamily: "Cambria, Georgia, serif", fontWeight: 700, fontSize: 15, color: "#1B2A4A", lineHeight: 1.15 }}>
+              Z2T<br /><span style={{ fontSize: 11, fontWeight: 600, color: "#8A93A3", fontFamily: "Calibri, sans-serif" }}>Marketing Manager</span>
+            </div>
+          </div>
+          {children}
+        </div>
+      </div>
+      <style>{`
+        @media (max-width: 760px) {
+          .auth-illustration { display: none; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -672,8 +753,7 @@ export default function App() {
   }
 
   if (!hasAccount) {
-   return <LoginScreen onLoggedIn={handleLoggedIn} />;
-
+    return <SetupScreen onCreated={handleSetupCreated} />;
   }
 
   if (!currentUser || day === null) {

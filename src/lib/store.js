@@ -33,50 +33,24 @@ export async function hasAnyAccount() {
 }
 
 // Tout premier compte administrateur (aucun compte n'existe encore)
-export const createFirstAdmin = async (username, password) => {
-  const emailVirtual = `${username.trim().toLowerCase()}@z2t.local`;
-
-  // Création du compte Auth
-  const { data, error } = await supabase.auth.signUp({
-    email: emailVirtual,
-    password: password,
+export async function createFirstAdmin(username, password) {
+  const email = usernameToEmail(username);
+  const { data, error } = await supabase.auth.signUp({ email, password });
+  if (error) throw new Error(error.message);
+  const userId = data.user?.id;
+  if (!userId) throw new Error("Création du compte impossible (vérifie que les inscriptions par e-mail sont activées dans Supabase).");
+  const { error: profileError } = await supabase.from("profiles").insert({
+    id: userId, username: username.trim(), role: "admin", vendor_id: null, is_primary: true,
   });
-
-  if (error) throw error;
-
-  // Insertion dans la table des profils
-  const { error: profileError } = await supabase
-    .from("profiles")
-    .insert({
-      id: data.user.id,
-      username: username.trim(),
-      role: "admin",
-      is_primary: true // Admin principal
-    });
-
-  if (profileError) throw profileError;
-  return data.user;
+  if (profileError) throw new Error(profileError.message);
+  return true;
 }
 
-export const signIn = async (username, password) => {
-  // L'utilisateur tape "admin", le code le transforme en "admin@z2t.local" en cache
-  const emailVirtual = `${username.trim().toLowerCase()}@z2t.local`;
-
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email: emailVirtual,
-    password: password,
-  });
-
-  if (error) throw error;
-  
-  // Ici, tu récupères ton profil depuis la table "profiles"
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("*")
-    .eq("id", data.user.id)
-    .single();
-
-  return profile;
+export async function signIn(username, password) {
+  const email = usernameToEmail(username);
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) throw new Error("Identifiant ou mot de passe incorrect.");
+  return getMyProfile();
 }
 
 export async function signOut() {
