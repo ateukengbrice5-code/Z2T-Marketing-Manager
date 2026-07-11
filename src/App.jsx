@@ -605,27 +605,29 @@ export default function App() {
   const today = todayISO();
 
   // Restaure la session si l'utilisateur est déjà connecté (rechargement de page)
-  useEffect(() => {
-    (async () => {
-      const exists = await store.hasAnyAccount();
-      setHasAccount(exists);
-      const session = await store.getSession();
-      if (session) {
-        const profile = await store.getMyProfile();
-        if (profile) {
-          let vendor = null;
-          if (profile.role === "vendor") {
-            const allVendors = await store.getVendors();
-            vendor = allVendors.find((v) => v.id === profile.vendorId) || null;
-          }
-          setCurrentUser(profile);
-          setCurrentVendor(vendor);
-          setTab(profile.role === "vendor" ? "retour" : "dashboard");
+// CODE MODIFIÉ
+useEffect(() => {
+  (async () => {
+    // On force à true puisque le compte super-admin existe déjà dans la base
+    setHasAccount(true); 
+    
+    const session = await store.getSession();
+    if (session) {
+      const profile = await store.getMyProfile();
+      if (profile) {
+        let vendor = null;
+        if (profile.role === "vendor") {
+          const allVendors = await store.getVendors();
+          vendor = allVendors.find((v) => v.id === profile.vendorId) || null;
         }
+        setCurrentUser(profile);
+        setCurrentVendor(vendor);
+        setTab(profile.role === "vendor" ? "retour" : "dashboard");
       }
-      setLoading(false);
-    })();
-  }, []);
+    }
+    setLoading(false);
+  })();
+}, []);
 
   // Charge les données une fois connecté
   useEffect(() => {
