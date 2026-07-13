@@ -117,38 +117,65 @@ export async function getActivityLog() {
 }
 
 // -----------------------------------------------------------------------------
-// Messagerie (admin/gestionnaire ↔ vendeur, un fil de discussion par vendeur)
+// Messagerie (discussion privée entre deux utilisateurs quelconques de la
+// plateforme — chacun choisit avec qui il veut échanger)
 // -----------------------------------------------------------------------------
 
-export async function getMessages(vendorId) {
-  const { data, error } = await supabase.from("messages").select("*").eq("vendor_id", vendorId).order("created_at", { ascending: true });
+// Liste de tous les utilisateurs de la plateforme (hors soi-même), pour
+// pouvoir choisir avec qui démarrer une discussion.
+export async function getAllUsers() {
+  const { data: auth } = await supabase.auth.getUser();
+  const myId = auth?.user?.id;
+  const { data, error } = await supabase.from("profiles").select("*").order("username");
+  if (error) throw error;
+  return (data || [])
+    .filter((u) => u.id !== myId)
+    .map((u) => ({ id: u.id, username: u.username, role: u.role, vendorId: u.vendor_id }));
+}
+
+// Historique des messages échangés avec un utilisateur précis
+export async function getConversation(otherUserId) {
+  const { data: auth } = await supabase.auth.getUser();
+  const myId = auth?.user?.id;
+  const { data, error } = await supabase
+    .from("direct_messages")
+    .select("*")
+    .or(`and(sender_id.eq.${myId},recipient_id.eq.${otherUserId}),and(sender_id.eq.${otherUserId},recipient_id.eq.${myId})`)
+    .order("created_at", { ascending: true });
   if (error) throw error;
   return (data || []).map((m) => ({
-    id: m.id, vendorId: m.vendor_id, senderRole: m.sender_role, senderUsername: m.sender_username,
-    content: m.content, readByAdmin: m.read_by_admin, readByVendor: m.read_by_vendor, createdAt: m.created_at,
+    id: m.id, senderId: m.sender_id, recipientId: m.recipient_id,
+    content: m.content, read: m.read, createdAt: m.created_at,
   }));
 }
 
-// Nombre de messages non lus par vendeur, pour badge dans la liste (côté admin/gestionnaire)
-export async function getUnreadCounts() {
-  const { data, error } = await supabase.from("messages").select("vendor_id").eq("read_by_admin", false).eq("sender_role", "vendor");
+// Nombre de messages non lus, groupés par expéditeur, pour les badges dans
+// la liste des utilisateurs
+export async function getUnreadCountsByUser() {
+  const { data: auth } = await supabase.auth.getUser();
+  const myId = auth?.user?.id;
+  const { data, error } = await supabase.from("direct_messages").select("sender_id").eq("recipient_id", myId).eq("read", false);
   if (error) throw error;
   const counts = {};
-  (data || []).forEach((m) => { counts[m.vendor_id] = (counts[m.vendor_id] || 0) + 1; });
+  (data || []).forEach((m) => { counts[m.sender_id] = (counts[m.sender_id] || 0) + 1; });
   return counts;
 }
 
-export async function sendMessage({ vendorId, senderRole, senderUsername, content }) {
-  const { error } = await supabase.from("messages").insert({
-    vendor_id: vendorId, sender_role: senderRole, sender_username: senderUsername, content,
-    read_by_admin: senderRole !== "vendor", read_by_vendor: senderRole === "vendor",
+export async function sendDirectMessage({ recipientId, content }) {
+  const { data: auth } = await supabase.auth.getUser();
+  const myId = auth?.user?.id;
+  const { error } = await supabase.from("direct_messages").insert({
+    sender_id: myId, recipient_id: recipientId, content, read: false,
   });
   if (error) throw error;
 }
 
-export async function markMessagesRead(vendorId, asRole) {
-  const field = asRole === "vendor" ? "read_by_vendor" : "read_by_admin";
-  const { error } = await supabase.from("messages").update({ [field]: true }).eq("vendor_id", vendorId).eq(field, false);
+export async function markConversationRead(otherUserId) {
+  const { data: auth } = await supabase.auth.getUser();
+  const myId = auth?.user?.id;
+  const { error } = await supabase.from("direct_messages")
+    .update({ read: true })
+    .eq("sender_id", otherUserId).eq("recipient_id", myId).eq("read", false);
   if (error) throw error;
 }
 

@@ -861,7 +861,7 @@ export default function App() {
           <Caisse vendors={vendors} day={day} setDay={persistDay} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} daysList={daysList} today={today} />
         )}
         {tab === "messagerie" && (
-          <Messagerie isAdmin={canManage} vendors={vendors} activeVendor={activeVendor} currentUser={currentUser} />
+          <Messagerie currentUser={currentUser} />
         )}
         {tab === "historique" && isAdmin && <Historique daysList={daysList} today={today} />}
         {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
@@ -1877,7 +1877,8 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Messagerie — discussion admin/gestionnaire ↔ vendeur (un fil par vendeur)
+// Messagerie — chaque utilisateur choisit avec qui il veut discuter parmi
+// tous les utilisateurs de la plateforme (discussion privée un-à-un)
 // ---------------------------------------------------------------------------
 
 function timeShort(iso) {
@@ -1885,34 +1886,46 @@ function timeShort(iso) {
   return d.toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-function Messagerie({ isAdmin, vendors, activeVendor, currentUser }) {
-  const [selectedVendorId, setSelectedVendorId] = useState(isAdmin ? (vendors[0]?.id || "") : "");
+function roleLabel(role) {
+  if (role === "admin") return "Administrateur";
+  if (role === "manager") return "Gestionnaire";
+  return "Vendeur";
+}
+
+function Messagerie({ currentUser }) {
+  const [users, setUsers] = useState([]);
+  const [selectedUserId, setSelectedUserId] = useState("");
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [unreadCounts, setUnreadCounts] = useState({});
   const scrollRef = useRef(null);
 
-  const vendor = isAdmin ? vendors.find((v) => v.id === selectedVendorId) : activeVendor;
+  const selectedUser = users.find((u) => u.id === selectedUserId);
 
-  const reloadUnread = async () => {
-    if (isAdmin) setUnreadCounts(await store.getUnreadCounts());
-  };
-
-  useEffect(() => { reloadUnread(); }, [isAdmin, vendors.length]);
+  const reloadUsers = async () => setUsers(await store.getAllUsers());
+  const reloadUnread = async () => setUnreadCounts(await store.getUnreadCountsByUser());
 
   useEffect(() => {
-    if (!vendor) { setMessages([]); return; }
+    reloadUsers();
+    reloadUnread();
+    const interval = setInterval(reloadUnread, 8000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!selectedUserId) { setMessages([]); return; }
     let cancelled = false;
     const load = async () => {
-      const msgs = await store.getMessages(vendor.id);
+      const msgs = await store.getConversation(selectedUserId);
       if (!cancelled) setMessages(msgs);
     };
     load();
-    store.markMessagesRead(vendor.id, isAdmin ? "admin" : "vendor").then(reloadUnread);
+    store.markConversationRead(selectedUserId).then(reloadUnread);
     const interval = setInterval(load, 8000);
     return () => { cancelled = true; clearInterval(interval); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vendor?.id]);
+  }, [selectedUserId]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -1920,21 +1933,21 @@ function Messagerie({ isAdmin, vendors, activeVendor, currentUser }) {
 
   const send = async () => {
     const content = text.trim();
-    if (!content || !vendor) return;
+    if (!content || !selectedUserId) return;
     setText("");
-    await store.sendMessage({ vendorId: vendor.id, senderRole: currentUser.role, senderUsername: currentUser.username, content });
-    setMessages(await store.getMessages(vendor.id));
+    await store.sendDirectMessage({ recipientId: selectedUserId, content });
+    setMessages(await store.getConversation(selectedUserId));
   };
 
   const onKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   };
 
-  if (isAdmin && vendors.length === 0) {
-    return <Card title="Messagerie"><EmptyState text="Ajoute d'abord un vendeur pour pouvoir échanger des messages." /></Card>;
+  if (users.length === 0) {
+    return <Card title="Messagerie"><EmptyState text="Aucun autre utilisateur sur la plateforme pour le moment." /></Card>;
   }
 
-  const isMine = (m) => (isAdmin ? m.senderRole !== "vendor" : m.senderRole === "vendor");
+  const isMine = (m) => m.senderId === currentUser.id;
 
   const thread = (
     <div style={{ display: "flex", flexDirection: "column", height: 480 }}>
@@ -1958,7 +1971,7 @@ function Messagerie({ isAdmin, vendors, activeVendor, currentUser }) {
                   {m.content}
                 </div>
                 <div style={{ fontSize: 10.5, color: "#9AA2B1", marginTop: 3, textAlign: isMine(m) ? "right" : "left" }}>
-                  {m.senderUsername} · {timeShort(m.createdAt)}
+                  {timeShort(m.createdAt)}
                 </div>
               </div>
             </div>
@@ -1978,21 +1991,17 @@ function Messagerie({ isAdmin, vendors, activeVendor, currentUser }) {
     </div>
   );
 
-  if (!isAdmin) {
-    return <Card title={`Discussion avec l'administration`}>{thread}</Card>;
-  }
-
   return (
     <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
       <div className="dash-col-side" style={{ flex: "1 1 220px" }}>
-        <Card title="Vendeurs">
-          {vendors.map((v) => {
-            const count = unreadCounts[v.id] || 0;
-            const active = v.id === selectedVendorId;
+        <Card title="Utilisateurs">
+          {users.map((u) => {
+            const count = unreadCounts[u.id] || 0;
+            const active = u.id === selectedUserId;
             return (
               <button
-                key={v.id}
-                onClick={() => setSelectedVendorId(v.id)}
+                key={u.id}
+                onClick={() => setSelectedUserId(u.id)}
                 style={{
                   display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%",
                   textAlign: "left", padding: "10px 12px", marginBottom: 4, borderRadius: 8, border: "none",
@@ -2000,7 +2009,10 @@ function Messagerie({ isAdmin, vendors, activeVendor, currentUser }) {
                   color: "#1B2A4A", fontSize: 13.5, fontWeight: active ? 700 : 500,
                 }}
               >
-                {v.nom}
+                <span style={{ display: "flex", flexDirection: "column" }}>
+                  <span>{u.username}</span>
+                  <span style={{ fontSize: 10.5, color: "#9AA2B1", fontWeight: 400 }}>{roleLabel(u.role)}</span>
+                </span>
                 {count > 0 && (
                   <span style={{ background: "#C1554A", color: "#fff", fontSize: 10.5, fontWeight: 700, borderRadius: 999, padding: "2px 7px" }}>
                     {count}
@@ -2012,10 +2024,10 @@ function Messagerie({ isAdmin, vendors, activeVendor, currentUser }) {
         </Card>
       </div>
       <div className="dash-col-main" style={{ flex: "2 1 380px" }}>
-        {vendor ? (
-          <Card title={`Discussion avec ${vendor.nom}`}>{thread}</Card>
+        {selectedUser ? (
+          <Card title={`Discussion avec ${selectedUser.username}`}>{thread}</Card>
         ) : (
-          <Card title="Messagerie"><EmptyState text="Choisis un vendeur dans la liste." /></Card>
+          <Card title="Messagerie"><EmptyState text="Choisis un utilisateur dans la liste pour commencer à discuter." /></Card>
         )}
       </div>
     </div>
