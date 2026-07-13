@@ -1,0 +1,114 @@
+/* Styles globaux — surtout utilisés pour rendre l'application utilisable sur
+   mobile, en complément des styles en ligne (desktop-first) du composant App. */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+@media (max-width: 820px) {
+  .app-shell {
+    flex-direction: column !important;
+    border-radius: 0 !important;
+    min-height: 100vh !important;
+  }
+
+  .app-sidebar {
+    width: 100% !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    overflow-x: auto !important;
+    padding: 8px 10px !important;
+    gap: 2px !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .app-sidebar .sidebar-brand,
+  .app-sidebar .sidebar-footer,
+  .app-sidebar .sidebar-role {
+    display: none !important;
+  }
+
+  .app-sidebar .nav-btn {
+    flex: 0 0 auto !important;
+    white-space: nowrap !important;
+    padding: 8px 10px !important;
+    margin-bottom: 0 !important;
+    font-size: 12.5px !important;
+  }
+
+  .app-sidebar .logout-btn {
+    flex: 0 0 auto !important;
+    margin-top: 0 !important;
+    margin-left: auto !important;
+    white-space: nowrap !important;
+  }
+
+  .app-main {
+    padding: 16px !important;
+  }
+
+  .app-header h1 {
+    font-size: 19px !important;
+  }
+
+  .app-header .app-date {
+    display: none !important;
+  }
+
+  .stat-card {
+    min-width: 130px !important;
+    flex: 1 1 45% !important;
+    padding: 12px 14px !important;
+  }
+
+  .card {
+    padding: 16px !important;
+  }
+
+  .dash-col-main,
+  .dash-col-side {
+    flex: 1 1 100% !important;
+  }
+
+  .auth-shell {
+    flex-direction: column !important;
+    min-height: auto !important;
+  }
+
+  .auth-illustration {
+    display: none !important;
+  }
+
+  .auth-card-wrap {
+    padding: 16px !important;
+  }
+
+  .auth-card {
+    width: 100% !important;
+    max-width: 400px !important;
+    padding: 26px 22px !important;
+  }
+
+  table.data-table {
+    font-size: 12.5px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .stat-card {
+    flex: 1 1 100% !important;
+  }
+
+  .form-row {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+
+  .form-row > * {
+    width: 100% !important;
+  }
+}

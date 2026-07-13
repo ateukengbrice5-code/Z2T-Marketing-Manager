@@ -117,6 +117,42 @@ export async function getActivityLog() {
 }
 
 // -----------------------------------------------------------------------------
+// Messagerie (admin/gestionnaire ↔ vendeur, un fil de discussion par vendeur)
+// -----------------------------------------------------------------------------
+
+export async function getMessages(vendorId) {
+  const { data, error } = await supabase.from("messages").select("*").eq("vendor_id", vendorId).order("created_at", { ascending: true });
+  if (error) throw error;
+  return (data || []).map((m) => ({
+    id: m.id, vendorId: m.vendor_id, senderRole: m.sender_role, senderUsername: m.sender_username,
+    content: m.content, readByAdmin: m.read_by_admin, readByVendor: m.read_by_vendor, createdAt: m.created_at,
+  }));
+}
+
+// Nombre de messages non lus par vendeur, pour badge dans la liste (côté admin/gestionnaire)
+export async function getUnreadCounts() {
+  const { data, error } = await supabase.from("messages").select("vendor_id").eq("read_by_admin", false).eq("sender_role", "vendor");
+  if (error) throw error;
+  const counts = {};
+  (data || []).forEach((m) => { counts[m.vendor_id] = (counts[m.vendor_id] || 0) + 1; });
+  return counts;
+}
+
+export async function sendMessage({ vendorId, senderRole, senderUsername, content }) {
+  const { error } = await supabase.from("messages").insert({
+    vendor_id: vendorId, sender_role: senderRole, sender_username: senderUsername, content,
+    read_by_admin: senderRole !== "vendor", read_by_vendor: senderRole === "vendor",
+  });
+  if (error) throw error;
+}
+
+export async function markMessagesRead(vendorId, asRole) {
+  const field = asRole === "vendor" ? "read_by_vendor" : "read_by_admin";
+  const { error } = await supabase.from("messages").update({ [field]: true }).eq("vendor_id", vendorId).eq(field, false);
+  if (error) throw error;
+}
+
+// -----------------------------------------------------------------------------
 // Produits
 // -----------------------------------------------------------------------------
 

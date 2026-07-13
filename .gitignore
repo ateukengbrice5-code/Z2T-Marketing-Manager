@@ -1,6 +1,7 @@
 node_modules
 dist
-dist-electron
-release
+desktop/node_modules
+desktop/dist
+desktop/release
 .env
 .DS_Store

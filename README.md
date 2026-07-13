@@ -147,12 +147,21 @@ Cette application de bureau utilise **exactement les mêmes données Supabase**
 que la version web — les ventes saisies sur PC apparaissent aussitôt sur
 mobile et web, et inversement.
 
+Le dossier `desktop/` est volontairement **séparé** du reste du projet (son
+propre `package.json`), pour qu'Electron n'interfère jamais avec le
+déploiement du site web (Vercel, etc.) — les deux sont totalement indépendants.
+
 Assure-toi d'avoir déjà fait les étapes 1 à 4 (projet Supabase configuré,
 fichier `.env` rempli) avant de continuer.
 
 ```bash
+# 1. Construire le site web (à la racine du projet)
 npm install
 npm run build
+
+# 2. Installer et lancer l'application de bureau (dans son propre dossier)
+cd desktop
+npm install
 npm run electron:start
 ```
 
@@ -161,12 +170,13 @@ pour vérifier que tout fonctionne avant de créer l'installateur.
 
 ### Créer l'installateur
 
+Toujours depuis le dossier `desktop/` :
+
 ```bash
 npm run electron:dist
 ```
 
-Le fichier d'installation apparaît dans le dossier `dist-electron/` (ou
-`release/` selon la configuration) :
+Le fichier d'installation apparaît dans `desktop/release/` :
 - **Windows** → un fichier `.exe`
 - **Mac** → un fichier `.dmg`
 - **Linux** → un fichier `.AppImage`
@@ -175,9 +185,9 @@ Construis ce fichier sur le système d'exploitation cible : un `.exe` doit être
 construit sur Windows, un `.dmg` sur Mac (electron-builder ne fabrique pas de
 `.dmg` depuis Windows).
 
-Le fichier `.env` est lu au moment de `npm run build` — donc pense à toujours
-faire `npm run build` avant `npm run electron:dist` si tu changes tes clés
-Supabase.
+Le fichier `.env` (à la racine du projet) est lu au moment de `npm run build`
+— donc pense à toujours refaire l'étape 1 (`npm run build` à la racine) avant
+`npm run electron:dist` si tu changes tes clés Supabase.
 
 ---
 
@@ -233,8 +243,9 @@ z2t-web/
 ├── supabase/
 │   ├── schema.sql                  → script à exécuter dans Supabase
 │   └── functions/manage-user/      → fonction serveur (création/suppression de comptes)
-├── electron/
-│   └── main.cjs                     → point d'entrée de l'application de bureau
+├── desktop/                          → application de bureau, isolée du site web
+│   ├── main.cjs                     → point d'entrée Electron
+│   └── package.json                 → dépendances Electron (séparées du site)
 ├── src/
 │   ├── lib/supabase.js             → connexion à Supabase
 │   ├── lib/store.js                → toutes les requêtes base de données
@@ -243,5 +254,5 @@ z2t-web/
 ├── public/                          → icônes de l'application
 ├── .env.example
 ├── vite.config.js                   → configuration + PWA
-└── package.json
+└── package.json                     → dépendances du site web uniquement
 ```

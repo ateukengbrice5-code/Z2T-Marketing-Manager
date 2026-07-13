@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   LayoutDashboard, Package, Boxes, Users, Truck, MoonStar, Wallet, History,
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown,
   Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye,
+  MessageSquare, Send,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid } from "recharts";
 import * as store from "./lib/store.js";
@@ -19,12 +20,14 @@ const NAV_ADMIN = [
   { id: "distribution", label: "Distribution", icon: Truck },
   { id: "retour", label: "Retour du soir", icon: MoonStar },
   { id: "caisse", label: "Caisse", icon: Wallet },
+  { id: "messagerie", label: "Messagerie", icon: MessageSquare },
   { id: "historique", label: "Historique", icon: History },
 ];
 
 const NAV_VENDOR = [
   { id: "dashboard", label: "Mon tableau de bord", icon: LayoutDashboard },
   { id: "retour", label: "Mon retour du soir", icon: MoonStar },
+  { id: "messagerie", label: "Messages", icon: MessageSquare },
 ];
 
 const NAV_MANAGER = [
@@ -32,6 +35,7 @@ const NAV_MANAGER = [
   { id: "caisse", label: "Finances", icon: Wallet },
   { id: "stock", label: "Stock", icon: Boxes },
   { id: "vendeurs", label: "Personnel", icon: Users },
+  { id: "messagerie", label: "Messagerie", icon: MessageSquare },
 ];
 
 // ---------------------------------------------------------------------------
@@ -201,7 +205,7 @@ function Badge({ ok, okText = "Équilibré", warnText = "Écart" }) {
 
 function StatCard({ label, value, sub, accent }) {
   return (
-    <div style={{ background: "#fff", border: "1px solid #E7E9EE", borderRadius: 14, padding: "18px 20px", flex: "1 1 200px", minWidth: 190 }}>
+    <div className="stat-card" style={{ background: "#fff", border: "1px solid #E7E9EE", borderRadius: 14, padding: "18px 20px", flex: "1 1 200px", minWidth: 190 }}>
       <div style={{ fontSize: 12.5, color: "#5B6472", fontWeight: 600, letterSpacing: 0.2 }}>{label}</div>
       <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 28, fontWeight: 700, color: accent || "#1B2A4A", marginTop: 6, lineHeight: 1.1 }}>
         {value}
@@ -213,7 +217,7 @@ function StatCard({ label, value, sub, accent }) {
 
 function Card({ title, right, children }) {
   return (
-    <div style={{ background: "#fff", border: "1px solid #E7E9EE", borderRadius: 14, padding: 22, marginBottom: 20 }}>
+    <div className="card" style={{ background: "#fff", border: "1px solid #E7E9EE", borderRadius: 14, padding: 22, marginBottom: 20 }}>
       {title && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <h3 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", fontSize: 17, color: "#1B2A4A", fontWeight: 700 }}>{title}</h3>
@@ -279,7 +283,7 @@ function EmptyState({ text }) {
 function Table({ headers, rows }) {
   return (
     <div style={{ overflowX: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+      <table className="data-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
         <thead>
           <tr>
             {headers.map((h, i) => (
@@ -413,12 +417,12 @@ function AuthIllustration() {
 
 function AuthShell({ children }) {
   return (
-    <div style={{ minHeight: 640, display: "flex", background: "#F7F8FA", borderRadius: 16, border: "1px solid #E7E9EE", overflow: "hidden" }}>
+    <div className="auth-shell" style={{ minHeight: 640, display: "flex", background: "#F7F8FA", borderRadius: 16, border: "1px solid #E7E9EE", overflow: "hidden" }}>
       <div className="auth-illustration" style={{ flex: "1 1 0", minWidth: 0, background: "#152039" }}>
         <AuthIllustration />
       </div>
-      <div style={{ flex: "1 1 0", minWidth: 320, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-        <div style={{ background: "#fff", border: "1px solid #E7E9EE", borderRadius: 14, padding: "36px 40px", width: 360 }}>
+      <div className="auth-card-wrap" style={{ flex: "1 1 0", minWidth: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <div className="auth-card" style={{ background: "#fff", border: "1px solid #E7E9EE", borderRadius: 14, padding: "36px 40px", width: 360, maxWidth: "100%", boxSizing: "border-box" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
             <Logo size={38} />
             <div style={{ fontFamily: "Cambria, Georgia, serif", fontWeight: 700, fontSize: 15, color: "#1B2A4A", lineHeight: 1.15 }}>
@@ -428,11 +432,6 @@ function AuthShell({ children }) {
           {children}
         </div>
       </div>
-      <style>{`
-        @media (max-width: 760px) {
-          .auth-illustration { display: none; }
-        }
-      `}</style>
     </div>
   );
 }
@@ -605,29 +604,27 @@ export default function App() {
   const today = todayISO();
 
   // Restaure la session si l'utilisateur est déjà connecté (rechargement de page)
-// CODE MODIFIÉ
-useEffect(() => {
-  (async () => {
-    // On force à true puisque le compte super-admin existe déjà dans la base
-    setHasAccount(true); 
-    
-    const session = await store.getSession();
-    if (session) {
-      const profile = await store.getMyProfile();
-      if (profile) {
-        let vendor = null;
-        if (profile.role === "vendor") {
-          const allVendors = await store.getVendors();
-          vendor = allVendors.find((v) => v.id === profile.vendorId) || null;
+  useEffect(() => {
+    (async () => {
+      const exists = await store.hasAnyAccount();
+      setHasAccount(exists);
+      const session = await store.getSession();
+      if (session) {
+        const profile = await store.getMyProfile();
+        if (profile) {
+          let vendor = null;
+          if (profile.role === "vendor") {
+            const allVendors = await store.getVendors();
+            vendor = allVendors.find((v) => v.id === profile.vendorId) || null;
+          }
+          setCurrentUser(profile);
+          setCurrentVendor(vendor);
+          setTab(profile.role === "vendor" ? "retour" : "dashboard");
         }
-        setCurrentUser(profile);
-        setCurrentVendor(vendor);
-        setTab(profile.role === "vendor" ? "retour" : "dashboard");
       }
-    }
-    setLoading(false);
-  })();
-}, []);
+      setLoading(false);
+    })();
+  }, []);
 
   // Charge les données une fois connecté
   useEffect(() => {
@@ -777,16 +774,16 @@ useEffect(() => {
   const activeVendor = currentUser.role === "vendor" ? currentVendor : null;
 
   return (
-    <div style={{ display: "flex", minHeight: 640, fontFamily: "Calibri, Arial, sans-serif", background: "#F7F8FA", borderRadius: 16, overflow: "hidden", border: "1px solid #E7E9EE" }}>
+    <div className="app-shell" style={{ display: "flex", minHeight: 640, fontFamily: "Calibri, Arial, sans-serif", background: "#F7F8FA", borderRadius: 16, overflow: "hidden", border: "1px solid #E7E9EE" }}>
       {/* Barre latérale */}
-      <div style={{ width: 220, background: "#152039", color: "#fff", padding: "22px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 8px 4px 8px" }}>
+      <div className="app-sidebar" style={{ width: 220, background: "#152039", color: "#fff", padding: "22px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+        <div className="sidebar-brand" style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 8px 4px 8px" }}>
           <Logo size={32} />
           <div style={{ fontFamily: "Cambria, Georgia, serif", fontWeight: 700, fontSize: 14, lineHeight: 1.15 }}>
             Z2T<br /><span style={{ fontSize: 10, fontWeight: 500, color: "#9AA6C2" }}>Marketing Manager</span>
           </div>
         </div>
-        <div style={{ fontSize: 11, color: "#8B95AC", padding: "0 8px 16px 8px" }}>
+        <div className="sidebar-role" style={{ fontSize: 11, color: "#8B95AC", padding: "0 8px 16px 8px" }}>
           {currentUser.username} · {roleLabel}
         </div>
 
@@ -796,6 +793,7 @@ useEffect(() => {
           return (
             <button
               key={n.id}
+              className="nav-btn"
               onClick={() => setTab(n.id)}
               style={{
                 display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left",
@@ -811,6 +809,7 @@ useEffect(() => {
         })}
 
         <button
+          className="logout-btn"
           onClick={handleLogout}
           style={{
             display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left",
@@ -821,16 +820,16 @@ useEffect(() => {
           <LogOut size={16} />
           Déconnexion
         </button>
-        <div style={{ padding: "10px 8px 0 8px", fontSize: 11, color: "#6B7690" }}>Données partagées entre tous les postes</div>
+        <div className="sidebar-footer" style={{ padding: "10px 8px 0 8px", fontSize: 11, color: "#6B7690" }}>Données partagées entre tous les postes</div>
       </div>
 
       {/* Contenu principal */}
-      <div style={{ flex: 1, padding: "26px 30px", overflowY: "auto" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 22 }}>
+      <div className="app-main" style={{ flex: 1, padding: "26px 30px", overflowY: "auto", minWidth: 0 }}>
+        <div className="app-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 22, flexWrap: "wrap", gap: 8 }}>
           <h1 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", fontSize: 24, color: "#1B2A4A" }}>
             {nav.find((n) => n.id === tab)?.label}
           </h1>
-          <div style={{ fontSize: 13, color: "#8A93A3", textTransform: "capitalize" }}>{formatDateFR(today)}</div>
+          <div className="app-date" style={{ fontSize: 13, color: "#8A93A3", textTransform: "capitalize" }}>{formatDateFR(today)}</div>
         </div>
 
         {tab === "dashboard" && canManage && (
@@ -860,6 +859,9 @@ useEffect(() => {
         )}
         {tab === "caisse" && canManage && (
           <Caisse vendors={vendors} day={day} setDay={persistDay} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} daysList={daysList} today={today} />
+        )}
+        {tab === "messagerie" && (
+          <Messagerie isAdmin={canManage} vendors={vendors} activeVendor={activeVendor} currentUser={currentUser} />
         )}
         {tab === "historique" && isAdmin && <Historique daysList={daysList} today={today} />}
         {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
@@ -934,7 +936,7 @@ function Dashboard({ products, vendors, day, daysList, today }) {
       </div>
 
       <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-        <div style={{ flex: "2 1 380px" }}>
+        <div className="dash-col-main" style={{ flex: "2 1 380px" }}>
           <Card title="Ventes du jour par vendeur">
             {vendors.length === 0 ? (
               <EmptyState text="Ajoute des vendeurs pour voir apparaître les ventes ici." />
@@ -1008,7 +1010,7 @@ function Dashboard({ products, vendors, day, daysList, today }) {
           </Card>
         </div>
 
-        <div style={{ flex: "1 1 260px" }}>
+        <div className="dash-col-side" style={{ flex: "1 1 260px" }}>
           <Card title="Alertes stock">
             {lowStock.length === 0 ? (
               <EmptyState text="Aucun produit en stock faible." />
@@ -1873,6 +1875,152 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
 // ---------------------------------------------------------------------------
 // Caisse — total espèces / mobile par vendeur, dépenses, totaux du jour
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Messagerie — discussion admin/gestionnaire ↔ vendeur (un fil par vendeur)
+// ---------------------------------------------------------------------------
+
+function timeShort(iso) {
+  const d = new Date(iso);
+  return d.toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function Messagerie({ isAdmin, vendors, activeVendor, currentUser }) {
+  const [selectedVendorId, setSelectedVendorId] = useState(isAdmin ? (vendors[0]?.id || "") : "");
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState("");
+  const [unreadCounts, setUnreadCounts] = useState({});
+  const scrollRef = useRef(null);
+
+  const vendor = isAdmin ? vendors.find((v) => v.id === selectedVendorId) : activeVendor;
+
+  const reloadUnread = async () => {
+    if (isAdmin) setUnreadCounts(await store.getUnreadCounts());
+  };
+
+  useEffect(() => { reloadUnread(); }, [isAdmin, vendors.length]);
+
+  useEffect(() => {
+    if (!vendor) { setMessages([]); return; }
+    let cancelled = false;
+    const load = async () => {
+      const msgs = await store.getMessages(vendor.id);
+      if (!cancelled) setMessages(msgs);
+    };
+    load();
+    store.markMessagesRead(vendor.id, isAdmin ? "admin" : "vendor").then(reloadUnread);
+    const interval = setInterval(load, 8000);
+    return () => { cancelled = true; clearInterval(interval); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vendor?.id]);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages]);
+
+  const send = async () => {
+    const content = text.trim();
+    if (!content || !vendor) return;
+    setText("");
+    await store.sendMessage({ vendorId: vendor.id, senderRole: currentUser.role, senderUsername: currentUser.username, content });
+    setMessages(await store.getMessages(vendor.id));
+  };
+
+  const onKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  };
+
+  if (isAdmin && vendors.length === 0) {
+    return <Card title="Messagerie"><EmptyState text="Ajoute d'abord un vendeur pour pouvoir échanger des messages." /></Card>;
+  }
+
+  const isMine = (m) => (isAdmin ? m.senderRole !== "vendor" : m.senderRole === "vendor");
+
+  const thread = (
+    <div style={{ display: "flex", flexDirection: "column", height: 480 }}>
+      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "4px 4px 12px 4px" }}>
+        {messages.length === 0 ? (
+          <EmptyState text="Aucun message pour l'instant. Écris le premier !" />
+        ) : (
+          messages.map((m) => (
+            <div key={m.id} style={{ display: "flex", justifyContent: isMine(m) ? "flex-end" : "flex-start", marginBottom: 10 }}>
+              <div style={{ maxWidth: "75%" }}>
+                <div
+                  style={{
+                    padding: "9px 13px", borderRadius: 12,
+                    background: isMine(m) ? "#1B2A4A" : "#F0F1F4",
+                    color: isMine(m) ? "#fff" : "#1B2A4A",
+                    fontSize: 13.5, lineHeight: 1.4,
+                    borderBottomRightRadius: isMine(m) ? 3 : 12,
+                    borderBottomLeftRadius: isMine(m) ? 12 : 3,
+                  }}
+                >
+                  {m.content}
+                </div>
+                <div style={{ fontSize: 10.5, color: "#9AA2B1", marginTop: 3, textAlign: isMine(m) ? "right" : "left" }}>
+                  {m.senderUsername} · {timeShort(m.createdAt)}
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 8, paddingTop: 10, borderTop: "1px solid #F0F1F4" }}>
+        <TextInput
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Écrire un message…"
+          style={{ flex: 1 }}
+        />
+        <Button variant="gold" onClick={send}><Send size={15} /></Button>
+      </div>
+    </div>
+  );
+
+  if (!isAdmin) {
+    return <Card title={`Discussion avec l'administration`}>{thread}</Card>;
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+      <div className="dash-col-side" style={{ flex: "1 1 220px" }}>
+        <Card title="Vendeurs">
+          {vendors.map((v) => {
+            const count = unreadCounts[v.id] || 0;
+            const active = v.id === selectedVendorId;
+            return (
+              <button
+                key={v.id}
+                onClick={() => setSelectedVendorId(v.id)}
+                style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%",
+                  textAlign: "left", padding: "10px 12px", marginBottom: 4, borderRadius: 8, border: "none",
+                  cursor: "pointer", background: active ? "#EAF0FB" : "transparent",
+                  color: "#1B2A4A", fontSize: 13.5, fontWeight: active ? 700 : 500,
+                }}
+              >
+                {v.nom}
+                {count > 0 && (
+                  <span style={{ background: "#C1554A", color: "#fff", fontSize: 10.5, fontWeight: 700, borderRadius: 999, padding: "2px 7px" }}>
+                    {count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </Card>
+      </div>
+      <div className="dash-col-main" style={{ flex: "2 1 380px" }}>
+        {vendor ? (
+          <Card title={`Discussion avec ${vendor.nom}`}>{thread}</Card>
+        ) : (
+          <Card title="Messagerie"><EmptyState text="Choisis un vendeur dans la liste." /></Card>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notifications, setNotifications, daysList, today }) {
   const [label, setLabel] = useState("");
