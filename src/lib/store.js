@@ -26,6 +26,31 @@ export async function getMyProfile() {
   };
 }
 
+// -----------------------------------------------------------------------------
+// Présence (statut en ligne / hors ligne)
+// -----------------------------------------------------------------------------
+
+export async function setPresence(userId, isOnline) {
+  try {
+    if (isOnline) {
+      await supabase.rpc("touch_last_seen");
+    } else {
+      await supabase.from("profiles").update({ is_online: false, last_seen_at: new Date().toISOString() }).eq("id", userId);
+    }
+  } catch (e) {
+    console.error("Erreur de mise à jour de présence", e);
+  }
+}
+
+// Statut de présence de chaque vendeur ayant un compte de connexion
+export async function getVendorPresence() {
+  const { data, error } = await supabase.from("profiles").select("vendor_id, is_online, last_seen_at").eq("role", "vendor").not("vendor_id", "is", null);
+  if (error) throw error;
+  const map = {};
+  (data || []).forEach((p) => { map[p.vendor_id] = { isOnline: !!p.is_online, lastSeenAt: p.last_seen_at }; });
+  return map;
+}
+
 export async function hasAnyAccount() {
   const { count, error } = await supabase.from("profiles").select("*", { count: "exact", head: true });
   if (error) return true; // en cas de doute, ne pas proposer de recréer un admin
@@ -95,12 +120,16 @@ export async function getSecondaryAdmins() {
 // -----------------------------------------------------------------------------
 
 // N'enregistre rien pour l'admin principal — voir App.jsx, appelé seulement
-// quand currentUser est un admin secondaire.
-export async function logActivity(currentUser, eventType, description) {
+// quand currentUser est un admin secondaire. Passe par une fonction Edge pour
+// capturer l'adresse IP et l'appareil côté serveur (impossible depuis le navigateur).
+export async function logActivity(currentUser, eventType, description, metadata) {
   if (!currentUser || currentUser.role !== "admin" || currentUser.isPrimary) return;
   try {
-    await supabase.from("activity_log").insert({
-      user_id: currentUser.id, username: currentUser.username, event_type: eventType, description,
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+    await supabase.functions.invoke("log-activity", {
+      body: { eventType, description, metadata: metadata || {} },
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });
   } catch (e) {
     console.error("Erreur d'enregistrement du journal d'activité", e);
@@ -113,70 +142,83 @@ export async function getActivityLog() {
   return (data || []).map((a) => ({
     id: a.id, userId: a.user_id, username: a.username, eventType: a.event_type,
     description: a.description, createdAt: a.created_at,
+    ipAddress: a.ip_address, device: a.device, metadata: a.metadata || {},
   }));
 }
 
 // -----------------------------------------------------------------------------
-// Messagerie (discussion privée entre deux utilisateurs quelconques de la
-// plateforme — chacun choisit avec qui il veut échanger)
+// Messagerie (admin/gestionnaire ↔ vendeur, un fil de discussion par vendeur)
 // -----------------------------------------------------------------------------
 
-// Liste de tous les utilisateurs de la plateforme (hors soi-même), pour
-// pouvoir choisir avec qui démarrer une discussion.
-export async function getAllUsers() {
-  const { data: auth } = await supabase.auth.getUser();
-  const myId = auth?.user?.id;
-  const { data, error } = await supabase.from("profiles").select("*").order("username");
-  if (error) throw error;
-  return (data || [])
-    .filter((u) => u.id !== myId)
-    .map((u) => ({ id: u.id, username: u.username, role: u.role, vendorId: u.vendor_id }));
+// Récupère (ou crée) la conversation associée à un vendeur
+async function ensureConversation(vendorId) {
+  const { data: existing, error: selErr } = await supabase.from("conversations").select("id").eq("vendor_id", vendorId).maybeSingle();
+  if (selErr) throw selErr;
+  if (existing) return existing.id;
+  const { data: created, error: insErr } = await supabase.from("conversations").insert({ vendor_id: vendorId }).select("id").single();
+  if (insErr) throw insErr;
+  return created.id;
 }
 
-// Historique des messages échangés avec un utilisateur précis
-export async function getConversation(otherUserId) {
-  const { data: auth } = await supabase.auth.getUser();
-  const myId = auth?.user?.id;
-  const { data, error } = await supabase
-    .from("direct_messages")
-    .select("*")
-    .or(`and(sender_id.eq.${myId},recipient_id.eq.${otherUserId}),and(sender_id.eq.${otherUserId},recipient_id.eq.${myId})`)
-    .order("created_at", { ascending: true });
+export async function getMessages(vendorId) {
+  const { data, error } = await supabase.from("messages").select("*").eq("vendor_id", vendorId).order("created_at", { ascending: true });
   if (error) throw error;
   return (data || []).map((m) => ({
-    id: m.id, senderId: m.sender_id, recipientId: m.recipient_id,
-    content: m.content, read: m.read, createdAt: m.created_at,
+    id: m.id, vendorId: m.vendor_id, senderRole: m.sender_role, senderUsername: m.sender_username,
+    content: m.content, readByAdmin: m.read_by_admin, readByVendor: m.read_by_vendor, createdAt: m.created_at,
+    editedAt: m.edited_at, deletedAt: m.deleted_at,
+    attachmentUrl: m.attachment_url, attachmentType: m.attachment_type,
+    conversationId: m.conversation_id,
   }));
 }
 
-// Nombre de messages non lus, groupés par expéditeur, pour les badges dans
-// la liste des utilisateurs
-export async function getUnreadCountsByUser() {
-  const { data: auth } = await supabase.auth.getUser();
-  const myId = auth?.user?.id;
-  const { data, error } = await supabase.from("direct_messages").select("sender_id").eq("recipient_id", myId).eq("read", false);
+// Nombre de messages non lus par vendeur, pour badge dans la liste (côté admin/gestionnaire)
+export async function getUnreadCounts() {
+  const { data, error } = await supabase.from("messages").select("vendor_id").eq("read_by_admin", false).eq("sender_role", "vendor").is("deleted_at", null);
   if (error) throw error;
   const counts = {};
-  (data || []).forEach((m) => { counts[m.sender_id] = (counts[m.sender_id] || 0) + 1; });
+  (data || []).forEach((m) => { counts[m.vendor_id] = (counts[m.vendor_id] || 0) + 1; });
   return counts;
 }
 
-export async function sendDirectMessage({ recipientId, content }) {
-  const { data: auth } = await supabase.auth.getUser();
-  const myId = auth?.user?.id;
-  const { error } = await supabase.from("direct_messages").insert({
-    sender_id: myId, recipient_id: recipientId, content, read: false,
+export async function sendMessage({ vendorId, senderRole, senderUsername, content, attachmentUrl, attachmentType }) {
+  const conversationId = await ensureConversation(vendorId);
+  const { error } = await supabase.from("messages").insert({
+    vendor_id: vendorId, conversation_id: conversationId, sender_role: senderRole, sender_username: senderUsername, content,
+    read_by_admin: senderRole !== "vendor", read_by_vendor: senderRole === "vendor",
+    attachment_url: attachmentUrl || null, attachment_type: attachmentType || null,
   });
+  if (error) throw error;
+  await supabase.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", conversationId);
+}
+
+export async function markMessagesRead(vendorId, asRole) {
+  const field = asRole === "vendor" ? "read_by_vendor" : "read_by_admin";
+  const { error } = await supabase.from("messages").update({ [field]: true }).eq("vendor_id", vendorId).eq(field, false);
   if (error) throw error;
 }
 
-export async function markConversationRead(otherUserId) {
-  const { data: auth } = await supabase.auth.getUser();
-  const myId = auth?.user?.id;
-  const { error } = await supabase.from("direct_messages")
-    .update({ read: true })
-    .eq("sender_id", otherUserId).eq("recipient_id", myId).eq("read", false);
+// Modifier son propre message (l'appelant doit être l'auteur — vérifié aussi côté RLS)
+export async function editMessage(id, newContent) {
+  const { error } = await supabase.from("messages").update({ content: newContent, edited_at: new Date().toISOString() }).eq("id", id);
   if (error) throw error;
+}
+
+// Suppression "douce" : le message reste en base mais s'affiche comme supprimé
+export async function deleteMessage(id) {
+  const { error } = await supabase.from("messages").update({ deleted_at: new Date().toISOString(), content: "" }).eq("id", id);
+  if (error) throw error;
+}
+
+// Pièce jointe : upload dans le bucket "attachments", rangée par vendeur
+export async function uploadAttachment(vendorId, file) {
+  const ext = file.name.split(".").pop();
+  const path = `${vendorId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const { error: upErr } = await supabase.storage.from("attachments").upload(path, file, { contentType: file.type });
+  if (upErr) throw upErr;
+  const { data: signed, error: urlErr } = await supabase.storage.from("attachments").createSignedUrl(path, 60 * 60 * 24 * 7);
+  if (urlErr) throw urlErr;
+  return { url: signed.signedUrl, type: file.type, path };
 }
 
 // -----------------------------------------------------------------------------
@@ -281,6 +323,7 @@ export async function getWithdrawals() {
   return (data || []).map((w) => ({
     id: w.id, vendorId: w.vendor_id, vendorNom: w.vendor_nom, montant: Number(w.montant),
     methode: w.methode, numeroMobile: w.numero_mobile, date: w.date, statut: w.statut,
+    approvedBy: w.approved_by, approvedAt: w.approved_at, refusalReason: w.refusal_reason,
   }));
 }
 
@@ -291,8 +334,11 @@ export async function createWithdrawal({ vendorId, vendorNom, montant, methode, 
   if (error) throw error;
 }
 
-export async function updateWithdrawalStatus(id, statut) {
-  const { error } = await supabase.from("withdrawals").update({ statut }).eq("id", id);
+export async function updateWithdrawalStatus(id, statut, { approvedBy, refusalReason } = {}) {
+  const patch = { statut };
+  if (statut === "approuve") { patch.approved_by = approvedBy || null; patch.approved_at = new Date().toISOString(); }
+  if (statut === "refuse") { patch.refusal_reason = refusalReason || null; patch.approved_by = approvedBy || null; patch.approved_at = new Date().toISOString(); }
+  const { error } = await supabase.from("withdrawals").update(patch).eq("id", id);
   if (error) throw error;
 }
 
@@ -312,6 +358,6 @@ export async function createNotification({ vendorId, message }) {
 }
 
 export async function markNotificationRead(id) {
-  const { error } = await supabase.from("notifications").update({ read: true }).eq("id", id);
+  const { error } = await supabase.from("notifications").update({ read: true, read_at: new Date().toISOString() }).eq("id", id);
   if (error) throw error;
 }

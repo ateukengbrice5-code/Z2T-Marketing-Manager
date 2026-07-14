@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Package, Boxes, Users, Truck, MoonStar, Wallet, History,
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown,
   Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye,
-  MessageSquare, Send,
+  MessageSquare, Send, X,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid } from "recharts";
 import * as store from "./lib/store.js";
@@ -199,6 +199,36 @@ function Badge({ ok, okText = "Équilibré", warnText = "Écart" }) {
     >
       {ok ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
       {ok ? okText : warnText}
+    </span>
+  );
+}
+
+function lastSeenLabel(iso) {
+  if (!iso) return "jamais connecté";
+  const diffMin = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (diffMin < 2) return "à l'instant";
+  if (diffMin < 60) return `il y a ${diffMin} min`;
+  const diffH = Math.round(diffMin / 60);
+  if (diffH < 24) return `il y a ${diffH} h`;
+  return `il y a ${Math.round(diffH / 24)} j`;
+}
+
+function PresenceDot({ isOnline, lastSeenAt, showLabel }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <span
+        title={isOnline ? "En ligne" : `Hors ligne — ${lastSeenLabel(lastSeenAt)}`}
+        style={{
+          width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+          background: isOnline ? "#3F8361" : "#C7CCD6",
+          boxShadow: isOnline ? "0 0 0 3px rgba(63,131,97,0.15)" : "none",
+        }}
+      />
+      {showLabel && (
+        <span style={{ fontSize: 11, color: isOnline ? "#3F8361" : "#9AA2B1" }}>
+          {isOnline ? "En ligne" : lastSeenLabel(lastSeenAt)}
+        </span>
+      )}
     </span>
   );
 }
@@ -690,7 +720,7 @@ export default function App() {
           methode: w.methode, numeroMobile: w.numeroMobile, date: w.date,
         });
       } else if (prevById[w.id].statut !== w.statut) {
-        await store.updateWithdrawalStatus(w.id, w.statut);
+        await store.updateWithdrawalStatus(w.id, w.statut, { approvedBy: w.approvedBy, refusalReason: w.refusalReason });
       }
     }
     setWithdrawals(await store.getWithdrawals());
@@ -734,14 +764,32 @@ export default function App() {
     setCurrentVendor(vendor);
     setTab(profile.role === "vendor" ? "retour" : "dashboard");
     store.logActivity(profile, "login", `${profile.username} s'est connecté.`);
+    store.setPresence(profile.id, true);
   };
 
   const handleLogout = async () => {
-    if (currentUser) store.logActivity(currentUser, "logout", `${currentUser.username} s'est déconnecté.`);
+    if (currentUser) {
+      store.logActivity(currentUser, "logout", `${currentUser.username} s'est déconnecté.`);
+      await store.setPresence(currentUser.id, false);
+    }
     await store.signOut();
     setCurrentUser(null);
     setCurrentVendor(null);
   };
+
+  // Présence : "battement de cœur" pendant que la session est ouverte, et
+  // passage hors-ligne au mieux à la fermeture de l'onglet/fenêtre.
+  useEffect(() => {
+    if (!currentUser) return;
+    store.setPresence(currentUser.id, true);
+    const interval = setInterval(() => store.setPresence(currentUser.id, true), 45000);
+    const handleUnload = () => { store.setPresence(currentUser.id, false); };
+    window.addEventListener("beforeunload", handleUnload);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("beforeunload", handleUnload);
+    };
+  }, [currentUser?.id]);
 
   if (loading || hasAccount === null) {
     return (
@@ -858,10 +906,10 @@ export default function App() {
           />
         )}
         {tab === "caisse" && canManage && (
-          <Caisse vendors={vendors} day={day} setDay={persistDay} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} daysList={daysList} today={today} />
+          <Caisse vendors={vendors} day={day} setDay={persistDay} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} daysList={daysList} today={today} currentUser={currentUser} />
         )}
         {tab === "messagerie" && (
-          <Messagerie currentUser={currentUser} />
+          <Messagerie isAdmin={canManage} vendors={vendors} activeVendor={activeVendor} currentUser={currentUser} />
         )}
         {tab === "historique" && isAdmin && <Historique daysList={daysList} today={today} />}
         {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
@@ -1356,12 +1404,14 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
   const [vendorAccounts, setVendorAccounts] = useState([]);
   const [managers, setManagers] = useState([]);
   const [secondaryAdmins, setSecondaryAdmins] = useState([]);
+  const [presence, setPresence] = useState({});
 
   const reloadAccounts = async () => {
-    const [va, ma, sa] = await Promise.all([store.getVendorAccounts(), store.getManagerAccounts(), store.getSecondaryAdmins()]);
+    const [va, ma, sa, pr] = await Promise.all([store.getVendorAccounts(), store.getManagerAccounts(), store.getSecondaryAdmins(), store.getVendorPresence()]);
     setVendorAccounts(va);
     setManagers(ma);
     setSecondaryAdmins(sa);
+    setPresence(pr);
   };
 
   useEffect(() => { reloadAccounts(); }, [vendors]);
@@ -1484,11 +1534,13 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
           <EmptyState text="Aucun vendeur enregistré." />
         ) : (
           <Table
-            headers={["Nom", "Compte de connexion", ""]}
+            headers={["Nom", "Compte de connexion", "Présence", ""]}
             rows={vendors.map((v) => {
               const u = vendorAccounts.find((u) => u.vendorId === v.id);
+              const p = presence[v.id];
               return [
                 v.nom, u ? u.username : "— aucun —",
+                u ? <PresenceDot key="p" isOnline={p?.isOnline} lastSeenAt={p?.lastSeenAt} showLabel /> : "—",
                 <button key="del" onClick={() => remove(v.id, v.nom)} style={iconBtnStyle}><Trash2 size={15} /></button>,
               ];
             })}
@@ -1877,8 +1929,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Messagerie — chaque utilisateur choisit avec qui il veut discuter parmi
-// tous les utilisateurs de la plateforme (discussion privée un-à-un)
+// Messagerie — discussion admin/gestionnaire ↔ vendeur (un fil par vendeur)
 // ---------------------------------------------------------------------------
 
 function timeShort(iso) {
@@ -1886,46 +1937,42 @@ function timeShort(iso) {
   return d.toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-function roleLabel(role) {
-  if (role === "admin") return "Administrateur";
-  if (role === "manager") return "Gestionnaire";
-  return "Vendeur";
-}
-
-function Messagerie({ currentUser }) {
-  const [users, setUsers] = useState([]);
-  const [selectedUserId, setSelectedUserId] = useState("");
+function Messagerie({ isAdmin, vendors, activeVendor, currentUser }) {
+  const [selectedVendorId, setSelectedVendorId] = useState(isAdmin ? (vendors[0]?.id || "") : "");
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [unreadCounts, setUnreadCounts] = useState({});
+  const [presence, setPresence] = useState({});
+  const [editingId, setEditingId] = useState(null);
+  const [editText, setEditText] = useState("");
+  const [uploading, setUploading] = useState(false);
   const scrollRef = useRef(null);
+  const fileInputRef = useRef(null);
 
-  const selectedUser = users.find((u) => u.id === selectedUserId);
+  const vendor = isAdmin ? vendors.find((v) => v.id === selectedVendorId) : activeVendor;
 
-  const reloadUsers = async () => setUsers(await store.getAllUsers());
-  const reloadUnread = async () => setUnreadCounts(await store.getUnreadCountsByUser());
+  const reloadUnread = async () => {
+    if (isAdmin) {
+      setUnreadCounts(await store.getUnreadCounts());
+      setPresence(await store.getVendorPresence());
+    }
+  };
+
+  useEffect(() => { reloadUnread(); }, [isAdmin, vendors.length]);
 
   useEffect(() => {
-    reloadUsers();
-    reloadUnread();
-    const interval = setInterval(reloadUnread, 8000);
-    return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!selectedUserId) { setMessages([]); return; }
+    if (!vendor) { setMessages([]); return; }
     let cancelled = false;
     const load = async () => {
-      const msgs = await store.getConversation(selectedUserId);
+      const msgs = await store.getMessages(vendor.id);
       if (!cancelled) setMessages(msgs);
     };
     load();
-    store.markConversationRead(selectedUserId).then(reloadUnread);
+    store.markMessagesRead(vendor.id, isAdmin ? "admin" : "vendor").then(reloadUnread);
     const interval = setInterval(load, 8000);
     return () => { cancelled = true; clearInterval(interval); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedUserId]);
+  }, [vendor?.id]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -1933,21 +1980,55 @@ function Messagerie({ currentUser }) {
 
   const send = async () => {
     const content = text.trim();
-    if (!content || !selectedUserId) return;
+    if (!content || !vendor) return;
     setText("");
-    await store.sendDirectMessage({ recipientId: selectedUserId, content });
-    setMessages(await store.getConversation(selectedUserId));
+    await store.sendMessage({ vendorId: vendor.id, senderRole: currentUser.role, senderUsername: currentUser.username, content });
+    setMessages(await store.getMessages(vendor.id));
   };
 
   const onKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   };
 
-  if (users.length === 0) {
-    return <Card title="Messagerie"><EmptyState text="Aucun autre utilisateur sur la plateforme pour le moment." /></Card>;
+  const pickFile = () => fileInputRef.current?.click();
+
+  const onFileChosen = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !vendor) return;
+    setUploading(true);
+    try {
+      const { url, type } = await store.uploadAttachment(vendor.id, file);
+      await store.sendMessage({
+        vendorId: vendor.id, senderRole: currentUser.role, senderUsername: currentUser.username,
+        content: `📎 ${file.name}`, attachmentUrl: url, attachmentType: type,
+      });
+      setMessages(await store.getMessages(vendor.id));
+    } catch (err) {
+      alert("Erreur lors de l'envoi de la pièce jointe : " + (err.message || err));
+    }
+    setUploading(false);
+  };
+
+  const startEdit = (m) => { setEditingId(m.id); setEditText(m.content); };
+  const cancelEdit = () => { setEditingId(null); setEditText(""); };
+  const saveEdit = async () => {
+    if (!editText.trim()) return;
+    await store.editMessage(editingId, editText.trim());
+    setEditingId(null); setEditText("");
+    setMessages(await store.getMessages(vendor.id));
+  };
+  const removeMessage = async (id) => {
+    await store.deleteMessage(id);
+    setMessages(await store.getMessages(vendor.id));
+  };
+
+  if (isAdmin && vendors.length === 0) {
+    return <Card title="Messagerie"><EmptyState text="Ajoute d'abord un vendeur pour pouvoir échanger des messages." /></Card>;
   }
 
-  const isMine = (m) => m.senderId === currentUser.id;
+  const isMine = (m) => (isAdmin ? m.senderRole !== "vendor" : m.senderRole === "vendor");
+  const isImage = (type) => type && type.startsWith("image/");
 
   const thread = (
     <div style={{ display: "flex", flexDirection: "column", height: 480 }}>
@@ -1958,20 +2039,49 @@ function Messagerie({ currentUser }) {
           messages.map((m) => (
             <div key={m.id} style={{ display: "flex", justifyContent: isMine(m) ? "flex-end" : "flex-start", marginBottom: 10 }}>
               <div style={{ maxWidth: "75%" }}>
-                <div
-                  style={{
-                    padding: "9px 13px", borderRadius: 12,
-                    background: isMine(m) ? "#1B2A4A" : "#F0F1F4",
-                    color: isMine(m) ? "#fff" : "#1B2A4A",
-                    fontSize: 13.5, lineHeight: 1.4,
-                    borderBottomRightRadius: isMine(m) ? 3 : 12,
-                    borderBottomLeftRadius: isMine(m) ? 12 : 3,
-                  }}
-                >
-                  {m.content}
-                </div>
+                {editingId === m.id ? (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <TextInput value={editText} onChange={(e) => setEditText(e.target.value)} style={{ width: 220 }} />
+                    <button onClick={saveEdit} style={iconBtnStyle}><CheckCircle2 size={15} color="#3F8361" /></button>
+                    <button onClick={cancelEdit} style={iconBtnStyle}><X size={15} color="#8A93A3" /></button>
+                  </div>
+                ) : m.deletedAt ? (
+                  <div style={{ padding: "9px 13px", borderRadius: 12, background: "#F0F1F4", color: "#9AA2B1", fontSize: 13, fontStyle: "italic" }}>
+                    Message supprimé
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      padding: "9px 13px", borderRadius: 12,
+                      background: isMine(m) ? "#1B2A4A" : "#F0F1F4",
+                      color: isMine(m) ? "#fff" : "#1B2A4A",
+                      fontSize: 13.5, lineHeight: 1.4,
+                      borderBottomRightRadius: isMine(m) ? 3 : 12,
+                      borderBottomLeftRadius: isMine(m) ? 12 : 3,
+                    }}
+                  >
+                    {m.attachmentUrl && isImage(m.attachmentType) && (
+                      <img src={m.attachmentUrl} alt="pièce jointe" style={{ maxWidth: "100%", borderRadius: 8, marginBottom: 6, display: "block" }} />
+                    )}
+                    {m.attachmentUrl && !isImage(m.attachmentType) && (
+                      <a href={m.attachmentUrl} target="_blank" rel="noreferrer" style={{ color: isMine(m) ? "#D9A441" : "#1B2A4A", display: "block", marginBottom: 4 }}>
+                        📎 Pièce jointe
+                      </a>
+                    )}
+                    {m.content}
+                  </div>
+                )}
                 <div style={{ fontSize: 10.5, color: "#9AA2B1", marginTop: 3, textAlign: isMine(m) ? "right" : "left" }}>
-                  {timeShort(m.createdAt)}
+                  {m.senderUsername} · {timeShort(m.createdAt)}
+                  {m.editedAt && !m.deletedAt && " · modifié"}
+                  {isMine(m) && !m.deletedAt && editingId !== m.id && (
+                    <>
+                      {" · "}
+                      <span onClick={() => startEdit(m)} style={{ cursor: "pointer", textDecoration: "underline" }}>modifier</span>
+                      {" · "}
+                      <span onClick={() => removeMessage(m.id)} style={{ cursor: "pointer", textDecoration: "underline" }}>supprimer</span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -1979,6 +2089,10 @@ function Messagerie({ currentUser }) {
         )}
       </div>
       <div style={{ display: "flex", gap: 8, paddingTop: 10, borderTop: "1px solid #F0F1F4" }}>
+        <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={onFileChosen} />
+        <Button variant="ghost" onClick={pickFile} disabled={uploading} style={{ borderColor: "#D8DCE3", color: "#5B6472" }}>
+          {uploading ? "…" : "📎"}
+        </Button>
         <TextInput
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -1991,17 +2105,22 @@ function Messagerie({ currentUser }) {
     </div>
   );
 
+  if (!isAdmin) {
+    return <Card title={`Discussion avec l'administration`}>{thread}</Card>;
+  }
+
   return (
     <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
       <div className="dash-col-side" style={{ flex: "1 1 220px" }}>
-        <Card title="Utilisateurs">
-          {users.map((u) => {
-            const count = unreadCounts[u.id] || 0;
-            const active = u.id === selectedUserId;
+        <Card title="Vendeurs">
+          {vendors.map((v) => {
+            const count = unreadCounts[v.id] || 0;
+            const active = v.id === selectedVendorId;
+            const p = presence[v.id];
             return (
               <button
-                key={u.id}
-                onClick={() => setSelectedUserId(u.id)}
+                key={v.id}
+                onClick={() => setSelectedVendorId(v.id)}
                 style={{
                   display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%",
                   textAlign: "left", padding: "10px 12px", marginBottom: 4, borderRadius: 8, border: "none",
@@ -2009,9 +2128,9 @@ function Messagerie({ currentUser }) {
                   color: "#1B2A4A", fontSize: 13.5, fontWeight: active ? 700 : 500,
                 }}
               >
-                <span style={{ display: "flex", flexDirection: "column" }}>
-                  <span>{u.username}</span>
-                  <span style={{ fontSize: 10.5, color: "#9AA2B1", fontWeight: 400 }}>{roleLabel(u.role)}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {p && <PresenceDot isOnline={p.isOnline} lastSeenAt={p.lastSeenAt} />}
+                  {v.nom}
                 </span>
                 {count > 0 && (
                   <span style={{ background: "#C1554A", color: "#fff", fontSize: 10.5, fontWeight: 700, borderRadius: 999, padding: "2px 7px" }}>
@@ -2024,17 +2143,17 @@ function Messagerie({ currentUser }) {
         </Card>
       </div>
       <div className="dash-col-main" style={{ flex: "2 1 380px" }}>
-        {selectedUser ? (
-          <Card title={`Discussion avec ${selectedUser.username}`}>{thread}</Card>
+        {vendor ? (
+          <Card title={`Discussion avec ${vendor.nom}`}>{thread}</Card>
         ) : (
-          <Card title="Messagerie"><EmptyState text="Choisis un utilisateur dans la liste pour commencer à discuter." /></Card>
+          <Card title="Messagerie"><EmptyState text="Choisis un vendeur dans la liste." /></Card>
         )}
       </div>
     </div>
   );
 }
 
-function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notifications, setNotifications, daysList, today }) {
+function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notifications, setNotifications, daysList, today, currentUser }) {
   const [label, setLabel] = useState("");
   const [montant, setMontant] = useState("");
   const [allDays, setAllDays] = useState(null);
@@ -2074,12 +2193,16 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
 
   const resolveWithdrawal = async (id, statut) => {
     const w = (withdrawals || []).find((x) => x.id === id);
-    await setWithdrawals((withdrawals || []).map((x) => (x.id === id ? { ...x, statut } : x)));
+    let refusalReason = null;
+    if (statut === "refuse") {
+      refusalReason = window.prompt("Raison du refus (visible dans l'historique) :", "") || "";
+    }
+    await setWithdrawals((withdrawals || []).map((x) => (x.id === id ? { ...x, statut, approvedBy: currentUser?.username || null, refusalReason } : x)));
     if (w) {
       const modePaiement = w.methode === "mobile" ? `par paiement mobile au ${w.numeroMobile}` : "en espèces";
       const message = statut === "approuve"
         ? `Ta demande de retrait de ${fmtMoney(w.montant)} a été approuvée — versement prévu ${modePaiement}.`
-        : `Ta demande de retrait de ${fmtMoney(w.montant)} a été refusée.`;
+        : `Ta demande de retrait de ${fmtMoney(w.montant)} a été refusée${refusalReason ? ` : ${refusalReason}` : "."}`;
       await setNotifications([...(notifications || []), { id: uid(), vendorId: w.vendorId, message, read: false, createdAt: Date.now() }]);
     }
   };
@@ -2117,12 +2240,14 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
       {historyWithdrawals.length > 0 && (
         <Card title="Historique des retraits">
           <Table
-            headers={["Vendeur", "Montant", "Mode de paiement", "Date", "Statut"]}
+            headers={["Vendeur", "Montant", "Mode de paiement", "Date", "Statut", "Traité par", "Détail"]}
             rows={historyWithdrawals.map((w) => [
               w.vendorNom, fmtMoney(w.montant),
               w.methode === "mobile" ? `Mobile — ${w.numeroMobile}` : "Espèces",
               formatDateFR(w.date),
               <Badge key="b" ok={w.statut === "approuve"} okText="Approuvé" warnText="Refusé" />,
+              w.approvedBy || "—",
+              w.statut === "refuse" && w.refusalReason ? w.refusalReason : "—",
             ])}
           />
         </Card>
@@ -2299,7 +2424,7 @@ function JournalActivite() {
         <EmptyState text="Aucune activité enregistrée pour l'instant." />
       ) : (
         <Table
-          headers={["Date", "Compte", "Événement", "Détail"]}
+          headers={["Date", "Compte", "Événement", "Détail", "Adresse IP", "Appareil"]}
           rows={filtered.map((e) => [
             new Date(e.createdAt).toLocaleString("fr-FR"),
             e.username,
@@ -2307,6 +2432,12 @@ function JournalActivite() {
               {EVENT_LABELS[e.eventType] || e.eventType}
             </span>,
             e.description,
+            e.ipAddress || "—",
+            e.device ? (
+              <span key="d" title={e.device} style={{ fontSize: 11.5, color: "#8A93A3" }}>
+                {e.device.length > 34 ? e.device.slice(0, 34) + "…" : e.device}
+              </span>
+            ) : "—",
           ])}
         />
       )}

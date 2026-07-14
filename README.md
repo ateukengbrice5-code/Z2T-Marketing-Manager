@@ -45,21 +45,32 @@ vraie adresse.)
 1. Dans Supabase : **SQL Editor** → **New query**
 2. Ouvre le fichier `supabase/schema.sql` de ce projet, copie tout son contenu, colle-le
 3. **Run**
+4. Fais la même chose avec `supabase/schema_v2_addendum.sql` (présence en ligne,
+   traçabilité des retraits, journal d'activité enrichi, édition/suppression de
+   messages, pièces jointes, conversations)
 
-Ça crée les tables (produits, vendeurs, journées, retraits, notifications, profils)
-et toutes les règles de sécurité (chacun ne peut voir/modifier que ce qui lui est autorisé).
+Ça crée les tables (produits, vendeurs, journées, retraits, notifications, profils,
+messages, conversations, journal d'activité) et toutes les règles de sécurité
+(chacun ne peut voir/modifier que ce qui lui est autorisé).
 
-## 3. Déployer la fonction Edge (création de comptes)
+## 3. Déployer les fonctions Edge
 
-Cette fonction permet à l'admin de créer un compte vendeur ou gestionnaire sans
-être déconnecté lui-même. Elle nécessite l'outil en ligne de commande Supabase.
+Deux fonctions serveur sont nécessaires. Elles utilisent l'outil en ligne de
+commande Supabase.
 
 ```bash
 npm install -g supabase
 supabase login
 cd z2t-web
 supabase link --project-ref TON_ID_DE_PROJET
+
+# Création/suppression de comptes (vendeur, gestionnaire, admin secondaire)
+# sans déconnecter la session de l'administrateur
 supabase functions deploy manage-user
+
+# Journal d'activité : capture l'adresse IP et l'appareil côté serveur
+# (impossible à obtenir de façon fiable depuis le navigateur)
+supabase functions deploy log-activity
 ```
 
 (Le "ID de projet" se trouve dans Supabase : **Project Settings** → **General** → **Reference ID**.)

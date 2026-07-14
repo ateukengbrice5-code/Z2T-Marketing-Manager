@@ -81,22 +81,6 @@ create table notifications (
 );
 
 -- -----------------------------------------------------------------------------
--- Messagerie interne (discussion privée entre deux utilisateurs quelconques —
--- chacun choisit avec qui il veut échanger, quel que soit son rôle)
--- -----------------------------------------------------------------------------
-create table direct_messages (
-  id uuid primary key default gen_random_uuid(),
-  sender_id uuid not null references profiles(id) on delete cascade,
-  recipient_id uuid not null references profiles(id) on delete cascade,
-  content text not null,
-  read boolean not null default false,
-  created_at timestamptz default now()
-);
-
-create index direct_messages_thread_idx on direct_messages (sender_id, recipient_id, created_at);
-create index direct_messages_recipient_unread_idx on direct_messages (recipient_id, read);
-
--- -----------------------------------------------------------------------------
 -- Journal d'activité (comptes administrateurs secondaires uniquement)
 -- -----------------------------------------------------------------------------
 create table activity_log (
@@ -132,7 +116,6 @@ alter table products enable row level security;
 alter table days enable row level security;
 alter table withdrawals enable row level security;
 alter table notifications enable row level security;
-alter table direct_messages enable row level security;
 alter table activity_log enable row level security;
 
 -- ---- profiles ----
@@ -178,14 +161,6 @@ create policy "admin et manager créent des notifications" on notifications
   for insert with check (my_role() in ('admin', 'manager'));
 create policy "vendeur marque ses notifications comme lues" on notifications
   for update using (vendor_id = my_vendor_id() or my_role() in ('admin', 'manager'));
-
--- ---- direct_messages ----
-create policy "on lit ses propres messages envoyés ou reçus" on direct_messages
-  for select using (auth.uid() = sender_id or auth.uid() = recipient_id);
-create policy "on envoie des messages en son nom" on direct_messages
-  for insert with check (auth.uid() = sender_id);
-create policy "le destinataire marque ses messages comme lus" on direct_messages
-  for update using (auth.uid() = recipient_id) with check (auth.uid() = recipient_id);
 
 -- ---- activity_log ----
 create policy "admin principal lit le journal d'activité" on activity_log
