@@ -147,73 +147,99 @@ export async function getActivityLog() {
 }
 
 // -----------------------------------------------------------------------------
-// Messagerie (admin/gestionnaire ↔ vendeur, un fil de discussion par vendeur)
+// Annuaire — tous les utilisateurs de la plateforme
 // -----------------------------------------------------------------------------
 
-// Récupère (ou crée) la conversation associée à un vendeur
-async function ensureConversation(vendorId) {
-  const { data: existing, error: selErr } = await supabase.from("conversations").select("id").eq("vendor_id", vendorId).maybeSingle();
+export async function getAllUsers() {
+  const { data: auth } = await supabase.auth.getUser();
+  const myId = auth?.user?.id;
+  const { data, error } = await supabase.from("profiles").select("*").order("role").order("username");
+  if (error) throw error;
+  return (data || [])
+    .filter((p) => p.id !== myId)
+    .map((p) => ({ id: p.id, username: p.username, role: p.role, vendorId: p.vendor_id, isOnline: !!p.is_online, lastSeenAt: p.last_seen_at }));
+}
+
+// -----------------------------------------------------------------------------
+// Messagerie directe — n'importe quel utilisateur peut écrire à n'importe qui
+// -----------------------------------------------------------------------------
+
+// Récupère (ou crée) la conversation directe entre l'utilisateur connecté et un autre
+export async function getOrCreateDMConversation(otherUserId) {
+  const { data: auth } = await supabase.auth.getUser();
+  const myId = auth.user.id;
+  const { data: existing, error: selErr } = await supabase
+    .from("dm_conversations").select("id")
+    .or(`and(user_a.eq.${myId},user_b.eq.${otherUserId}),and(user_a.eq.${otherUserId},user_b.eq.${myId})`)
+    .maybeSingle();
   if (selErr) throw selErr;
   if (existing) return existing.id;
-  const { data: created, error: insErr } = await supabase.from("conversations").insert({ vendor_id: vendorId }).select("id").single();
+  const { data: created, error: insErr } = await supabase
+    .from("dm_conversations").insert({ user_a: myId, user_b: otherUserId }).select("id").single();
   if (insErr) throw insErr;
   return created.id;
 }
 
-export async function getMessages(vendorId) {
-  const { data, error } = await supabase.from("messages").select("*").eq("vendor_id", vendorId).order("created_at", { ascending: true });
+export async function getDMMessages(conversationId) {
+  const { data, error } = await supabase.from("dm_messages").select("*").eq("conversation_id", conversationId).order("created_at", { ascending: true });
   if (error) throw error;
   return (data || []).map((m) => ({
-    id: m.id, vendorId: m.vendor_id, senderRole: m.sender_role, senderUsername: m.sender_username,
-    content: m.content, readByAdmin: m.read_by_admin, readByVendor: m.read_by_vendor, createdAt: m.created_at,
-    editedAt: m.edited_at, deletedAt: m.deleted_at,
+    id: m.id, conversationId: m.conversation_id, senderId: m.sender_id, senderUsername: m.sender_username,
+    content: m.content, read: m.read, createdAt: m.created_at, editedAt: m.edited_at, deletedAt: m.deleted_at,
     attachmentUrl: m.attachment_url, attachmentType: m.attachment_type,
-    conversationId: m.conversation_id,
   }));
 }
 
-// Nombre de messages non lus par vendeur, pour badge dans la liste (côté admin/gestionnaire)
-export async function getUnreadCounts() {
-  const { data, error } = await supabase.from("messages").select("vendor_id").eq("read_by_admin", false).eq("sender_role", "vendor").is("deleted_at", null);
-  if (error) throw error;
-  const counts = {};
-  (data || []).forEach((m) => { counts[m.vendor_id] = (counts[m.vendor_id] || 0) + 1; });
-  return counts;
-}
-
-export async function sendMessage({ vendorId, senderRole, senderUsername, content, attachmentUrl, attachmentType }) {
-  const conversationId = await ensureConversation(vendorId);
-  const { error } = await supabase.from("messages").insert({
-    vendor_id: vendorId, conversation_id: conversationId, sender_role: senderRole, sender_username: senderUsername, content,
-    read_by_admin: senderRole !== "vendor", read_by_vendor: senderRole === "vendor",
+export async function sendDMMessage({ conversationId, senderId, senderUsername, content, attachmentUrl, attachmentType }) {
+  const { error } = await supabase.from("dm_messages").insert({
+    conversation_id: conversationId, sender_id: senderId, sender_username: senderUsername, content,
     attachment_url: attachmentUrl || null, attachment_type: attachmentType || null,
   });
   if (error) throw error;
-  await supabase.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", conversationId);
+  await supabase.from("dm_conversations").update({ updated_at: new Date().toISOString() }).eq("id", conversationId);
 }
 
-export async function markMessagesRead(vendorId, asRole) {
-  const field = asRole === "vendor" ? "read_by_vendor" : "read_by_admin";
-  const { error } = await supabase.from("messages").update({ [field]: true }).eq("vendor_id", vendorId).eq(field, false);
+export async function markDMMessagesRead(conversationId, myUserId) {
+  const { error } = await supabase.from("dm_messages").update({ read: true }).eq("conversation_id", conversationId).neq("sender_id", myUserId).eq("read", false);
   if (error) throw error;
 }
 
-// Modifier son propre message (l'appelant doit être l'auteur — vérifié aussi côté RLS)
-export async function editMessage(id, newContent) {
-  const { error } = await supabase.from("messages").update({ content: newContent, edited_at: new Date().toISOString() }).eq("id", id);
+// Nombre de messages non lus, groupés par conversation, pour l'utilisateur connecté
+export async function getDMUnreadCounts() {
+  const { data: auth } = await supabase.auth.getUser();
+  const myId = auth.user.id;
+  const { data: convs, error: convErr } = await supabase.from("dm_conversations").select("id, user_a, user_b").or(`user_a.eq.${myId},user_b.eq.${myId}`);
+  if (convErr) throw convErr;
+  const myConvIds = (convs || []).map((c) => c.id);
+  if (myConvIds.length === 0) return {};
+  const { data, error } = await supabase.from("dm_messages").select("conversation_id").in("conversation_id", myConvIds).eq("read", false).neq("sender_id", myId).is("deleted_at", null);
+  if (error) throw error;
+  const byConv = {};
+  (data || []).forEach((m) => { byConv[m.conversation_id] = (byConv[m.conversation_id] || 0) + 1; });
+  // Reformate par "autre utilisateur" pour un affichage direct dans l'annuaire
+  const byOtherUser = {};
+  (convs || []).forEach((c) => {
+    if (!byConv[c.id]) return;
+    const otherId = c.user_a === myId ? c.user_b : c.user_a;
+    byOtherUser[otherId] = byConv[c.id];
+  });
+  return byOtherUser;
+}
+
+export async function editDMMessage(id, newContent) {
+  const { error } = await supabase.from("dm_messages").update({ content: newContent, edited_at: new Date().toISOString() }).eq("id", id);
   if (error) throw error;
 }
 
-// Suppression "douce" : le message reste en base mais s'affiche comme supprimé
-export async function deleteMessage(id) {
-  const { error } = await supabase.from("messages").update({ deleted_at: new Date().toISOString(), content: "" }).eq("id", id);
+export async function deleteDMMessage(id) {
+  const { error } = await supabase.from("dm_messages").update({ deleted_at: new Date().toISOString(), content: "" }).eq("id", id);
   if (error) throw error;
 }
 
-// Pièce jointe : upload dans le bucket "attachments", rangée par vendeur
-export async function uploadAttachment(vendorId, file) {
+// Pièce jointe : upload dans le bucket "attachments", rangée par conversation
+export async function uploadDMAttachment(conversationId, file) {
   const ext = file.name.split(".").pop();
-  const path = `${vendorId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const path = `${conversationId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
   const { error: upErr } = await supabase.storage.from("attachments").upload(path, file, { contentType: file.type });
   if (upErr) throw upErr;
   const { data: signed, error: urlErr } = await supabase.storage.from("attachments").createSignedUrl(path, 60 * 60 * 24 * 7);

@@ -48,6 +48,8 @@ vraie adresse.)
 4. Fais la même chose avec `supabase/schema_v2_addendum.sql` (présence en ligne,
    traçabilité des retraits, journal d'activité enrichi, édition/suppression de
    messages, pièces jointes, conversations)
+5. Fais la même chose avec `supabase/schema_v3_addendum.sql` (messagerie
+   directe façon annuaire : n'importe qui peut écrire à n'importe qui)
 
 Ça crée les tables (produits, vendeurs, journées, retraits, notifications, profils,
 messages, conversations, journal d'activité) et toutes les règles de sécurité

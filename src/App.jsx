@@ -909,7 +909,7 @@ export default function App() {
           <Caisse vendors={vendors} day={day} setDay={persistDay} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} daysList={daysList} today={today} currentUser={currentUser} />
         )}
         {tab === "messagerie" && (
-          <Messagerie isAdmin={canManage} vendors={vendors} activeVendor={activeVendor} currentUser={currentUser} />
+          <Messagerie currentUser={currentUser} />
         )}
         {tab === "historique" && isAdmin && <Historique daysList={daysList} today={today} />}
         {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
@@ -1937,53 +1937,69 @@ function timeShort(iso) {
   return d.toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-function Messagerie({ isAdmin, vendors, activeVendor, currentUser }) {
-  const [selectedVendorId, setSelectedVendorId] = useState(isAdmin ? (vendors[0]?.id || "") : "");
+const ROLE_GROUP_LABEL = { admin: "Administrateurs", manager: "Gestionnaires", vendor: "Vendeurs" };
+
+function Messagerie({ currentUser }) {
+  const [users, setUsers] = useState(null);
+  const [selectedUserId, setSelectedUserId] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [conversationId, setConversationId] = useState(null);
   const [text, setText] = useState("");
   const [unreadCounts, setUnreadCounts] = useState({});
-  const [presence, setPresence] = useState({});
   const [editingId, setEditingId] = useState(null);
   const [editText, setEditText] = useState("");
   const [uploading, setUploading] = useState(false);
   const scrollRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  const vendor = isAdmin ? vendors.find((v) => v.id === selectedVendorId) : activeVendor;
-
-  const reloadUnread = async () => {
-    if (isAdmin) {
-      setUnreadCounts(await store.getUnreadCounts());
-      setPresence(await store.getVendorPresence());
-    }
+  const reloadDirectory = async () => {
+    const [u, counts] = await Promise.all([store.getAllUsers(), store.getDMUnreadCounts()]);
+    setUsers(u);
+    setUnreadCounts(counts);
+    if (!selectedUserId && u.length > 0) setSelectedUserId(u[0].id);
   };
 
-  useEffect(() => { reloadUnread(); }, [isAdmin, vendors.length]);
+  useEffect(() => { reloadDirectory(); }, []);
+
+  const selectedUser = users?.find((u) => u.id === selectedUserId) || null;
 
   useEffect(() => {
-    if (!vendor) { setMessages([]); return; }
+    if (!selectedUserId) { setMessages([]); setConversationId(null); return; }
     let cancelled = false;
     const load = async () => {
-      const msgs = await store.getMessages(vendor.id);
+      const convId = await store.getOrCreateDMConversation(selectedUserId);
+      if (cancelled) return;
+      setConversationId(convId);
+      const msgs = await store.getDMMessages(convId);
       if (!cancelled) setMessages(msgs);
+      await store.markDMMessagesRead(convId, currentUser.id);
+      reloadDirectory();
     };
     load();
-    store.markMessagesRead(vendor.id, isAdmin ? "admin" : "vendor").then(reloadUnread);
-    const interval = setInterval(load, 8000);
+    const interval = setInterval(async () => {
+      if (!conversationId) return;
+      const msgs = await store.getDMMessages(conversationId);
+      if (!cancelled) setMessages(msgs);
+    }, 8000);
     return () => { cancelled = true; clearInterval(interval); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vendor?.id]);
+  }, [selectedUserId]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
+  const refreshThread = async () => {
+    if (!conversationId) return;
+    setMessages(await store.getDMMessages(conversationId));
+  };
+
   const send = async () => {
     const content = text.trim();
-    if (!content || !vendor) return;
+    if (!content || !conversationId) return;
     setText("");
-    await store.sendMessage({ vendorId: vendor.id, senderRole: currentUser.role, senderUsername: currentUser.username, content });
-    setMessages(await store.getMessages(vendor.id));
+    await store.sendDMMessage({ conversationId, senderId: currentUser.id, senderUsername: currentUser.username, content });
+    await refreshThread();
   };
 
   const onKeyDown = (e) => {
@@ -1995,15 +2011,15 @@ function Messagerie({ isAdmin, vendors, activeVendor, currentUser }) {
   const onFileChosen = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";
-    if (!file || !vendor) return;
+    if (!file || !conversationId) return;
     setUploading(true);
     try {
-      const { url, type } = await store.uploadAttachment(vendor.id, file);
-      await store.sendMessage({
-        vendorId: vendor.id, senderRole: currentUser.role, senderUsername: currentUser.username,
+      const { url, type } = await store.uploadDMAttachment(conversationId, file);
+      await store.sendDMMessage({
+        conversationId, senderId: currentUser.id, senderUsername: currentUser.username,
         content: `📎 ${file.name}`, attachmentUrl: url, attachmentType: type,
       });
-      setMessages(await store.getMessages(vendor.id));
+      await refreshThread();
     } catch (err) {
       alert("Erreur lors de l'envoi de la pièce jointe : " + (err.message || err));
     }
@@ -2014,21 +2030,25 @@ function Messagerie({ isAdmin, vendors, activeVendor, currentUser }) {
   const cancelEdit = () => { setEditingId(null); setEditText(""); };
   const saveEdit = async () => {
     if (!editText.trim()) return;
-    await store.editMessage(editingId, editText.trim());
+    await store.editDMMessage(editingId, editText.trim());
     setEditingId(null); setEditText("");
-    setMessages(await store.getMessages(vendor.id));
+    await refreshThread();
   };
   const removeMessage = async (id) => {
-    await store.deleteMessage(id);
-    setMessages(await store.getMessages(vendor.id));
+    await store.deleteDMMessage(id);
+    await refreshThread();
   };
 
-  if (isAdmin && vendors.length === 0) {
-    return <Card title="Messagerie"><EmptyState text="Ajoute d'abord un vendeur pour pouvoir échanger des messages." /></Card>;
+  if (users === null) return <EmptyState text="Chargement de l'annuaire…" />;
+  if (users.length === 0) {
+    return <Card title="Messagerie"><EmptyState text="Aucun autre compte sur la plateforme pour l'instant." /></Card>;
   }
 
-  const isMine = (m) => (isAdmin ? m.senderRole !== "vendor" : m.senderRole === "vendor");
+  const isMine = (m) => m.senderId === currentUser.id;
   const isImage = (type) => type && type.startsWith("image/");
+
+  const grouped = { admin: [], manager: [], vendor: [] };
+  users.forEach((u) => { grouped[u.role]?.push(u); });
 
   const thread = (
     <div style={{ display: "flex", flexDirection: "column", height: 480 }}>
@@ -2105,48 +2125,52 @@ function Messagerie({ isAdmin, vendors, activeVendor, currentUser }) {
     </div>
   );
 
-  if (!isAdmin) {
-    return <Card title={`Discussion avec l'administration`}>{thread}</Card>;
-  }
-
   return (
     <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-      <div className="dash-col-side" style={{ flex: "1 1 220px" }}>
-        <Card title="Vendeurs">
-          {vendors.map((v) => {
-            const count = unreadCounts[v.id] || 0;
-            const active = v.id === selectedVendorId;
-            const p = presence[v.id];
-            return (
-              <button
-                key={v.id}
-                onClick={() => setSelectedVendorId(v.id)}
-                style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%",
-                  textAlign: "left", padding: "10px 12px", marginBottom: 4, borderRadius: 8, border: "none",
-                  cursor: "pointer", background: active ? "#EAF0FB" : "transparent",
-                  color: "#1B2A4A", fontSize: 13.5, fontWeight: active ? 700 : 500,
-                }}
-              >
-                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  {p && <PresenceDot isOnline={p.isOnline} lastSeenAt={p.lastSeenAt} />}
-                  {v.nom}
-                </span>
-                {count > 0 && (
-                  <span style={{ background: "#C1554A", color: "#fff", fontSize: 10.5, fontWeight: 700, borderRadius: 999, padding: "2px 7px" }}>
-                    {count}
-                  </span>
-                )}
-              </button>
-            );
-          })}
+      <div className="dash-col-side" style={{ flex: "1 1 240px" }}>
+        <Card title="Annuaire">
+          {["admin", "manager", "vendor"].map((role) => (
+            grouped[role].length === 0 ? null : (
+              <div key={role} style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: "#9AA2B1", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6 }}>
+                  {ROLE_GROUP_LABEL[role]}
+                </div>
+                {grouped[role].map((u) => {
+                  const count = unreadCounts[u.id] || 0;
+                  const active = u.id === selectedUserId;
+                  return (
+                    <button
+                      key={u.id}
+                      onClick={() => setSelectedUserId(u.id)}
+                      style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%",
+                        textAlign: "left", padding: "9px 10px", marginBottom: 3, borderRadius: 8, border: "none",
+                        cursor: "pointer", background: active ? "#EAF0FB" : "transparent",
+                        color: "#1B2A4A", fontSize: 13, fontWeight: active ? 700 : 500,
+                      }}
+                    >
+                      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <PresenceDot isOnline={u.isOnline} lastSeenAt={u.lastSeenAt} />
+                        {u.username}
+                      </span>
+                      {count > 0 && (
+                        <span style={{ background: "#C1554A", color: "#fff", fontSize: 10.5, fontWeight: 700, borderRadius: 999, padding: "2px 7px" }}>
+                          {count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )
+          ))}
         </Card>
       </div>
       <div className="dash-col-main" style={{ flex: "2 1 380px" }}>
-        {vendor ? (
-          <Card title={`Discussion avec ${vendor.nom}`}>{thread}</Card>
+        {selectedUser ? (
+          <Card title={`Discussion avec ${selectedUser.username}`}>{thread}</Card>
         ) : (
-          <Card title="Messagerie"><EmptyState text="Choisis un vendeur dans la liste." /></Card>
+          <Card title="Messagerie"><EmptyState text="Choisis quelqu'un dans l'annuaire." /></Card>
         )}
       </div>
     </div>
