@@ -247,6 +247,24 @@ export async function uploadDMAttachment(conversationId, file) {
   return { url: signed.signedUrl, type: file.type, path };
 }
 
+// Toutes les conversations de la plateforme, en lecture seule — réservé à
+// l'administrateur principal (la RLS ne l'autorise que pour lui).
+export async function getAllConversations() {
+  const { data: convs, error } = await supabase.from("dm_conversations").select("*").order("updated_at", { ascending: false });
+  if (error) throw error;
+  if (!convs || convs.length === 0) return [];
+  const userIds = Array.from(new Set(convs.flatMap((c) => [c.user_a, c.user_b])));
+  const { data: profiles, error: pErr } = await supabase.from("profiles").select("id, username, role").in("id", userIds);
+  if (pErr) throw pErr;
+  const byId = Object.fromEntries((profiles || []).map((p) => [p.id, p]));
+  return convs.map((c) => ({
+    id: c.id,
+    userA: byId[c.user_a] || { username: "Compte supprimé" },
+    userB: byId[c.user_b] || { username: "Compte supprimé" },
+    updatedAt: c.updated_at,
+  }));
+}
+
 // -----------------------------------------------------------------------------
 // Produits
 // -----------------------------------------------------------------------------

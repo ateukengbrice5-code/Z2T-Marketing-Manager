@@ -91,3 +91,20 @@ create policy "envoi pièces jointes conversation directe" on storage.objects
 
 -- Remarque : les anciennes tables "messages" et "conversations" (v2) restent
 -- en base pour ne rien perdre, mais ne sont plus utilisées par l'application.
+
+-- -----------------------------------------------------------------------------
+-- Supervision : l'administrateur principal peut consulter TOUTES les
+-- conversations en lecture seule (aucun droit d'écriture sur celles des
+-- autres). Remplace les policies de lecture ci-dessus.
+-- -----------------------------------------------------------------------------
+drop policy if exists "participant lit sa conversation" on dm_conversations;
+create policy "participant lit sa conversation" on dm_conversations
+  for select using (auth.uid() = user_a or auth.uid() = user_b or is_primary_admin());
+
+drop policy if exists "participant lit les messages" on dm_messages;
+create policy "participant lit les messages" on dm_messages
+  for select using (
+    is_primary_admin()
+    or exists (select 1 from dm_conversations c where c.id = conversation_id and (c.user_a = auth.uid() or c.user_b = auth.uid()))
+  );
+

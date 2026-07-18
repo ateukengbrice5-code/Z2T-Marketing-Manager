@@ -816,7 +816,11 @@ export default function App() {
   const isManager = currentUser.role === "manager";
   const canManage = isAdmin || isManager; // accès Tableau de bord / Finances / Stock / Personnel
   const nav = isAdmin
-    ? (currentUser.isPrimary ? [...NAV_ADMIN, { id: "journal", label: "Journal d'activité", icon: History }] : NAV_ADMIN)
+    ? (currentUser.isPrimary
+        ? [...NAV_ADMIN,
+           { id: "journal", label: "Journal d'activité", icon: History },
+           { id: "supervision", label: "Toutes les conversations", icon: Eye }]
+        : NAV_ADMIN)
     : isManager ? NAV_MANAGER : NAV_VENDOR;
   const roleLabel = isAdmin ? (currentUser.isPrimary ? "admin principal" : "admin") : isManager ? "gestionnaire" : "vendeur";
   const activeVendor = currentUser.role === "vendor" ? currentVendor : null;
@@ -913,6 +917,7 @@ export default function App() {
         )}
         {tab === "historique" && isAdmin && <Historique daysList={daysList} today={today} />}
         {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
+        {tab === "supervision" && isAdmin && currentUser.isPrimary && <Supervision currentUser={currentUser} />}
       </div>
     </div>
   );
@@ -2466,5 +2471,118 @@ function JournalActivite() {
         />
       )}
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Supervision — l'admin principal peut consulter toutes les conversations,
+// en lecture seule (aucun envoi, aucune modification possible).
+// ---------------------------------------------------------------------------
+
+function Supervision({ currentUser }) {
+  const [conversations, setConversations] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      const convs = await store.getAllConversations();
+      setConversations(convs);
+      if (convs.length > 0) setSelectedId(convs[0].id);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedId) { setMessages([]); return; }
+    (async () => setMessages(await store.getDMMessages(selectedId)))();
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages]);
+
+  if (conversations === null) return <EmptyState text="Chargement des conversations…" />;
+
+  const selected = conversations.find((c) => c.id === selectedId) || null;
+  const isImage = (type) => type && type.startsWith("image/");
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, color: "#8A93A3", fontSize: 12.5 }}>
+        <Eye size={14} /> Lecture seule — visible uniquement par toi, aucun message ne peut être envoyé ici.
+      </div>
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+        <div className="dash-col-side" style={{ flex: "1 1 260px" }}>
+          <Card title={`Conversations (${conversations.length})`}>
+            {conversations.length === 0 ? (
+              <EmptyState text="Aucune conversation sur la plateforme pour l'instant." />
+            ) : (
+              conversations.map((c) => {
+                const active = c.id === selectedId;
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => setSelectedId(c.id)}
+                    style={{
+                      display: "block", width: "100%", textAlign: "left", padding: "9px 10px", marginBottom: 3,
+                      borderRadius: 8, border: "none", cursor: "pointer",
+                      background: active ? "#EAF0FB" : "transparent", color: "#1B2A4A",
+                      fontSize: 13, fontWeight: active ? 700 : 500,
+                    }}
+                  >
+                    {c.userA.username} ↔ {c.userB.username}
+                  </button>
+                );
+              })
+            )}
+          </Card>
+        </div>
+        <div className="dash-col-main" style={{ flex: "2 1 380px" }}>
+          <Card title={selected ? `${selected.userA.username} ↔ ${selected.userB.username}` : "Conversation"}>
+            {!selected ? (
+              <EmptyState text="Choisis une conversation dans la liste." />
+            ) : (
+              <div ref={scrollRef} style={{ height: 480, overflowY: "auto", padding: "4px 4px 12px 4px" }}>
+                {messages.length === 0 ? (
+                  <EmptyState text="Aucun message dans cette conversation." />
+                ) : (
+                  messages.map((m) => {
+                    const isA = m.senderUsername === selected.userA.username;
+                    return (
+                      <div key={m.id} style={{ display: "flex", justifyContent: isA ? "flex-start" : "flex-end", marginBottom: 10 }}>
+                        <div style={{ maxWidth: "75%" }}>
+                          {m.deletedAt ? (
+                            <div style={{ padding: "9px 13px", borderRadius: 12, background: "#F0F1F4", color: "#9AA2B1", fontSize: 13, fontStyle: "italic" }}>
+                              Message supprimé
+                            </div>
+                          ) : (
+                            <div style={{ padding: "9px 13px", borderRadius: 12, background: isA ? "#F0F1F4" : "#1B2A4A", color: isA ? "#1B2A4A" : "#fff", fontSize: 13.5, lineHeight: 1.4 }}>
+                              {m.attachmentUrl && isImage(m.attachmentType) && (
+                                <img src={m.attachmentUrl} alt="pièce jointe" style={{ maxWidth: "100%", borderRadius: 8, marginBottom: 6, display: "block" }} />
+                              )}
+                              {m.attachmentUrl && !isImage(m.attachmentType) && (
+                                <a href={m.attachmentUrl} target="_blank" rel="noreferrer" style={{ color: isA ? "#1B2A4A" : "#D9A441", display: "block", marginBottom: 4 }}>
+                                  📎 Pièce jointe
+                                </a>
+                              )}
+                              {m.content}
+                            </div>
+                          )}
+                          <div style={{ fontSize: 10.5, color: "#9AA2B1", marginTop: 3, textAlign: isA ? "left" : "right" }}>
+                            {m.senderUsername} · {timeShort(m.createdAt)}
+                            {m.editedAt && !m.deletedAt && " · modifié"}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </Card>
+        </div>
+      </div>
+    </div>
   );
 }
