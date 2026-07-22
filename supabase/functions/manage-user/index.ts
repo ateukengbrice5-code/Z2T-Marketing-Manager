@@ -55,10 +55,32 @@ Deno.serve(async (req) => {
           return new Response(JSON.stringify({ error: "Impossible de supprimer le compte administrateur principal." }), { status: 403, headers: cors });
         }
       }
-
       await adminClient.from("profiles").delete().eq("id", userId);
       const { error: delErr } = await adminClient.auth.admin.deleteUser(userId);
       if (delErr) return new Response(JSON.stringify({ error: delErr.message }), { status: 400, headers: cors });
+
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+    }
+
+    if (action === "convert") {
+      const { userId, newRole } = body;
+      if (!userId || !newRole) {
+        return new Response(JSON.stringify({ error: "Champs manquants." }), { status: 400, headers: cors });
+      }
+      if (newRole !== "messenger") {
+        return new Response(JSON.stringify({ error: "Conversion non prise en charge." }), { status: 400, headers: cors });
+      }
+
+      const { data: targetProfile } = await adminClient.from("profiles").select("role").eq("id", userId).single();
+      if (!targetProfile) {
+        return new Response(JSON.stringify({ error: "Compte introuvable." }), { status: 404, headers: cors });
+      }
+      if (targetProfile.role !== "vendor") {
+        return new Response(JSON.stringify({ error: "Seul un compte vendeur peut être converti en compte messagerie." }), { status: 400, headers: cors });
+      }
+
+      const { error: convErr } = await adminClient.from("profiles").update({ role: "messenger", vendor_id: null }).eq("id", userId);
+      if (convErr) return new Response(JSON.stringify({ error: convErr.message }), { status: 400, headers: cors });
 
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
     }
@@ -68,7 +90,7 @@ Deno.serve(async (req) => {
     if (!username || !password || !role) {
       return new Response(JSON.stringify({ error: "Champs manquants." }), { status: 400, headers: cors });
     }
-    if (!["vendor", "manager", "admin"].includes(role)) {
+    if (!["vendor", "manager", "admin", "messenger"].includes(role)) {
       return new Response(JSON.stringify({ error: "Rôle invalide." }), { status: 400, headers: cors });
     }
     if (role === "manager" && callerProfile.role !== "admin") {

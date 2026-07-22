@@ -76,8 +76,10 @@ begin
 end;
 $$ language plpgsql security definer set search_path = public;
 
-revoke execute on function touch_last_seen() from anon;
-revoke execute on function mark_user_offline(integer) from anon;
+revoke execute on function touch_last_seen() from public;
+revoke execute on function mark_user_offline(integer) from public;
+grant execute on function touch_last_seen() to authenticated;
+grant execute on function mark_user_offline(integer) to authenticated;
 
 create extension if not exists pg_cron with schema extensions;
 
@@ -89,9 +91,12 @@ select cron.schedule('mark-users-offline', '*/2 * * * *', $$select public.mark_u
 alter function my_role() set search_path = public;
 alter function my_vendor_id() set search_path = public;
 alter function is_primary_admin() set search_path = public;
-revoke execute on function my_role() from anon;
-revoke execute on function my_vendor_id() from anon;
-revoke execute on function is_primary_admin() from anon;
+revoke execute on function my_role() from public;
+revoke execute on function my_vendor_id() from public;
+revoke execute on function is_primary_admin() from public;
+grant execute on function my_role() to authenticated;
+grant execute on function my_vendor_id() to authenticated;
+grant execute on function is_primary_admin() to authenticated;
 
 -- -----------------------------------------------------------------------------
 -- Stockage des pièces jointes de la messagerie

@@ -108,3 +108,37 @@ create policy "participant lit les messages" on dm_messages
     or exists (select 1 from dm_conversations c where c.id = conversation_id and (c.user_a = auth.uid() or c.user_b = auth.uid()))
   );
 
+-- -----------------------------------------------------------------------------
+-- Rôle "messenger" : compte dont l'unique accès est la Messagerie (aucune
+-- autre donnée visible ni modifiable côté interface).
+-- -----------------------------------------------------------------------------
+alter table profiles drop constraint if exists profiles_role_check;
+alter table profiles add constraint profiles_role_check check (role in ('admin','manager','vendor','messenger'));
+
+-- -----------------------------------------------------------------------------
+-- Cloisonnement strict : un compte "messenger" ne doit rien pouvoir lire en
+-- dehors de l'annuaire (profiles) et de ses propres conversations — même en
+-- contournant l'interface (ex. requêtes directes depuis la console du
+-- navigateur). Remplace les policies de lecture trop permissives ("tous les
+-- connectés") par des policies limitées aux rôles qui en ont réellement besoin.
+-- -----------------------------------------------------------------------------
+drop policy if exists "lecture produits pour tous les connectés" on products;
+drop policy if exists "lecture produits pour rôles autorisés" on products;
+create policy "lecture produits pour rôles autorisés" on products
+  for select using (my_role() in ('admin','manager','vendor'));
+
+drop policy if exists "lecture vendeurs pour tous les connectés" on vendors;
+drop policy if exists "lecture vendeurs pour rôles autorisés" on vendors;
+create policy "lecture vendeurs pour rôles autorisés" on vendors
+  for select using (my_role() in ('admin','manager','vendor'));
+
+drop policy if exists "lecture journées pour tous les connectés" on days;
+drop policy if exists "lecture journées pour rôles autorisés" on days;
+create policy "lecture journées pour rôles autorisés" on days
+  for select using (my_role() in ('admin','manager','vendor'));
+
+drop policy if exists "lecture retraits pour tous les connectés" on withdrawals;
+drop policy if exists "lecture retraits pour rôles autorisés" on withdrawals;
+create policy "lecture retraits pour rôles autorisés" on withdrawals
+  for select using (my_role() in ('admin','manager','vendor'));
+

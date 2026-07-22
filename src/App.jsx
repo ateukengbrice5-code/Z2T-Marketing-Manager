@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid } from "recharts";
 import * as store from "./lib/store.js";
+import * as offline from "./lib/offline.js";
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -35,6 +36,10 @@ const NAV_MANAGER = [
   { id: "caisse", label: "Finances", icon: Wallet },
   { id: "stock", label: "Stock", icon: Boxes },
   { id: "vendeurs", label: "Personnel", icon: Users },
+  { id: "messagerie", label: "Messagerie", icon: MessageSquare },
+];
+
+const NAV_MESSENGER = [
   { id: "messagerie", label: "Messagerie", icon: MessageSquare },
 ];
 
@@ -624,6 +629,9 @@ export default function App() {
   const [withdrawals, setWithdrawals] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [tick, setTick] = useState(0);
+  const [online, setOnline] = useState(offline.isOnline());
+  const [queueCount, setQueueCount] = useState(offline.queueLength());
+  const [syncing, setSyncing] = useState(false);
 
   // Force un nouveau rendu toutes les minutes pour détecter le changement de jour à 00h
   useEffect(() => {
@@ -631,108 +639,225 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
+  // Suit la connectivité et déclenche la synchronisation au retour du réseau
+  useEffect(() => {
+    const off = offline.onConnectivityChange((isNowOnline) => {
+      setOnline(isNowOnline);
+      if (isNowOnline) processQueue();
+    });
+    return off;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const today = todayISO();
+
+  // Rejoue les actions mises de côté pendant la coupure réseau, dans l'ordre
+  const processQueue = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    const queue = offline.getQueue();
+    for (const action of queue) {
+      try {
+        if (action.type === "addProduct") await store.addProduct(action.payload);
+        else if (action.type === "updateProductStock") await store.updateProductStock(action.payload.id, action.payload.stock);
+        else if (action.type === "deleteProduct") await store.deleteProduct(action.payload.id);
+        else if (action.type === "setDay") await store.setDay(action.payload);
+        else if (action.type === "createWithdrawal") await store.createWithdrawal(action.payload);
+        else if (action.type === "updateWithdrawalStatus") await store.updateWithdrawalStatus(action.payload.id, action.payload.statut, action.payload.extra);
+        else if (action.type === "createNotification") await store.createNotification(action.payload);
+        else if (action.type === "markNotificationRead") await store.markNotificationRead(action.payload.id);
+        offline.dequeue(action.id);
+      } catch (e) {
+        console.error("Échec de synchronisation, nouvelle tentative plus tard", action, e);
+        break; // on garde l'ordre : on retentera celle-ci (et les suivantes) au prochain passage
+      }
+    }
+    setQueueCount(offline.queueLength());
+    setSyncing(false);
+    // Recharge les données fraîches une fois la synchronisation terminée
+    if (currentUser) {
+      const [p, v, dl, d, w, n] = await Promise.all([
+        store.getProducts(), store.getVendors(), store.getDaysList(),
+        store.getDay(today), store.getWithdrawals(), store.getNotifications(),
+      ]);
+      setProducts(p); setVendors(v); setDaysList(dl); setDay(d); setWithdrawals(w); setNotifications(n);
+      offline.cacheSet("products", p); offline.cacheSet("vendors", v);
+      offline.cacheSet("day:" + today, d); offline.cacheSet("withdrawals", w); offline.cacheSet("notifications", n);
+    }
+  };
 
   // Restaure la session si l'utilisateur est déjà connecté (rechargement de page)
   useEffect(() => {
     (async () => {
-      const exists = await store.hasAnyAccount();
-      setHasAccount(exists);
-      const session = await store.getSession();
-      if (session) {
-        const profile = await store.getMyProfile();
-        if (profile) {
-          let vendor = null;
-          if (profile.role === "vendor") {
-            const allVendors = await store.getVendors();
-            vendor = allVendors.find((v) => v.id === profile.vendorId) || null;
+      try {
+        const exists = await store.hasAnyAccount();
+        setHasAccount(exists);
+        const session = await store.getSession();
+        if (session) {
+          const profile = await store.getMyProfile();
+          if (profile) {
+            let vendor = null;
+            if (profile.role === "vendor") {
+              const allVendors = await store.getVendors();
+              vendor = allVendors.find((v) => v.id === profile.vendorId) || null;
+            }
+            setCurrentUser(profile);
+            setCurrentVendor(vendor);
+            setTab(profile.role === "vendor" ? "retour" : profile.role === "messenger" ? "messagerie" : "dashboard");
           }
-          setCurrentUser(profile);
-          setCurrentVendor(vendor);
-          setTab(profile.role === "vendor" ? "retour" : "dashboard");
         }
+      } catch (e) {
+        console.error("Chargement de session impossible (probablement hors-ligne)", e);
       }
       setLoading(false);
     })();
   }, []);
 
-  // Charge les données une fois connecté
+  // Charge les données une fois connecté (avec repli sur le cache local si hors-ligne)
   useEffect(() => {
     if (!currentUser) return;
     (async () => {
-      const [p, v, dl, d, w, n] = await Promise.all([
-        store.getProducts(),
-        store.getVendors(),
-        store.getDaysList(),
-        store.getDay(today),
-        store.getWithdrawals(),
-        store.getNotifications(),
-      ]);
-      setProducts(p);
-      setVendors(v);
-      setDaysList(dl);
-      setDay(d);
-      setWithdrawals(w);
-      setNotifications(n);
+      if (!offline.isOnline()) {
+        setProducts(offline.cacheGet("products") || []);
+        setVendors(offline.cacheGet("vendors") || []);
+        setDaysList(offline.cacheGet("daysList") || []);
+        setDay(offline.cacheGet("day:" + today) || emptyDay(today));
+        setWithdrawals(offline.cacheGet("withdrawals") || []);
+        setNotifications(offline.cacheGet("notifications") || []);
+        return;
+      }
+      try {
+        const [p, v, dl, d, w, n] = await Promise.all([
+          store.getProducts(), store.getVendors(), store.getDaysList(),
+          store.getDay(today), store.getWithdrawals(), store.getNotifications(),
+        ]);
+        setProducts(p); setVendors(v); setDaysList(dl); setDay(d); setWithdrawals(w); setNotifications(n);
+        offline.cacheSet("products", p); offline.cacheSet("vendors", v); offline.cacheSet("daysList", dl);
+        offline.cacheSet("day:" + today, d); offline.cacheSet("withdrawals", w); offline.cacheSet("notifications", n);
+      } catch (e) {
+        console.error("Chargement des données impossible, utilisation du cache local", e);
+        setProducts(offline.cacheGet("products") || []);
+        setVendors(offline.cacheGet("vendors") || []);
+        setDaysList(offline.cacheGet("daysList") || []);
+        setDay(offline.cacheGet("day:" + today) || emptyDay(today));
+        setWithdrawals(offline.cacheGet("withdrawals") || []);
+        setNotifications(offline.cacheGet("notifications") || []);
+      }
     })();
   }, [currentUser]);
 
   // Passage à un nouveau jour (minuit) : la distribution du jour repart à zéro,
   // tout l'historique précédent reste intact dans la base de données.
   useEffect(() => {
-    if (day && day.date !== today) {
+    if (day && day.date !== today && online) {
       (async () => {
         const d = await store.getDay(today);
         setDay(d);
+        offline.cacheSet("day:" + today, d);
       })();
     }
-  }, [today, day]);
+  }, [today, day, online]);
 
   const reloadProducts = useCallback(async () => { setProducts(await store.getProducts()); }, []);
   const reloadVendors = useCallback(async () => { setVendors(await store.getVendors()); }, []);
 
   // Ces fonctions gardent la même signature que dans la version précédente
   // (on passe le tableau "complet" attendu) mais traduisent le changement en
-  // vraies écritures Supabase (ajout / suppression / mise à jour ciblée).
+  // vraies écritures Supabase — ou, si hors-ligne, les mettent de côté pour
+  // les rejouer automatiquement dès le retour du réseau.
   const persistProducts = async (next) => {
     const prevById = Object.fromEntries(products.map((p) => [p.id, p]));
-    for (const p of next) {
-      if (!prevById[p.id]) await store.addProduct({ nom: p.nom, prix: p.prix, stock: p.stock });
-      else if (prevById[p.id].stock !== p.stock) await store.updateProductStock(p.id, p.stock);
+    setProducts(next);
+    offline.cacheSet("products", next);
+    if (!offline.isOnline()) {
+      for (const p of next) {
+        if (!prevById[p.id]) offline.enqueue({ type: "addProduct", payload: { nom: p.nom, prix: p.prix, stock: p.stock } });
+        else if (prevById[p.id].stock !== p.stock) offline.enqueue({ type: "updateProductStock", payload: { id: p.id, stock: p.stock } });
+      }
+      for (const p of products) {
+        if (!next.find((x) => x.id === p.id)) offline.enqueue({ type: "deleteProduct", payload: { id: p.id } });
+      }
+      setQueueCount(offline.queueLength());
+      return;
     }
-    for (const p of products) {
-      if (!next.find((x) => x.id === p.id)) await store.deleteProduct(p.id);
+    try {
+      for (const p of next) {
+        if (!prevById[p.id]) await store.addProduct({ nom: p.nom, prix: p.prix, stock: p.stock });
+        else if (prevById[p.id].stock !== p.stock) await store.updateProductStock(p.id, p.stock);
+      }
+      for (const p of products) {
+        if (!next.find((x) => x.id === p.id)) await store.deleteProduct(p.id);
+      }
+      const fresh = await store.getProducts();
+      setProducts(fresh);
+      offline.cacheSet("products", fresh);
+    } catch (e) {
+      console.error("Écriture impossible, mise en file d'attente", e);
+      setQueueCount(offline.queueLength());
     }
-    setProducts(await store.getProducts());
   };
 
   const persistDay = async (next) => {
     setDay(next);
-    await store.setDay(next);
+    offline.cacheSet("day:" + next.date, next);
+    if (!offline.isOnline()) {
+      const q = offline.getQueue().filter((a) => !(a.type === "setDay" && a.payload?.date === next.date));
+      q.push({ id: Math.random().toString(36).slice(2, 10), createdAt: Date.now(), type: "setDay", payload: next });
+      localStorage.setItem("z2t_offline_queue", JSON.stringify(q));
+      setQueueCount(offline.queueLength());
+      return;
+    }
+    try {
+      await store.setDay(next);
+    } catch (e) {
+      console.error("Écriture impossible, mise en file d'attente", e);
+      offline.enqueue({ type: "setDay", payload: next });
+      setQueueCount(offline.queueLength());
+    }
   };
 
   const persistWithdrawals = async (next) => {
     const prevById = Object.fromEntries(withdrawals.map((w) => [w.id, w]));
+    setWithdrawals(next);
+    offline.cacheSet("withdrawals", next);
+    const isNewOffline = !offline.isOnline();
     for (const w of next) {
       if (!prevById[w.id]) {
-        await store.createWithdrawal({
-          vendorId: w.vendorId, vendorNom: w.vendorNom, montant: w.montant,
-          methode: w.methode, numeroMobile: w.numeroMobile, date: w.date,
-        });
+        const payload = { vendorId: w.vendorId, vendorNom: w.vendorNom, montant: w.montant, methode: w.methode, numeroMobile: w.numeroMobile, date: w.date };
+        if (isNewOffline) offline.enqueue({ type: "createWithdrawal", payload });
+        else { try { await store.createWithdrawal(payload); } catch { offline.enqueue({ type: "createWithdrawal", payload }); } }
       } else if (prevById[w.id].statut !== w.statut) {
-        await store.updateWithdrawalStatus(w.id, w.statut, { approvedBy: w.approvedBy, refusalReason: w.refusalReason });
+        const payload = { id: w.id, statut: w.statut, extra: { approvedBy: w.approvedBy, refusalReason: w.refusalReason } };
+        if (isNewOffline) offline.enqueue({ type: "updateWithdrawalStatus", payload });
+        else { try { await store.updateWithdrawalStatus(w.id, w.statut, payload.extra); } catch { offline.enqueue({ type: "updateWithdrawalStatus", payload }); } }
       }
     }
-    setWithdrawals(await store.getWithdrawals());
+    setQueueCount(offline.queueLength());
+    if (!isNewOffline) {
+      try { const fresh = await store.getWithdrawals(); setWithdrawals(fresh); offline.cacheSet("withdrawals", fresh); } catch {}
+    }
   };
 
   const persistNotifications = async (next) => {
     const prevById = Object.fromEntries(notifications.map((n) => [n.id, n]));
+    setNotifications(next);
+    offline.cacheSet("notifications", next);
+    const isNewOffline = !offline.isOnline();
     for (const n of next) {
-      if (!prevById[n.id]) await store.createNotification({ vendorId: n.vendorId, message: n.message });
-      else if (!prevById[n.id].read && n.read) await store.markNotificationRead(n.id);
+      if (!prevById[n.id]) {
+        const payload = { vendorId: n.vendorId, message: n.message };
+        if (isNewOffline) offline.enqueue({ type: "createNotification", payload });
+        else { try { await store.createNotification(payload); } catch { offline.enqueue({ type: "createNotification", payload }); } }
+      } else if (!prevById[n.id].read && n.read) {
+        const payload = { id: n.id };
+        if (isNewOffline) offline.enqueue({ type: "markNotificationRead", payload });
+        else { try { await store.markNotificationRead(n.id); } catch { offline.enqueue({ type: "markNotificationRead", payload }); } }
+      }
     }
-    setNotifications(await store.getNotifications());
+    setQueueCount(offline.queueLength());
+    if (!isNewOffline) {
+      try { const fresh = await store.getNotifications(); setNotifications(fresh); offline.cacheSet("notifications", fresh); } catch {}
+    }
   };
 
   const ensureTodayInList = useCallback(async (currentList) => {
@@ -762,7 +887,7 @@ export default function App() {
     }
     setCurrentUser(profile);
     setCurrentVendor(vendor);
-    setTab(profile.role === "vendor" ? "retour" : "dashboard");
+    setTab(profile.role === "vendor" ? "retour" : profile.role === "messenger" ? "messagerie" : "dashboard");
     store.logActivity(profile, "login", `${profile.username} s'est connecté.`);
     store.setPresence(profile.id, true);
   };
@@ -814,6 +939,7 @@ export default function App() {
 
   const isAdmin = currentUser.role === "admin";
   const isManager = currentUser.role === "manager";
+  const isMessenger = currentUser.role === "messenger";
   const canManage = isAdmin || isManager; // accès Tableau de bord / Finances / Stock / Personnel
   const nav = isAdmin
     ? (currentUser.isPrimary
@@ -821,8 +947,8 @@ export default function App() {
            { id: "journal", label: "Journal d'activité", icon: History },
            { id: "supervision", label: "Toutes les conversations", icon: Eye }]
         : NAV_ADMIN)
-    : isManager ? NAV_MANAGER : NAV_VENDOR;
-  const roleLabel = isAdmin ? (currentUser.isPrimary ? "admin principal" : "admin") : isManager ? "gestionnaire" : "vendeur";
+    : isManager ? NAV_MANAGER : isMessenger ? NAV_MESSENGER : NAV_VENDOR;
+  const roleLabel = isAdmin ? (currentUser.isPrimary ? "admin principal" : "admin") : isManager ? "gestionnaire" : isMessenger ? "agent messagerie" : "vendeur";
   const activeVendor = currentUser.role === "vendor" ? currentVendor : null;
 
   return (
@@ -883,6 +1009,30 @@ export default function App() {
           </h1>
           <div className="app-date" style={{ fontSize: 13, color: "#8A93A3", textTransform: "capitalize" }}>{formatDateFR(today)}</div>
         </div>
+
+        {(!online || queueCount > 0) && (
+          <div
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10,
+              padding: "10px 16px", borderRadius: 10, marginBottom: 18,
+              background: !online ? "#FBECEA" : "#FFF7E6",
+              border: `1px solid ${!online ? "#F0CFC9" : "#F0E0B0"}`,
+            }}
+          >
+            <span style={{ fontSize: 13, color: !online ? "#C1554A" : "#8A6D1F", fontWeight: 600 }}>
+              {!online
+                ? `Hors ligne — tes actions sont enregistrées et seront envoyées automatiquement dès le retour du réseau${queueCount > 0 ? ` (${queueCount} en attente)` : ""}.`
+                : syncing
+                  ? `Synchronisation en cours… (${queueCount} restante${queueCount > 1 ? "s" : ""})`
+                  : `${queueCount} action${queueCount > 1 ? "s" : ""} en attente de synchronisation.`}
+            </span>
+            {online && !syncing && queueCount > 0 && (
+              <Button variant="ghost" onClick={processQueue} style={{ borderColor: "#F0E0B0", color: "#8A6D1F" }}>
+                Réessayer maintenant
+              </Button>
+            )}
+          </div>
+        )}
 
         {tab === "dashboard" && canManage && (
           <Dashboard products={products} vendors={vendors} day={day} daysList={daysList} today={today} />
@@ -1406,20 +1556,54 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
   const [adminError, setAdminError] = useState("");
   const [adminBusy, setAdminBusy] = useState(false);
 
+  const [msgUsername, setMsgUsername] = useState("");
+  const [msgPassword, setMsgPassword] = useState("");
+  const [msgError, setMsgError] = useState("");
+  const [msgBusy, setMsgBusy] = useState(false);
+
   const [vendorAccounts, setVendorAccounts] = useState([]);
   const [managers, setManagers] = useState([]);
   const [secondaryAdmins, setSecondaryAdmins] = useState([]);
+  const [messengers, setMessengers] = useState([]);
   const [presence, setPresence] = useState({});
 
   const reloadAccounts = async () => {
-    const [va, ma, sa, pr] = await Promise.all([store.getVendorAccounts(), store.getManagerAccounts(), store.getSecondaryAdmins(), store.getVendorPresence()]);
+    const [va, ma, sa, ms, pr] = await Promise.all([
+      store.getVendorAccounts(), store.getManagerAccounts(), store.getSecondaryAdmins(),
+      store.getMessengerAccounts(), store.getVendorPresence(),
+    ]);
     setVendorAccounts(va);
     setManagers(ma);
     setSecondaryAdmins(sa);
+    setMessengers(ms);
     setPresence(pr);
   };
 
   useEffect(() => { reloadAccounts(); }, [vendors]);
+
+  const addMessenger = async () => {
+    if (!msgUsername.trim() || !msgPassword) { setMsgError("Indique un nom d'utilisateur et un mot de passe."); return; }
+    if (msgPassword.length < 6) { setMsgError("Le mot de passe doit contenir au moins 6 caractères."); return; }
+    setMsgError("");
+    setMsgBusy(true);
+    try {
+      await store.createAccount({ username: msgUsername.trim(), password: msgPassword, role: "messenger" });
+      await reloadAccounts();
+      setMsgUsername(""); setMsgPassword("");
+    } catch (e) {
+      setMsgError(e.message || "Erreur lors de la création.");
+    }
+    setMsgBusy(false);
+  };
+
+  const removeMessenger = async (id) => {
+    try {
+      await store.deleteAccount(id);
+      await reloadAccounts();
+    } catch (e) {
+      setMsgError(e.message || "Erreur lors de la suppression.");
+    }
+  };
 
   const add = async () => {
     if (!nom.trim()) { setError("Indique un nom de vendeur."); return; }
@@ -1452,6 +1636,23 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
       store.logActivity(currentUser, "delete_vendor", `Vendeur supprimé : ${nomVendeur}.`);
     } catch (e) {
       setError(e.message || "Erreur lors de la suppression.");
+    }
+  };
+
+  const convertToMessenger = async (accountId, nomVendeur) => {
+    const ok = window.confirm(
+      `Convertir ce compte (${nomVendeur}) en compte messagerie uniquement ?\n\n` +
+      `Il perdra son accès au retour du soir et à toutes les autres données, et ne verra plus que la Messagerie. ` +
+      `Le vendeur lui-même reste dans la liste (historique conservé), simplement sans compte de connexion lié.`
+    );
+    if (!ok) return;
+    try {
+      await store.convertVendorToMessenger(accountId);
+      await reloadVendors();
+      await reloadAccounts();
+      store.logActivity(currentUser, "convert_to_messenger", `Compte converti en messagerie uniquement : ${nomVendeur}.`);
+    } catch (e) {
+      setError(e.message || "Erreur lors de la conversion.");
     }
   };
 
@@ -1539,13 +1740,18 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
           <EmptyState text="Aucun vendeur enregistré." />
         ) : (
           <Table
-            headers={["Nom", "Compte de connexion", "Présence", ""]}
+            headers={["Nom", "Compte de connexion", "Présence", "", ""]}
             rows={vendors.map((v) => {
               const u = vendorAccounts.find((u) => u.vendorId === v.id);
               const p = presence[v.id];
               return [
                 v.nom, u ? u.username : "— aucun —",
                 u ? <PresenceDot key="p" isOnline={p?.isOnline} lastSeenAt={p?.lastSeenAt} showLabel /> : "—",
+                u ? (
+                  <button key="conv" onClick={() => convertToMessenger(u.id, v.nom)} title="Passer en compte messagerie uniquement" style={{ ...iconBtnStyle, color: "#5B6472" }}>
+                    <MessageSquare size={15} />
+                  </button>
+                ) : "",
                 <button key="del" onClick={() => remove(v.id, v.nom)} style={iconBtnStyle}><Trash2 size={15} /></button>,
               ];
             })}
@@ -1554,6 +1760,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
       </Card>
 
       {isAdmin && (
+        <>
         <Card title="Comptes gestionnaires (Finances / Manager)">
           <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
             Un gestionnaire a accès au Tableau de bord, aux Finances (Caisse), au Stock et au Personnel — rien d'autre.
@@ -1583,6 +1790,37 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
             </div>
           )}
         </Card>
+
+        <Card title="Comptes agent messagerie">
+          <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
+            Un accès strictement limité à la Messagerie — aucune autre donnée n'est visible ni modifiable.
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Nom d'utilisateur</Label>
+              <TextInput value={msgUsername} onChange={(e) => setMsgUsername(e.target.value)} />
+            </div>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Mot de passe</Label>
+              <TextInput type="password" value={msgPassword} onChange={(e) => setMsgPassword(e.target.value)} />
+            </div>
+            <Button onClick={addMessenger} disabled={msgBusy}><Plus size={15} /> {msgBusy ? "Création…" : "Créer le compte"}</Button>
+          </div>
+          {msgError && <div style={{ color: "#C1554A", fontSize: 12.5, marginTop: 10 }}>{msgError}</div>}
+
+          {messengers.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <Table
+                headers={["Nom d'utilisateur", ""]}
+                rows={messengers.map((m) => [
+                  m.username,
+                  <button key="del" onClick={() => removeMessenger(m.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
+                ])}
+              />
+            </div>
+          )}
+        </Card>
+        </>
       )}
 
       {currentUser?.isPrimary && (
@@ -1942,7 +2180,7 @@ function timeShort(iso) {
   return d.toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-const ROLE_GROUP_LABEL = { admin: "Administrateurs", manager: "Gestionnaires", vendor: "Vendeurs" };
+const ROLE_GROUP_LABEL = { admin: "Administrateurs", manager: "Gestionnaires", vendor: "Vendeurs", messenger: "Agents messagerie" };
 
 function Messagerie({ currentUser }) {
   const [users, setUsers] = useState(null);
@@ -2052,7 +2290,7 @@ function Messagerie({ currentUser }) {
   const isMine = (m) => m.senderId === currentUser.id;
   const isImage = (type) => type && type.startsWith("image/");
 
-  const grouped = { admin: [], manager: [], vendor: [] };
+  const grouped = { admin: [], manager: [], vendor: [], messenger: [] };
   users.forEach((u) => { grouped[u.role]?.push(u); });
 
   const thread = (
@@ -2134,7 +2372,7 @@ function Messagerie({ currentUser }) {
     <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
       <div className="dash-col-side" style={{ flex: "1 1 240px" }}>
         <Card title="Annuaire">
-          {["admin", "manager", "vendor"].map((role) => (
+          {["admin", "manager", "messenger", "vendor"].map((role) => (
             grouped[role].length === 0 ? null : (
               <div key={role} style={{ marginBottom: 14 }}>
                 <div style={{ fontSize: 10.5, fontWeight: 700, color: "#9AA2B1", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6 }}>
@@ -2415,6 +2653,7 @@ const EVENT_LABELS = {
   delete_vendor: "Vendeur supprimé",
   add_manager: "Gestionnaire ajouté",
   delete_manager: "Gestionnaire supprimé",
+  convert_to_messenger: "Converti en messagerie",
 };
 
 function eventBadgeColor(eventType) {

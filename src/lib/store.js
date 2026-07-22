@@ -109,6 +109,22 @@ export async function deleteAccount(userId) {
   return true;
 }
 
+// Convertit un compte vendeur existant en compte "messagerie uniquement" —
+// garde le même identifiant/mot de passe, perd l'accès à tout sauf la
+// Messagerie. Le vendeur (produits, historique) n'est pas supprimé, juste
+// détaché de ce compte de connexion.
+export async function convertVendorToMessenger(userId) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  const { data, error } = await supabase.functions.invoke("manage-user", {
+    body: { action: "convert", userId, newRole: "messenger" },
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (error) throw new Error(error.message || "Erreur lors de la conversion du compte.");
+  if (data?.error) throw new Error(data.error);
+  return true;
+}
+
 export async function getSecondaryAdmins() {
   const { data, error } = await supabase.from("profiles").select("*").eq("role", "admin").eq("is_primary", false);
   if (error) throw error;
@@ -319,6 +335,12 @@ export async function getVendorAccounts() {
 
 export async function getManagerAccounts() {
   const { data, error } = await supabase.from("profiles").select("*").eq("role", "manager");
+  if (error) throw error;
+  return (data || []).map((u) => ({ id: u.id, username: u.username }));
+}
+
+export async function getMessengerAccounts() {
+  const { data, error } = await supabase.from("profiles").select("*").eq("role", "messenger");
   if (error) throw error;
   return (data || []).map((u) => ({ id: u.id, username: u.username }));
 }
