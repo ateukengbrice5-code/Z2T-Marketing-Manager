@@ -52,9 +52,13 @@ export async function getVendorPresence() {
 }
 
 export async function hasAnyAccount() {
-  const { count, error } = await supabase.from("profiles").select("*", { count: "exact", head: true });
+  // Utilise la fonction RPC has_any_account (SECURITY DEFINER) plutôt qu'un
+  // SELECT direct sur profiles : la policy RLS de lecture exige auth.uid()
+  // IS NOT NULL, donc un visiteur non connecté obtenait toujours 0 ligne,
+  // et l'app le renvoyait à tort vers l'écran de création de compte.
+  const { data, error } = await supabase.rpc("has_any_account");
   if (error) return true; // en cas de doute, ne pas proposer de recréer un admin
-  return (count || 0) > 0;
+  return !!data;
 }
 
 // Tout premier compte administrateur (aucun compte n'existe encore)
