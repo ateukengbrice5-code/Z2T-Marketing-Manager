@@ -2958,53 +2958,89 @@ function BirthdayBalloons() {
 
 
 function Distribution({ products, setProducts, vendors, day, setDay, ensureTodayInList, daysList }) {
-  const [vendorId, setVendorId] = useState("");
-  const [productId, setProductId] = useState("");
-  const [qty, setQty] = useState("");
+  const [selectedVendorId, setSelectedVendorId] = useState("");
+  const [quantities, setQuantities] = useState({}); // productId -> qty string
 
-  const distribute = async () => {
-    const q = Number(qty);
-    if (!vendorId || !productId || !q) return;
-    const product = products.find((p) => p.id === productId);
-    if (!product || product.stock < q) return;
-    const vendor = vendors.find((v) => v.id === vendorId);
+  useEffect(() => { setQuantities({}); }, [selectedVendorId]);
 
-    const line = {
-      id: uid(), vendorId, vendorNom: vendor.nom, productId, productNom: product.nom, prix: product.prix,
-      quantiteRemise: q, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
-    };
-    await setDay({ ...day, lines: [...day.lines, line] });
-    await setProducts(products.map((p) => (p.id === productId ? { ...p, stock: p.stock - q } : p)));
+  const vendor = vendors.find((v) => v.id === selectedVendorId) || null;
+
+  const setQty = (productId, val) => setQuantities((q) => ({ ...q, [productId]: val }));
+
+  const remettreTout = async () => {
+    if (!vendor) return;
+    const aRemettre = products
+      .map((p) => ({ product: p, qty: Number(quantities[p.id]) }))
+      .filter(({ product, qty }) => qty > 0 && qty <= product.stock);
+    if (aRemettre.length === 0) return;
+
+    const newLines = aRemettre.map(({ product, qty }) => ({
+      id: uid(), vendorId: vendor.id, vendorNom: vendor.nom, productId: product.id, productNom: product.nom, prix: product.prix,
+      quantiteRemise: qty, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
+    }));
+    await setDay({ ...day, lines: [...day.lines, ...newLines] });
+
+    const decrements = {};
+    aRemettre.forEach(({ product, qty }) => { decrements[product.id] = (decrements[product.id] || 0) + qty; });
+    await setProducts(products.map((p) => (decrements[p.id] ? { ...p, stock: p.stock - decrements[p.id] } : p)));
+
     await ensureTodayInList(daysList);
-    setQty("");
+    setQuantities({});
   };
 
   return (
     <div>
-      <Card title="Remettre des produits à un vendeur">
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <div style={{ flex: "1 1 180px" }}>
-            <Label>Vendeur</Label>
-            <Select value={vendorId} onChange={(e) => setVendorId(e.target.value)}>
-              <option value="">Choisir…</option>
-              {vendors.map((v) => <option key={v.id} value={v.id}>{v.nom}</option>)}
-            </Select>
+      <Card title="Choisir un vendeur">
+        {vendors.length === 0 ? (
+          <EmptyState text="Ajoute d'abord un vendeur dans l'onglet Vendeurs & comptes." />
+        ) : (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {vendors.map((v) => {
+              const active = v.id === selectedVendorId;
+              return (
+                <button
+                  key={v.id}
+                  onClick={() => setSelectedVendorId(v.id)}
+                  style={{
+                    padding: "8px 14px", borderRadius: 999, cursor: "pointer",
+                    border: `1.5px solid ${active ? "#D9A441" : "#D8DCE3"}`,
+                    background: active ? "rgba(217,164,65,0.12)" : "#fff",
+                    color: active ? "#8A6D1F" : "#1B2A4A",
+                    fontSize: 13, fontWeight: active ? 700 : 500,
+                  }}
+                >
+                  {v.nom}
+                </button>
+              );
+            })}
           </div>
-          <div style={{ flex: "1 1 180px" }}>
-            <Label>Produit</Label>
-            <Select value={productId} onChange={(e) => setProductId(e.target.value)}>
-              <option value="">Choisir…</option>
-              {products.map((p) => <option key={p.id} value={p.id}>{p.nom} — {p.stock} en stock</option>)}
-            </Select>
-          </div>
-          <div style={{ flex: "1 1 100px" }}>
-            <Label>Quantité remise</Label>
-            <TextInput type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="20" />
-          </div>
-          <Button onClick={distribute}><Truck size={15} /> Remettre</Button>
-        </div>
-        {vendors.length === 0 && <div style={{ marginTop: 10, fontSize: 12.5, color: "#C1554A" }}>Ajoute d'abord un vendeur dans l'onglet Vendeurs & comptes.</div>}
+        )}
       </Card>
+
+      {vendor && (
+        <Card title={`Produits à remettre à ${vendor.nom}`}>
+          {products.length === 0 ? (
+            <EmptyState text="Ajoute d'abord un produit dans l'onglet Produits." />
+          ) : (
+            <>
+              <Table
+                headers={["Produit", "Stock disponible", "Quantité à remettre"]}
+                rows={products.map((p) => [
+                  p.nom, p.stock,
+                  <TextInput
+                    key="q" type="number" min="0" max={p.stock} style={{ width: 100 }}
+                    placeholder="0" value={quantities[p.id] || ""}
+                    onChange={(e) => setQty(p.id, e.target.value)}
+                  />,
+                ])}
+              />
+              <Button variant="primary" onClick={remettreTout} style={{ marginTop: 14 }}>
+                <Truck size={15} /> Valider la distribution
+              </Button>
+            </>
+          )}
+        </Card>
+      )}
 
       <Card title="Distributions du jour">
         {day.lines.length === 0 ? (
@@ -3028,7 +3064,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
 // ---------------------------------------------------------------------------
 
 function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, activeVendor }) {
-  const [selectedVendorId, setSelectedVendorId] = useState(isAdmin ? (vendors[0]?.id || "") : (activeVendor?.id || ""));
+  const [selectedVendorId, setSelectedVendorId] = useState(isAdmin ? "" : (activeVendor?.id || ""));
   const [pendingInputs, setPendingInputs] = useState({});
   const [mobileOn, setMobileOn] = useState(false);
   const [mobileNumero, setMobileNumero] = useState("");
@@ -3052,14 +3088,14 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
   if (isAdmin && vendors.length === 0) {
     return <Card title="Retour du soir"><EmptyState text="Ajoute d'abord un vendeur dans l'onglet Vendeurs & comptes." /></Card>;
   }
-  if (!vendor) {
+  if (!isAdmin && !vendor) {
     return <Card title="Retour du soir"><EmptyState text="Aucun vendeur sélectionné." /></Card>;
   }
 
-  const lines = day.lines.filter((l) => l.vendorId === vendor.id);
+  const lines = vendor ? day.lines.filter((l) => l.vendorId === vendor.id) : [];
   const pending = lines.filter((l) => l.quantiteRestante === null);
   const done = lines.filter((l) => l.quantiteRestante !== null);
-  const summary = computeVersementSummary(day, vendor.id);
+  const summary = vendor ? computeVersementSummary(day, vendor.id) : null;
 
   const validerTout = async () => {
     if (!isAdmin) return;
@@ -3124,39 +3160,62 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
 
       <Card title="Retour du soir">
         {isAdmin ? (
-          <div style={{ maxWidth: 280 }}>
+          <div>
             <Label>Choisir un vendeur</Label>
-            <Select value={selectedVendorId} onChange={(e) => setSelectedVendorId(e.target.value)}>
-              {vendors.map((v) => <option key={v.id} value={v.id}>{v.nom}</option>)}
-            </Select>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+              {vendors.map((v) => {
+                const active = v.id === selectedVendorId;
+                return (
+                  <button
+                    key={v.id}
+                    onClick={() => setSelectedVendorId(v.id)}
+                    style={{
+                      padding: "8px 14px", borderRadius: 999, cursor: "pointer",
+                      border: `1.5px solid ${active ? "#D9A441" : "#D8DCE3"}`,
+                      background: active ? "rgba(217,164,65,0.12)" : "#fff",
+                      color: active ? "#8A6D1F" : "#1B2A4A",
+                      fontSize: 13, fontWeight: active ? 700 : 500,
+                    }}
+                  >
+                    {v.nom}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         ) : (
           <div style={{ fontSize: 14, fontWeight: 700, color: "#1B2A4A" }}>Vendeur : {vendor.nom}</div>
         )}
-        {isAdmin && <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #F0F1F4" }}><VendorMiniHeader vendor={vendor} /></div>}
+        {isAdmin && vendor && <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #F0F1F4" }}><VendorMiniHeader vendor={vendor} /></div>}
       </Card>
 
-      <Card title={`Produits distribués à ${vendor.nom} aujourd'hui`}>
-        {pending.length === 0 ? (
-          <EmptyState text="Aucun retour en attente pour ce vendeur." />
-        ) : isAdmin ? (
-          <>
-            <Table
-              headers={["Produit", "Remis le matin", "Restant ce soir"]}
-              rows={pending.map((l) => [
-                l.productNom, l.quantiteRemise,
-                <TextInput key="i" type="number" style={{ width: 100 }} placeholder="Qté" value={pendingInputs[l.id] || ""} onChange={(e) => setPendingInputs((s) => ({ ...s, [l.id]: e.target.value }))} />,
-              ])}
-            />
-            <Button variant="gold" onClick={validerTout} style={{ marginTop: 14 }}>Valider tous les retours saisis</Button>
-          </>
-        ) : (
-          <>
-            <Table headers={["Produit", "Remis le matin"]} rows={pending.map((l) => [l.productNom, l.quantiteRemise])} />
-            <div style={{ marginTop: 12, fontSize: 12.5, color: "#8A93A3", fontStyle: "italic" }}>En attente de traitement par l'administration.</div>
-          </>
-        )}
-      </Card>
+      {!vendor ? (
+        <Card title="Produits distribués aujourd'hui">
+          <EmptyState text="Choisis un vendeur ci-dessus pour voir ses produits à retourner." />
+        </Card>
+      ) : (
+        <Card title={`Produits distribués à ${vendor.nom} aujourd'hui`}>
+          {pending.length === 0 ? (
+            <EmptyState text="Aucun retour en attente pour ce vendeur." />
+          ) : isAdmin ? (
+            <>
+              <Table
+                headers={["Produit", "Remis le matin", "Restant ce soir"]}
+                rows={pending.map((l) => [
+                  l.productNom, l.quantiteRemise,
+                  <TextInput key="i" type="number" style={{ width: 100 }} placeholder="Qté" value={pendingInputs[l.id] || ""} onChange={(e) => setPendingInputs((s) => ({ ...s, [l.id]: e.target.value }))} />,
+                ])}
+              />
+              <Button variant="gold" onClick={validerTout} style={{ marginTop: 14 }}>Valider tous les retours saisis</Button>
+            </>
+          ) : (
+            <>
+              <Table headers={["Produit", "Remis le matin"]} rows={pending.map((l) => [l.productNom, l.quantiteRemise])} />
+              <div style={{ marginTop: 12, fontSize: 12.5, color: "#8A93A3", fontStyle: "italic" }}>En attente de traitement par l'administration.</div>
+            </>
+          )}
+        </Card>
+      )}
 
       {done.length > 0 && (
         <Card title={`Retours déjà enregistrés pour ${vendor.nom}`}>
