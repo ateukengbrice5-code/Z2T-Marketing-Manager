@@ -1039,6 +1039,7 @@ export default function App() {
 
   const persistDay = async (next) => {
     setDay(next);
+    setDaysList((prev) => (prev.includes(next.date) ? prev : [next.date, ...prev]));
     offline.cacheSet("day:" + next.date, next);
     if (!offline.isOnline()) {
       const q = offline.getQueue().filter((a) => !(a.type === "setDay" && a.payload?.date === next.date));
@@ -1099,15 +1100,6 @@ export default function App() {
       try { const fresh = await store.getNotifications(); setNotifications(fresh); offline.cacheSet("notifications", fresh); } catch {}
     }
   };
-
-  const ensureTodayInList = useCallback(async (currentList) => {
-    if (!currentList.includes(today)) {
-      const next = [today, ...currentList];
-      setDaysList(next);
-      return next;
-    }
-    return currentList;
-  }, [today]);
 
   const handleSetupCreated = async () => {
     setHasAccount(true);
@@ -1375,7 +1367,7 @@ export default function App() {
           <Vendeurs vendors={vendors} reloadVendors={reloadVendors} isAdmin={isAdmin} currentUser={currentUser} />
         )}
         {tab === "distribution" && isAdmin && (
-          <Distribution products={products} setProducts={persistProducts} vendors={vendors} day={day} setDay={persistDay} ensureTodayInList={ensureTodayInList} daysList={daysList} />
+          <Distribution products={products} setProducts={persistProducts} vendors={vendors} day={day} setDay={persistDay} />
         )}
         {tab === "retour" && (
           <RetourDuSoir
@@ -1397,7 +1389,7 @@ export default function App() {
         {tab === "rapports" && canManage && (
           <Rapports vendors={vendors} products={products} daysList={daysList} today={today} />
         )}
-        {tab === "historique" && isAdmin && <Historique daysList={daysList} today={today} />}
+        {tab === "historique" && isAdmin && <Historique daysList={daysList} vendors={vendors} today={today} />}
         {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
         {tab === "supervision" && isAdmin && currentUser.isPrimary && <Supervision currentUser={currentUser} />}
         </div>
@@ -2957,35 +2949,81 @@ function BirthdayBalloons() {
 
 
 
-function Distribution({ products, setProducts, vendors, day, setDay, ensureTodayInList, daysList }) {
+function Distribution({ products, setProducts, vendors, day, setDay }) {
   const [selectedVendorId, setSelectedVendorId] = useState("");
-  const [quantities, setQuantities] = useState({}); // productId -> qty string
+  const [quantities, setQuantities] = useState({}); // productId -> qté à ajouter (string)
+  const [editValues, setEditValues] = useState({}); // ligneId -> nouvelle quantité totale (string)
+  const [error, setError] = useState("");
 
-  useEffect(() => { setQuantities({}); }, [selectedVendorId]);
+  useEffect(() => { setQuantities({}); setEditValues({}); setError(""); }, [selectedVendorId]);
 
   const vendor = vendors.find((v) => v.id === selectedVendorId) || null;
 
+  // Lignes de ce vendeur pas encore retournées ce soir : c'est "ce qu'il a déjà en main"
+  const vendorPendingLines = vendor
+    ? day.lines.filter((l) => l.vendorId === vendor.id && l.quantiteRestante === null)
+    : [];
+
+  const dejaRemisPourProduit = (productId) =>
+    vendorPendingLines.filter((l) => l.productId === productId).reduce((s, l) => s + (l.quantiteRemise || 0), 0);
+
   const setQty = (productId, val) => setQuantities((q) => ({ ...q, [productId]: val }));
 
+  // Remettre de nouveaux produits : si le vendeur a déjà une remise en attente pour ce
+  // produit, on l'incrémente au lieu de créer une deuxième ligne en double.
   const remettreTout = async () => {
     if (!vendor) return;
+    setError("");
     const aRemettre = products
       .map((p) => ({ product: p, qty: Number(quantities[p.id]) }))
-      .filter(({ product, qty }) => qty > 0 && qty <= product.stock);
+      .filter(({ qty }) => qty > 0);
     if (aRemettre.length === 0) return;
 
-    const newLines = aRemettre.map(({ product, qty }) => ({
-      id: uid(), vendorId: vendor.id, vendorNom: vendor.nom, productId: product.id, productNom: product.nom, prix: product.prix,
-      quantiteRemise: qty, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
-    }));
-    await setDay({ ...day, lines: [...day.lines, ...newLines] });
+    const manque = aRemettre.find(({ product, qty }) => qty > product.stock);
+    if (manque) { setError(`Stock insuffisant pour ${manque.product.nom} (disponible : ${manque.product.stock}).`); return; }
 
+    const nextLines = [...day.lines];
     const decrements = {};
-    aRemettre.forEach(({ product, qty }) => { decrements[product.id] = (decrements[product.id] || 0) + qty; });
-    await setProducts(products.map((p) => (decrements[p.id] ? { ...p, stock: p.stock - decrements[p.id] } : p)));
+    aRemettre.forEach(({ product, qty }) => {
+      decrements[product.id] = (decrements[product.id] || 0) + qty;
+      const idx = nextLines.findIndex((l) => l.vendorId === vendor.id && l.productId === product.id && l.quantiteRestante === null);
+      if (idx >= 0) {
+        nextLines[idx] = { ...nextLines[idx], quantiteRemise: nextLines[idx].quantiteRemise + qty };
+      } else {
+        nextLines.push({
+          id: uid(), vendorId: vendor.id, vendorNom: vendor.nom, productId: product.id, productNom: product.nom, prix: product.prix,
+          quantiteRemise: qty, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
+        });
+      }
+    });
 
-    await ensureTodayInList(daysList);
+    await setDay({ ...day, lines: nextLines });
+    await setProducts(products.map((p) => (decrements[p.id] ? { ...p, stock: p.stock - decrements[p.id] } : p)));
     setQuantities({});
+  };
+
+  // Modifier directement une ligne déjà remise (correction d'erreur de saisie)
+  const modifierLigne = async (line) => {
+    const raw = editValues[line.id];
+    if (raw === undefined || raw === "") return;
+    const newQty = Number(raw);
+    if (Number.isNaN(newQty) || newQty < 0) return;
+    const delta = newQty - line.quantiteRemise; // >0 : on prend plus de stock ; <0 : on en rend
+    const product = products.find((p) => p.id === line.productId);
+    if (delta > 0 && product && delta > product.stock) { setError(`Stock insuffisant pour ${line.productNom}.`); return; }
+    setError("");
+    const nextLines = day.lines.map((l) => (l.id === line.id ? { ...l, quantiteRemise: newQty } : l));
+    await setDay({ ...day, lines: nextLines });
+    if (product) await setProducts(products.map((p) => (p.id === product.id ? { ...p, stock: p.stock - delta } : p)));
+    setEditValues((s) => { const c = { ...s }; delete c[line.id]; return c; });
+  };
+
+  // Annuler une distribution (remet le stock au produit)
+  const supprimerLigne = async (line) => {
+    const nextLines = day.lines.filter((l) => l.id !== line.id);
+    await setDay({ ...day, lines: nextLines });
+    const product = products.find((p) => p.id === line.productId);
+    if (product) await setProducts(products.map((p) => (p.id === product.id ? { ...p, stock: p.stock + line.quantiteRemise } : p)));
   };
 
   return (
@@ -3024,9 +3062,9 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
           ) : (
             <>
               <Table
-                headers={["Produit", "Stock disponible", "Quantité à remettre"]}
+                headers={["Produit", "Stock disponible", "Déjà remis aujourd'hui", "Quantité à ajouter"]}
                 rows={products.map((p) => [
-                  p.nom, p.stock,
+                  p.nom, p.stock, dejaRemisPourProduit(p.id) || "—",
                   <TextInput
                     key="q" type="number" min="0" max={p.stock} style={{ width: 100 }}
                     placeholder="0" value={quantities[p.id] || ""}
@@ -3034,11 +3072,34 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
                   />,
                 ])}
               />
+              {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginTop: 12 }}>{error}</div>}
               <Button variant="primary" onClick={remettreTout} style={{ marginTop: 14 }}>
                 <Truck size={15} /> Valider la distribution
               </Button>
             </>
           )}
+        </Card>
+      )}
+
+      {vendor && vendorPendingLines.length > 0 && (
+        <Card title={`Produits déjà remis à ${vendor.nom} (en attente de retour)`}>
+          <Table
+            headers={["Produit", "Quantité remise", "Nouvelle quantité", ""]}
+            rows={vendorPendingLines.map((l) => [
+              l.productNom,
+              l.quantiteRemise,
+              <TextInput
+                key="e" type="number" min="0" style={{ width: 90 }}
+                placeholder={String(l.quantiteRemise)}
+                value={editValues[l.id] ?? ""}
+                onChange={(e) => setEditValues((s) => ({ ...s, [l.id]: e.target.value }))}
+              />,
+              <div key="actions" style={{ display: "flex", gap: 6 }}>
+                <Button variant="ghost" onClick={() => modifierLigne(l)} style={{ padding: "6px 10px", fontSize: 12.5 }}>Enregistrer</Button>
+                <button onClick={() => supprimerLigne(l)} title="Annuler cette distribution" style={iconBtnStyle}><Trash2 size={14} /></button>
+              </div>,
+            ])}
+          />
         </Card>
       )}
 
@@ -3892,73 +3953,155 @@ function Rapports({ vendors, products, daysList, today }) {
   );
 }
 
-function Historique({ daysList, today }) {
-  const [expanded, setExpanded] = useState(null);
-  const [cache, setCache] = useState({});
+function Historique({ daysList, vendors, today }) {
+  const [selectedVendorId, setSelectedVendorId] = useState("");
+  const [allDays, setAllDays] = useState(null); // null = chargement en cours
+  const [expandedDate, setExpandedDate] = useState(null);
 
-  const toggle = async (date) => {
-    if (expanded === date) { setExpanded(null); return; }
-    setExpanded(date);
-    if (!cache[date]) {
-      const d = await store.getDay(date);
-      setCache((c) => ({ ...c, [date]: d }));
-    }
-  };
+  useEffect(() => {
+    (async () => setAllDays(await store.getDaysInRange(daysList)))();
+  }, [daysList]);
+
+  const vendor = vendors.find((v) => v.id === selectedVendorId) || null;
+
+  useEffect(() => { setExpandedDate(null); }, [selectedVendorId]);
 
   if (daysList.length === 0) {
     return <Card title="Historique des journées"><EmptyState text="L'historique se remplira automatiquement dès qu'une distribution sera enregistrée." /></Card>;
   }
 
+  const vendorPicker = (
+    <Card title="Choisir un vendeur">
+      {vendors.length === 0 ? (
+        <EmptyState text="Ajoute d'abord un vendeur dans l'onglet Vendeurs & comptes." />
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {vendors.map((v) => {
+            const active = v.id === selectedVendorId;
+            return (
+              <button
+                key={v.id}
+                onClick={() => setSelectedVendorId(v.id)}
+                style={{
+                  padding: "8px 14px", borderRadius: 999, cursor: "pointer",
+                  border: `1.5px solid ${active ? "#D9A441" : "#D8DCE3"}`,
+                  background: active ? "rgba(217,164,65,0.12)" : "#fff",
+                  color: active ? "#8A6D1F" : "#1B2A4A",
+                  fontSize: 13, fontWeight: active ? 700 : 500,
+                }}
+              >
+                {v.nom}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+
+  if (!vendor) {
+    return (
+      <div>
+        {vendorPicker}
+        <Card title="Historique"><EmptyState text="Choisis un vendeur ci-dessus pour voir son historique détaillé." /></Card>
+      </div>
+    );
+  }
+
+  if (allDays === null) {
+    return (
+      <div>
+        {vendorPicker}
+        <Card title={`Historique — ${vendor.nom}`}><EmptyState text="Chargement…" /></Card>
+      </div>
+    );
+  }
+
+  // Ne garder que les journées où ce vendeur a eu une activité (produits ou versement)
+  const vendorDays = allDays
+    .map((d) => ({ day: d, summary: computeVersementSummary(d, vendor.id), lines: (d.lines || []).filter((l) => l.vendorId === vendor.id) }))
+    .filter(({ lines, summary }) => lines.length > 0 || summary.mobilePayments.length > 0)
+    .sort((a, b) => b.day.date.localeCompare(a.day.date));
+
+  const totalVendu = vendorDays.reduce((s, { lines }) => s + lines.reduce((ss, l) => ss + (l.quantiteVendue || 0), 0), 0);
+  const totalCA = vendorDays.reduce((s, { summary }) => s + summary.montantAttendu, 0);
+  const totalEspeces = vendorDays.reduce((s, { summary }) => s + (summary.finalise ? summary.montantVerseEspeces : 0), 0);
+  const totalMobile = vendorDays.reduce((s, { summary }) => s + summary.totalMobile, 0);
+
   return (
-    <Card title="Historique des journées">
-      {daysList.map((date) => {
-        const d = cache[date];
-        const isOpen = expanded === date;
-        const totalAttendu = d ? d.lines.reduce((s, l) => s + (l.montantAttendu || 0), 0) : null;
-        const totalEspeces = d ? Object.keys(d.versements || {}).reduce((s, vid) => {
-          const summary = computeVersementSummary(d, vid);
-          return s + (summary.finalise ? summary.montantVerseEspeces : 0);
-        }, 0) : null;
-        const totalMobile = d ? Object.keys(d.versements || {}).reduce((s, vid) => s + computeVersementSummary(d, vid).totalMobile, 0) : null;
+    <div>
+      {vendorPicker}
 
-        return (
-          <div key={date} style={{ borderBottom: "1px solid #F0F1F4" }}>
-            <button
-              onClick={() => toggle(date)}
-              style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 4px", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}
-            >
-              <span style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, color: "#1B2A4A" }}>
-                {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                {formatDateFR(date)}
-                {date === today && <span style={{ fontSize: 11, color: "#D9A441", fontWeight: 700 }}>AUJOURD'HUI</span>}
-              </span>
-              {d && (
-                <span style={{ fontSize: 13, color: "#5B6472" }}>
-                  {fmtMoney(totalAttendu)} attendu · {fmtMoney(totalEspeces)} espèces · {fmtMoney(totalMobile)} mobile
-                </span>
-              )}
-            </button>
+      <Card>
+        <VendorMiniHeader vendor={vendor} />
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+          <StatCard label="Chiffre d'affaires total" value={fmtMoney(totalCA)} sub={`${vendorDays.length} jour(s) d'activité`} accent="#D9A441" />
+          <StatCard label="Quantité totale vendue" value={totalVendu} sub="unités, tous produits confondus" />
+          <StatCard label="Total reçu en espèces" value={fmtMoney(totalEspeces)} accent="#3F8361" />
+          <StatCard label="Total reçu en mobile" value={fmtMoney(totalMobile)} accent="#4A7FC7" />
+        </div>
+      </Card>
 
-            {isOpen && d && (
-              <div style={{ padding: "4px 4px 16px 23px" }}>
-                {d.lines.length === 0 ? (
-                  <EmptyState text="Aucune activité ce jour-là." />
-                ) : (
-                  <Table
-                    headers={["Vendeur", "Produit", "Remis", "Restant", "Vendu", "Montant attendu"]}
-                    rows={d.lines.map((l) => [
-                      l.vendorNom, l.productNom, l.quantiteRemise,
-                      l.quantiteRestante ?? "—", l.quantiteVendue ?? "—",
-                      l.montantAttendu ? fmtMoney(l.montantAttendu) : "—",
-                    ])}
-                  />
+      <Card title={`Historique détaillé — ${vendor.nom}`}>
+        {vendorDays.length === 0 ? (
+          <EmptyState text="Aucune activité enregistrée pour ce vendeur." />
+        ) : (
+          vendorDays.map(({ day, summary, lines }) => {
+            const isOpen = expandedDate === day.date;
+            return (
+              <div key={day.date} style={{ borderBottom: "1px solid #F0F1F4" }}>
+                <button
+                  onClick={() => setExpandedDate(isOpen ? null : day.date)}
+                  style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 4px", background: "none", border: "none", cursor: "pointer", textAlign: "left", flexWrap: "wrap", gap: 6 }}
+                >
+                  <span style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, color: "#1B2A4A" }}>
+                    {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    {formatDateFR(day.date)}
+                    {day.date === today && <span style={{ fontSize: 11, color: "#D9A441", fontWeight: 700 }}>AUJOURD'HUI</span>}
+                  </span>
+                  <span style={{ fontSize: 13, color: "#5B6472" }}>
+                    {fmtMoney(summary.montantAttendu)} attendu · {fmtMoney(summary.finalise ? summary.montantVerseEspeces : 0)} espèces · {fmtMoney(summary.totalMobile)} mobile
+                  </span>
+                </button>
+
+                {isOpen && (
+                  <div style={{ padding: "4px 4px 18px 23px" }}>
+                    {lines.length === 0 ? (
+                      <EmptyState text="Aucun produit ce jour-là." />
+                    ) : (
+                      <Table
+                        headers={["Produit", "Remis", "Restant", "Vendu", "Montant attendu"]}
+                        rows={lines.map((l) => [
+                          l.productNom, l.quantiteRemise,
+                          l.quantiteRestante ?? "—", l.quantiteVendue ?? "—",
+                          l.montantAttendu ? fmtMoney(l.montantAttendu) : "—",
+                        ])}
+                      />
+                    )}
+
+                    <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginTop: 14, fontSize: 12.5, color: "#5B6472" }}>
+                      <span>Espèces versées : <strong style={{ color: "#1B2A4A" }}>{summary.finalise ? fmtMoney(summary.montantVerseEspeces) : "—"}</strong></span>
+                      <span>Mobile reçu : <strong style={{ color: "#1B2A4A" }}>{fmtMoney(summary.totalMobile)}</strong></span>
+                      {summary.mobilePayments.length > 0 && (
+                        <span>Numéros : {summary.mobilePayments.map((m) => m.numero).join(", ")}</span>
+                      )}
+                      {summary.finalise && (
+                        <span>
+                          Écart :{" "}
+                          <strong style={{ color: summary.statut === "manque" ? "#C1554A" : summary.statut === "exces" ? "#3F8361" : "#1B2A4A" }}>
+                            {summary.ecart > 0 ? "+" : ""}{fmtMoney(summary.ecart)}
+                          </strong>
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-        );
-      })}
-    </Card>
+            );
+          })
+        )}
+      </Card>
+    </div>
   );
 }
 
