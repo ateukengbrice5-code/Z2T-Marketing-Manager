@@ -1620,6 +1620,9 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
   const [numeroCni, setNumeroCni] = useState("");
   const [dateNaissance, setDateNaissance] = useState("");
   const [telephone, setTelephone] = useState("");
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState("");
+  const addPhotoRef = useRef(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -1712,6 +1715,13 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
         dateNaissance: dateNaissance || null,
         telephone: telephone.trim(),
       });
+      if (photoFile) {
+        try {
+          await store.uploadVendorPhoto(vendor.id, photoFile);
+        } catch (photoErr) {
+          setError(`Vendeur créé, mais la photo n'a pas pu être envoyée : ${photoErr.message || photoErr}`);
+        }
+      }
       if (username.trim()) {
         await store.createAccount({ username: username.trim(), password, role: "vendor", vendorId: vendor.id });
       }
@@ -1719,6 +1729,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
       await reloadAccounts();
       store.logActivity(currentUser, "add_vendor", `Vendeur ajouté : ${nom.trim()}.`);
       setNom(""); setPrenom(""); setNumeroCni(""); setDateNaissance(""); setTelephone(""); setUsername(""); setPassword("");
+      setPhotoFile(null); setPhotoPreview("");
     } catch (e) {
       setError(e.message || "Erreur lors de la création.");
     }
@@ -1793,6 +1804,8 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
 
   return (
     <div>
+      <AttendanceBoard vendors={vendors} currentUser={currentUser} />
+
       <Card title="Ajouter un vendeur">
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
           <div style={{ flex: "1 1 180px" }}>
@@ -1822,6 +1835,37 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
             <div style={{ flex: "1 1 160px" }}>
               <Label>Téléphone</Label>
               <TextInput value={telephone} onChange={(e) => setTelephone(e.target.value)} placeholder="Ex. 6XX XX XX XX" />
+            </div>
+            <div style={{ flex: "0 0 auto" }}>
+              <Label>Photo</Label>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{
+                  width: 40, height: 40, borderRadius: "50%", background: "#EEF0F4", overflow: "hidden",
+                  display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: "1.5px solid #D8DCE3",
+                }}>
+                  {photoPreview ? (
+                    <img src={photoPreview} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ) : (
+                    <Users size={16} color="#B7BECB" />
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => addPhotoRef.current?.click()}
+                  style={{ ...iconBtnStyle, color: "#5B6472", border: "1px solid #D8DCE3", borderRadius: 8, padding: "8px 10px" }}
+                >
+                  <Camera size={15} />
+                </button>
+                <input
+                  ref={addPhotoRef} type="file" accept="image/*" style={{ display: "none" }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (!f) return;
+                    setPhotoFile(f);
+                    setPhotoPreview(URL.createObjectURL(f));
+                  }}
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -1977,6 +2021,127 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
         </Card>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pointage du jour — toute l'équipe d'un coup, avec possibilité de corriger
+// une date passée.
+// ---------------------------------------------------------------------------
+
+function AttendanceBoard({ vendors, currentUser }) {
+  const [date, setDate] = useState(todayISO());
+  const [entries, setEntries] = useState({}); // vendorId -> { statut, notes }
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    setSaved(false);
+    try {
+      const rows = await store.getAttendanceForDate(date);
+      const map = {};
+      rows.forEach((r) => { map[r.vendorId] = { statut: r.statut, notes: r.notes || "" }; });
+      setEntries(map);
+    } catch (e) {
+      setError(e.message || "Erreur lors du chargement.");
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { if (open) load(); }, [date, open]);
+
+  const setStatut = (vendorId, statut) => {
+    setEntries((m) => ({ ...m, [vendorId]: { ...(m[vendorId] || { notes: "" }), statut } }));
+  };
+  const setNotes = (vendorId, notes) => {
+    setEntries((m) => ({ ...m, [vendorId]: { ...(m[vendorId] || { statut: "present" }), notes } }));
+  };
+  const markAllPresent = () => {
+    const map = {};
+    vendors.forEach((v) => { map[v.id] = { statut: "present", notes: entries[v.id]?.notes || "" }; });
+    setEntries(map);
+  };
+
+  const save = async () => {
+    const toSave = vendors
+      .filter((v) => entries[v.id]?.statut)
+      .map((v) => ({ vendorId: v.id, statut: entries[v.id].statut, notes: entries[v.id].notes }));
+    if (toSave.length === 0) { setError("Marque au moins un vendeur avant d'enregistrer."); return; }
+    setSaving(true);
+    setError("");
+    try {
+      await store.setVendorAttendanceBulk(date, toSave);
+      setSaved(true);
+      store.logActivity(currentUser, "set_attendance_bulk", `Pointage du ${fmtDateFr(date)} enregistré pour ${toSave.length} vendeur(s).`);
+    } catch (e) {
+      setError(e.message || "Erreur lors de l'enregistrement.");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Card
+      title="Pointage du jour"
+      right={<button onClick={() => setOpen((o) => !o)} style={{ ...iconBtnStyle, color: "#5B6472" }}>{open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</button>}
+    >
+      {!open ? (
+        <div style={{ fontSize: 12.5, color: "#8A93A3", fontStyle: "italic" }}>Ouvrir pour pointer présence/absence de toute l'équipe.</div>
+      ) : vendors.length === 0 ? (
+        <EmptyState text="Ajoute d'abord un vendeur." />
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 16 }}>
+            <div style={{ flex: "0 1 180px" }}>
+              <Label>Date</Label>
+              <TextInput type="date" max={todayISO()} value={date} onChange={(e) => setDate(e.target.value)} />
+            </div>
+            <Button variant="gold" onClick={markAllPresent}>Marquer tous présents</Button>
+          </div>
+
+          {loading ? (
+            <div style={{ fontSize: 12.5, color: "#9AA2B1" }}>Chargement…</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {vendors.map((v) => {
+                const e = entries[v.id] || { statut: null, notes: "" };
+                return (
+                  <div key={v.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", paddingBottom: 10, borderBottom: "1px solid #F3F4F7" }}>
+                    <div style={{ width: 140, fontWeight: 600, fontSize: 13.5, color: "#1B2A4A" }}>{v.nom}</div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {Object.entries(STATUT_LABELS).map(([key, { label, color }]) => (
+                        <button
+                          key={key}
+                          onClick={() => setStatut(v.id, key)}
+                          style={{
+                            padding: "5px 10px", borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                            border: `1.5px solid ${e.statut === key ? color : "#D8DCE3"}`,
+                            background: e.statut === key ? color : "#fff",
+                            color: e.statut === key ? "#fff" : "#5B6472",
+                          }}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <TextInput placeholder="Note (facultatif)" value={e.notes} onChange={(ev) => setNotes(v.id, ev.target.value)} style={{ flex: "1 1 160px", maxWidth: 220 }} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginTop: 12 }}>{error}</div>}
+          {saved && <div style={{ color: "#3F9C6D", fontSize: 12.5, marginTop: 12 }}>Pointage enregistré.</div>}
+          <Button variant="primary" onClick={save} disabled={saving} style={{ marginTop: 14 }}>
+            {saving ? "Enregistrement…" : `Enregistrer le pointage du ${fmtDateFr(date)}`}
+          </Button>
+        </>
+      )}
+    </Card>
   );
 }
 

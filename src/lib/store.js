@@ -513,6 +513,15 @@ export async function setVendorAttendance({ vendorId, date, statut, notes }) {
   if (error) throw error;
 }
 
+// Enregistre le pointage de toute l'équipe pour une date donnée en un seul
+// aller-retour (écran "Pointage du jour").
+export async function setVendorAttendanceBulk(date, entries) {
+  // entries: [{ vendorId, statut, notes }]
+  const rows = entries.map((e) => ({ vendor_id: e.vendorId, date, statut: e.statut, notes: e.notes || null }));
+  const { error } = await supabase.from("vendor_attendance").upsert(rows, { onConflict: "vendor_id,date" });
+  if (error) throw error;
+}
+
 // -----------------------------------------------------------------------------
 // Anniversaires
 // -----------------------------------------------------------------------------
