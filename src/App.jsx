@@ -4,6 +4,7 @@ import {
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown,
   Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye,
   MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper,
+  Menu as MenuIcon,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Cell } from "recharts";
 import * as store from "./lib/store.js";
@@ -833,6 +834,7 @@ export default function App() {
   const [currentVendor, setCurrentVendor] = useState(null);
 
   const [tab, setTab] = useState("dashboard");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [products, setProducts] = useState([]);
   const [vendors, setVendors] = useState([]);
   const [daysList, setDaysList] = useState([]);
@@ -1203,9 +1205,58 @@ export default function App() {
   const activeVendor = currentUser.role === "vendor" ? currentVendor : null;
 
   return (
-    <div className="app-shell" style={{ display: "flex", minHeight: 640, fontFamily: "Calibri, Arial, sans-serif", background: "#F7F8FA", borderRadius: 16, overflow: "hidden", border: "1px solid #E7E9EE" }}>
+    <div className="app-shell" style={{ display: "flex", height: "100vh", minHeight: 640, fontFamily: "Calibri, Arial, sans-serif", background: "#F7F8FA", borderRadius: 16, overflow: "hidden", border: "1px solid #E7E9EE" }}>
+      <style>{`
+        /* Bureau / PC : la barre latérale ne bouge jamais, quel que soit le défilement du contenu */
+        .app-sidebar { position: relative; z-index: 50; }
+        .app-main { overflow-y: auto; }
+        .mobile-nav-toggle { display: none; }
+        .mobile-nav-overlay { display: none; }
+        .sidebar-close-btn { display: none; }
+
+        /* Mobile / tablette : la barre latérale devient un tiroir escamotable */
+        @media (max-width: 880px) {
+          .app-shell { border-radius: 0; height: 100vh; }
+          .app-sidebar {
+            position: fixed !important;
+            top: 0; left: 0; bottom: 0;
+            width: 250px !important;
+            max-width: 82vw;
+            height: 100vh !important;
+            transform: translateX(-100%);
+            transition: transform 0.25s ease;
+            z-index: 300;
+            box-shadow: 2px 0 24px rgba(0,0,0,0.28);
+          }
+          .app-sidebar.open { transform: translateX(0); }
+          .mobile-nav-toggle {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 36px; height: 36px; border-radius: 8px; border: 1px solid #E7E9EE;
+            background: #fff; cursor: pointer; color: #1B2A4A; flex-shrink: 0;
+          }
+          .sidebar-close-btn {
+            display: inline-flex; align-items: center; justify-content: center;
+            position: absolute; top: 14px; right: 14px; width: 30px; height: 30px;
+            border-radius: 8px; border: none; background: rgba(255,255,255,0.08);
+            color: #C7CCDA; cursor: pointer;
+          }
+          .mobile-nav-overlay.open {
+            display: block; position: fixed; inset: 0; background: rgba(21,32,57,0.5); z-index: 250;
+          }
+        }
+      `}</style>
+
+      {/* Rideau derrière le tiroir mobile, pour fermer au clic à l'extérieur */}
+      <div
+        className={`mobile-nav-overlay${mobileNavOpen ? " open" : ""}`}
+        onClick={() => setMobileNavOpen(false)}
+      />
+
       {/* Barre latérale */}
-      <div className="app-sidebar" style={{ width: 220, background: "#152039", color: "#fff", padding: "22px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+      <div className={`app-sidebar${mobileNavOpen ? " open" : ""}`} style={{ width: 220, background: "#152039", color: "#fff", padding: "22px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+        <button className="sidebar-close-btn" onClick={() => setMobileNavOpen(false)} aria-label="Fermer le menu">
+          <X size={16} />
+        </button>
         <div className="sidebar-brand" style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 8px 4px 8px" }}>
           <Logo size={32} />
           <div style={{ fontFamily: "Cambria, Georgia, serif", fontWeight: 700, fontSize: 14, lineHeight: 1.15 }}>
@@ -1223,7 +1274,7 @@ export default function App() {
             <button
               key={n.id}
               className="nav-btn"
-              onClick={() => setTab(n.id)}
+              onClick={() => { setTab(n.id); setMobileNavOpen(false); }}
               style={{
                 display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left",
                 padding: "10px 12px", marginBottom: 3, borderRadius: 8, border: "none", cursor: "pointer",
@@ -1263,9 +1314,18 @@ export default function App() {
             borderBottom: "1px solid #E7E9EE",
           }}
         >
-          <h1 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", fontSize: 24, color: "#1B2A4A" }}>
-            {nav.find((n) => n.id === tab)?.label}
-          </h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button
+              className="mobile-nav-toggle"
+              onClick={() => setMobileNavOpen(true)}
+              aria-label="Ouvrir le menu"
+            >
+              <MenuIcon size={18} />
+            </button>
+            <h1 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", fontSize: 24, color: "#1B2A4A" }}>
+              {nav.find((n) => n.id === tab)?.label}
+            </h1>
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             {canManage && (
               <AdminAchievementBell
