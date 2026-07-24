@@ -3,9 +3,9 @@ import {
   LayoutDashboard, Package, Boxes, Users, Truck, MoonStar, Wallet, History,
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown,
   Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye,
-  MessageSquare, Send, X, Link2, Cake, Camera,
+  MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper,
 } from "lucide-react";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Cell } from "recharts";
 import * as store from "./lib/store.js";
 import * as offline from "./lib/offline.js";
 
@@ -22,6 +22,7 @@ const NAV_ADMIN = [
   { id: "retour", label: "Retour du soir", icon: MoonStar },
   { id: "caisse", label: "Caisse", icon: Wallet },
   { id: "messagerie", label: "Messagerie", icon: MessageSquare },
+  { id: "rapports", label: "Rapports", icon: FileText },
   { id: "historique", label: "Historique", icon: History },
 ];
 
@@ -37,6 +38,7 @@ const NAV_MANAGER = [
   { id: "stock", label: "Stock", icon: Boxes },
   { id: "vendeurs", label: "Personnel", icon: Users },
   { id: "messagerie", label: "Messagerie", icon: MessageSquare },
+  { id: "rapports", label: "Rapports", icon: FileText },
 ];
 
 const NAV_MESSENGER = [
@@ -653,6 +655,74 @@ function aggregateRange(days, range) {
   return { bestVendor, topProducts };
 }
 
+// ---------------------------------------------------------------------------
+// Objectifs de vente quotidiens — paliers minimal / maximal / extraordinaire
+// ---------------------------------------------------------------------------
+
+const PALIER_ORDER = ["minimal", "maximal", "extraordinaire"];
+const PALIER_LABELS = { minimal: "Objectif minimal", maximal: "Objectif maximal", extraordinaire: "Objectif extraordinaire" };
+const PALIER_COLORS = { minimal: "#C1554A", maximal: "#D9A441", extraordinaire: "#3F8361" };
+
+// Calcule, pour un CA donné et des seuils donnés, la liste des paliers
+// atteints (seuils > 0 uniquement — un seuil à 0 est considéré "non défini").
+function reachedPaliers(ca, objectifs) {
+  const out = [];
+  if (objectifs.minimal > 0 && ca >= objectifs.minimal) out.push("minimal");
+  if (objectifs.maximal > 0 && ca >= objectifs.maximal) out.push("maximal");
+  if (objectifs.extraordinaire > 0 && ca >= objectifs.extraordinaire) out.push("extraordinaire");
+  return out;
+}
+
+// Classement complet des vendeurs (CA + quantité) sur une période — utilisé
+// par l'onglet Rapports.
+function aggregateVendorRanking(days, range, vendors) {
+  const totals = {};
+  vendors.forEach((v) => { totals[v.id] = { nom: v.nom, ca: 0, vendu: 0 }; });
+  days.forEach((day) => {
+    if (!day || !inRange(day.date, range)) return;
+    day.lines.forEach((l) => {
+      if (l.quantiteVendue == null) return;
+      if (!totals[l.vendorId]) totals[l.vendorId] = { nom: l.vendorNom, ca: 0, vendu: 0 };
+      totals[l.vendorId].ca += l.montantAttendu || 0;
+      totals[l.vendorId].vendu += l.quantiteVendue || 0;
+    });
+  });
+  return Object.values(totals).sort((a, b) => b.ca - a.ca);
+}
+
+// Série jour par jour du chiffre d'affaires global sur une période — utilisé
+// par le graphique d'évolution mensuelle de l'onglet Rapports.
+function buildDailyTotalSeries(days, range) {
+  const byDate = {};
+  days.forEach((d) => { if (d) byDate[d.date] = d; });
+  const series = [];
+  let cur = range[0];
+  while (cur <= range[1]) {
+    const d = byDate[cur];
+    const ca = d ? d.lines.reduce((s, l) => s + (l.quantiteVendue != null ? (l.montantAttendu || 0) : 0), 0) : 0;
+    series.push({ date: cur, label: cur.slice(8, 10), ca });
+    cur = addDays(cur, 1);
+  }
+  return series;
+}
+
+// Répartit le chiffre d'affaires / quantité vendue par catégorie de produit
+// sur une période donnée (utilisé au Tableau de bord).
+function aggregateRangeByCategory(days, range, productsById) {
+  const totals = {};
+  days.forEach((day) => {
+    if (!day || !inRange(day.date, range)) return;
+    day.lines.forEach((l) => {
+      if (l.quantiteVendue == null) return;
+      const categorie = productsById[l.productId]?.categorie || "Général";
+      if (!totals[categorie]) totals[categorie] = { categorie, qty: 0, ca: 0 };
+      totals[categorie].qty += l.quantiteVendue || 0;
+      totals[categorie].ca += l.montantAttendu || 0;
+    });
+  });
+  return Object.values(totals).sort((a, b) => b.ca - a.ca);
+}
+
 // Calcule le résumé de versement (espèces + mobile) d'un vendeur pour un jour donné
 function computeVersementSummary(day, vendorId) {
   const lines = (day?.lines || []).filter((l) => l.vendorId === vendorId && l.quantiteRestante !== null);
@@ -669,6 +739,87 @@ function computeVersementSummary(day, vendorId) {
     montantAVerserEspeces, montantVerseEspeces: finalise ? versement.montantVerseEspeces : null,
     finalise, ecart, statut,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Cloche de notifications — paliers d'objectif atteints par les vendeurs,
+// visible uniquement par l'administration (admin / gestionnaire).
+// ---------------------------------------------------------------------------
+
+function AdminAchievementBell({ achievements, onMarkSeen, onOpen }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const onClickOutside = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next) onOpen();
+  };
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        onClick={toggle}
+        style={{
+          position: "relative", background: "#fff", border: "1px solid #E7E9EE", borderRadius: 10,
+          width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#1B2A4A",
+        }}
+        title="Paliers d'objectif atteints"
+      >
+        <Bell size={17} />
+        {achievements.length > 0 && (
+          <span
+            style={{
+              position: "absolute", top: -5, right: -5, minWidth: 17, height: 17, borderRadius: 999,
+              background: "#C1554A", color: "#fff", fontSize: 10.5, fontWeight: 700,
+              display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px",
+            }}
+          >
+            {achievements.length}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div
+          style={{
+            position: "absolute", top: 42, right: 0, width: 320, maxHeight: 380, overflowY: "auto",
+            background: "#fff", border: "1px solid #E7E9EE", borderRadius: 12, boxShadow: "0 10px 30px rgba(27,42,74,0.14)", zIndex: 30,
+          }}
+        >
+          <div style={{ padding: "12px 14px", borderBottom: "1px solid #F0F1F4", fontSize: 13, fontWeight: 700, color: "#1B2A4A" }}>
+            Paliers atteints aujourd'hui
+          </div>
+          {achievements.length === 0 ? (
+            <EmptyState text="Aucun palier atteint pour l'instant." />
+          ) : (
+            achievements.map((a) => (
+              <div
+                key={a.id}
+                onClick={() => onMarkSeen(a.id)}
+                style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 14px", borderBottom: "1px solid #F5F6F8", cursor: "pointer" }}
+              >
+                <Trophy size={15} color={PALIER_COLORS[a.palier]} style={{ marginTop: 2, flexShrink: 0 }} />
+                <div>
+                  <div style={{ fontSize: 13, color: "#1B2A4A", fontWeight: 600 }}>
+                    {a.vendorNom} — {PALIER_LABELS[a.palier]}
+                  </div>
+                  <div style={{ fontSize: 12, color: "#8A93A3", marginTop: 2 }}>
+                    {fmtMoney(a.montant)} · {formatDateFR(a.date)}
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -692,6 +843,8 @@ export default function App() {
   const [online, setOnline] = useState(offline.isOnline());
   const [queueCount, setQueueCount] = useState(offline.queueLength());
   const [syncing, setSyncing] = useState(false);
+  const [objectives, setObjectives] = useState({ minimal: 0, maximal: 0, extraordinaire: 0 });
+  const [unseenAchievements, setUnseenAchievements] = useState([]);
 
   // Force un nouveau rendu toutes les minutes pour détecter le changement de jour à 00h
   useEffect(() => {
@@ -787,11 +940,13 @@ export default function App() {
         return;
       }
       try {
-        const [p, v, dl, d, w, n] = await Promise.all([
+        const [p, v, dl, d, w, n, obj] = await Promise.all([
           store.getProducts(), store.getVendors(), store.getDaysList(),
           store.getDay(today), store.getWithdrawals(), store.getNotifications(),
+          store.getSalesObjectives(),
         ]);
         setProducts(p); setVendors(v); setDaysList(dl); setDay(d); setWithdrawals(w); setNotifications(n);
+        setObjectives(obj);
         offline.cacheSet("products", p); offline.cacheSet("vendors", v); offline.cacheSet("daysList", dl);
         offline.cacheSet("day:" + today, d); offline.cacheSet("withdrawals", w); offline.cacheSet("notifications", n);
       } catch (e) {
@@ -821,6 +976,29 @@ export default function App() {
   const reloadProducts = useCallback(async () => { setProducts(await store.getProducts()); }, []);
   const reloadVendors = useCallback(async () => { setVendors(await store.getVendors()); }, []);
 
+  // Notifications admin : un vendeur qui atteint un palier du jour apparaît
+  // ici tant qu'un admin/gestionnaire ne l'a pas marqué comme vu.
+  const canSeeAchievements = currentUser && (currentUser.role === "admin" || currentUser.role === "manager");
+  const reloadUnseenAchievements = useCallback(async () => {
+    try { setUnseenAchievements(await store.getUnseenAchievements()); } catch (e) { console.error("Chargement des paliers atteints impossible", e); }
+  }, []);
+  useEffect(() => {
+    if (!canSeeAchievements || !online) return;
+    reloadUnseenAchievements();
+    const id = setInterval(reloadUnseenAchievements, 30000);
+    return () => clearInterval(id);
+  }, [canSeeAchievements, online, reloadUnseenAchievements]);
+
+  const markAchievementSeen = async (id) => {
+    setUnseenAchievements((prev) => prev.filter((a) => a.id !== id));
+    try { await store.markAchievementSeen(id); } catch (e) { console.error("Impossible de marquer le palier comme vu", e); }
+  };
+
+  const persistObjectives = async (next) => {
+    setObjectives(next);
+    await store.setSalesObjectives(next, currentUser?.username);
+  };
+
   // Ces fonctions gardent la même signature que dans la version précédente
   // (on passe le tableau "complet" attendu) mais traduisent le changement en
   // vraies écritures Supabase — ou, si hors-ligne, les mettent de côté pour
@@ -831,7 +1009,7 @@ export default function App() {
     offline.cacheSet("products", next);
     if (!offline.isOnline()) {
       for (const p of next) {
-        if (!prevById[p.id]) offline.enqueue({ type: "addProduct", payload: { nom: p.nom, prix: p.prix, stock: p.stock } });
+        if (!prevById[p.id]) offline.enqueue({ type: "addProduct", payload: { nom: p.nom, prix: p.prix, stock: p.stock, categorie: p.categorie } });
         else if (prevById[p.id].stock !== p.stock) offline.enqueue({ type: "updateProductStock", payload: { id: p.id, stock: p.stock } });
       }
       for (const p of products) {
@@ -842,7 +1020,7 @@ export default function App() {
     }
     try {
       for (const p of next) {
-        if (!prevById[p.id]) await store.addProduct({ nom: p.nom, prix: p.prix, stock: p.stock });
+        if (!prevById[p.id]) await store.addProduct({ nom: p.nom, prix: p.prix, stock: p.stock, categorie: p.categorie });
         else if (prevById[p.id].stock !== p.stock) await store.updateProductStock(p.id, p.stock);
       }
       for (const p of products) {
@@ -1075,13 +1253,31 @@ export default function App() {
       </div>
 
       {/* Contenu principal */}
-      <div className="app-main" style={{ flex: 1, padding: "26px 30px", overflowY: "auto", minWidth: 0 }}>
-        <div className="app-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 22, flexWrap: "wrap", gap: 8 }}>
+      <div className="app-main" style={{ flex: 1, padding: "0 30px 26px 30px", overflowY: "auto", minWidth: 0 }}>
+        <div
+          className="app-header"
+          style={{
+            position: "sticky", top: 0, zIndex: 20, background: "#F7F8FA",
+            display: "flex", justifyContent: "space-between", alignItems: "baseline",
+            flexWrap: "wrap", gap: 8, padding: "26px 0 16px 0", marginBottom: 6,
+            borderBottom: "1px solid #E7E9EE",
+          }}
+        >
           <h1 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", fontSize: 24, color: "#1B2A4A" }}>
             {nav.find((n) => n.id === tab)?.label}
           </h1>
-          <div className="app-date" style={{ fontSize: 13, color: "#8A93A3", textTransform: "capitalize" }}>{formatDateFR(today)}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            {canManage && (
+              <AdminAchievementBell
+                achievements={unseenAchievements}
+                onMarkSeen={markAchievementSeen}
+                onOpen={reloadUnseenAchievements}
+              />
+            )}
+            <div className="app-date" style={{ fontSize: 13, color: "#8A93A3", textTransform: "capitalize" }}>{formatDateFR(today)}</div>
+          </div>
         </div>
+        <div style={{ paddingTop: 16 }}>
 
         {(!online || queueCount > 0) && (
           <div
@@ -1108,12 +1304,12 @@ export default function App() {
         )}
 
         {tab === "dashboard" && canManage && (
-          <Dashboard products={products} vendors={vendors} day={day} daysList={daysList} today={today} />
+          <Dashboard products={products} vendors={vendors} day={day} daysList={daysList} today={today} objectives={objectives} setObjectives={persistObjectives} />
         )}
         {tab === "dashboard" && !canManage && (
-          <VendorDashboard vendor={activeVendor} daysList={daysList} today={today} day={day} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} />
+          <VendorDashboard vendor={activeVendor} daysList={daysList} today={today} day={day} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} objectives={objectives} />
         )}
-        {tab === "produits" && isAdmin && <Produits products={products} setProducts={persistProducts} />}
+        {tab === "produits" && isAdmin && <Produits products={products} setProducts={persistProducts} reloadProducts={reloadProducts} />}
         {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} />}
         {tab === "vendeurs" && canManage && (
           <Vendeurs vendors={vendors} reloadVendors={reloadVendors} isAdmin={isAdmin} currentUser={currentUser} />
@@ -1138,9 +1334,13 @@ export default function App() {
         {tab === "messagerie" && (
           <Messagerie currentUser={currentUser} vendors={vendors} />
         )}
+        {tab === "rapports" && canManage && (
+          <Rapports vendors={vendors} products={products} daysList={daysList} today={today} />
+        )}
         {tab === "historique" && isAdmin && <Historique daysList={daysList} today={today} />}
         {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
         {tab === "supervision" && isAdmin && currentUser.isPrimary && <Supervision currentUser={currentUser} />}
+        </div>
       </div>
     </div>
   );
@@ -1150,11 +1350,17 @@ export default function App() {
 // Tableau de bord
 // ---------------------------------------------------------------------------
 
-function Dashboard({ products, vendors, day, daysList, today }) {
+function Dashboard({ products, vendors, day, daysList, today, objectives, setObjectives }) {
   const [period, setPeriod] = useState("month"); // "day" | "week" | "month"
   const [history, setHistory] = useState({ day: null, week: null, month: null });
+  const [categoryHistory, setCategoryHistory] = useState({ day: [], week: [], month: [] });
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [expensesToday, setExpensesToday] = useState(0);
+  const [objDraft, setObjDraft] = useState(objectives);
+  const [objSaving, setObjSaving] = useState(false);
+  const [objSaved, setObjSaved] = useState(false);
+
+  useEffect(() => { setObjDraft(objectives); }, [objectives]);
 
   const totalVendu = day.lines.reduce((s, l) => s + (l.quantiteVendue || 0), 0);
   const totalAttendu = day.lines.reduce((s, l) => s + (l.montantAttendu || 0), 0);
@@ -1188,12 +1394,31 @@ function Dashboard({ products, vendors, day, daysList, today }) {
         week: aggregateRange(loaded, weekPrev),
         month: aggregateRange(loaded, monthPrev),
       });
+      const productsById = Object.fromEntries(products.map((p) => [p.id, p]));
+      setCategoryHistory({
+        day: aggregateRangeByCategory(loaded, dayPrev, productsById),
+        week: aggregateRangeByCategory(loaded, weekPrev, productsById),
+        month: aggregateRangeByCategory(loaded, monthPrev, productsById),
+      });
       setLoadingHistory(false);
     })();
-  }, [daysList, today]);
+  }, [daysList, today, products]);
 
   const periodLabels = { day: "Hier", week: "Semaine dernière", month: "Mois dernier" };
   const current = history[period];
+  const currentByCategory = categoryHistory[period] || [];
+
+  const saveObjectives = async () => {
+    setObjSaving(true); setObjSaved(false);
+    const next = {
+      minimal: Number(objDraft.minimal) || 0,
+      maximal: Number(objDraft.maximal) || 0,
+      extraordinaire: Number(objDraft.extraordinaire) || 0,
+    };
+    await setObjectives(next);
+    setObjSaving(false); setObjSaved(true);
+    setTimeout(() => setObjSaved(false), 2500);
+  };
 
   return (
     <div>
@@ -1285,9 +1510,59 @@ function Dashboard({ products, vendors, day, daysList, today }) {
               </div>
             )}
           </Card>
+
+          <Card title={`Performance par type de produit — ${periodLabels[period]}`}>
+            {loadingHistory ? (
+              <EmptyState text="Chargement de l'historique…" />
+            ) : currentByCategory.length === 0 ? (
+              <EmptyState text="Aucune vente sur cette période." />
+            ) : (
+              <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+                <div style={{ flex: "1 1 260px", height: Math.max(140, currentByCategory.length * 34) }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={currentByCategory} layout="vertical" margin={{ left: 10, right: 20 }}>
+                      <XAxis type="number" hide />
+                      <YAxis type="category" dataKey="categorie" width={110} tick={{ fontSize: 12, fill: "#1B2A4A" }} />
+                      <Tooltip formatter={(v) => fmtMoney(v)} />
+                      <Bar dataKey="ca" fill="#1B2A4A" radius={[0, 6, 6, 0]} barSize={16} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div style={{ flex: "1 1 220px" }}>
+                  <Table
+                    headers={["Catégorie", "Qté vendue", "Chiffre d'affaires"]}
+                    rows={currentByCategory.map((c) => [c.categorie, c.qty, fmtMoney(c.ca)])}
+                  />
+                </div>
+              </div>
+            )}
+          </Card>
         </div>
 
         <div className="dash-col-side" style={{ flex: "1 1 260px" }}>
+          <Card title="Objectifs quotidiens des vendeurs">
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {PALIER_ORDER.map((p) => (
+                <div key={p}>
+                  <Label>{PALIER_LABELS[p]} (F)</Label>
+                  <TextInput
+                    type="number"
+                    value={objDraft[p] ?? 0}
+                    onChange={(e) => setObjDraft((d) => ({ ...d, [p]: e.target.value }))}
+                    style={{ borderColor: PALIER_COLORS[p] }}
+                  />
+                </div>
+              ))}
+              <Button variant="gold" onClick={saveObjectives} disabled={objSaving} style={{ justifyContent: "center", marginTop: 4 }}>
+                {objSaving ? "Enregistrement…" : "Enregistrer les objectifs"}
+              </Button>
+              {objSaved && <div style={{ color: "#3F8361", fontSize: 12.5 }}>Objectifs mis à jour pour tous les vendeurs.</div>}
+              <div style={{ fontSize: 11.5, color: "#8A93A3" }}>
+                Ces seuils s'appliquent au chiffre d'affaires du jour de chaque vendeur et déclenchent une animation côté vendeur ainsi qu'une notification ici-même dès qu'un palier est atteint.
+              </div>
+            </div>
+          </Card>
+
           <Card title="Alertes stock">
             {lowStock.length === 0 ? (
               <EmptyState text="Aucun produit en stock faible." />
@@ -1342,17 +1617,105 @@ function VendorBars({ vendors, day }) {
   );
 }
 
+// Barre de progression à 3 paliers (minimal / maximal / extraordinaire) pour
+// le chiffre d'affaires du jour d'un vendeur, avec animation de célébration.
+function ObjectiveProgressBar({ ca, objectifs, celebrate }) {
+  const seuils = PALIER_ORDER.map((p) => objectifs[p] || 0);
+  const scaleMax = Math.max(ca, ...seuils, 1) * 1.08;
+  const pct = Math.min(100, (ca / scaleMax) * 100);
+  const reached = reachedPaliers(ca, objectifs);
+  const highestReached = reached[reached.length - 1] || null;
+
+  return (
+    <div style={{ position: "relative" }}>
+      <style>{`
+        @keyframes z2t-pop-in { 0% { transform: scale(0.4) translateY(10px); opacity: 0; } 60% { transform: scale(1.08) translateY(-2px); opacity: 1; } 100% { transform: scale(1) translateY(0); opacity: 1; } }
+        @keyframes z2t-confetti-fall { 0% { transform: translateY(-14px) rotate(0deg); opacity: 1; } 100% { transform: translateY(90px) rotate(280deg); opacity: 0; } }
+        .z2t-celebrate-badge { animation: z2t-pop-in 0.45s ease-out; }
+        .z2t-confetti { position: absolute; top: 0; animation: z2t-confetti-fall 1.1s ease-in forwards; }
+      `}</style>
+
+      {celebrate && (
+        <div
+          className="z2t-celebrate-badge"
+          style={{
+            display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", borderRadius: 12, marginBottom: 16,
+            background: `${PALIER_COLORS[celebrate]}1A`, border: `1px solid ${PALIER_COLORS[celebrate]}55`, position: "relative", overflow: "hidden",
+          }}
+        >
+          <PartyPopper size={20} color={PALIER_COLORS[celebrate]} />
+          <span style={{ fontSize: 14, fontWeight: 700, color: PALIER_COLORS[celebrate] }}>
+            Bravo ! Tu viens d'atteindre l'objectif {PALIER_LABELS[celebrate].toLowerCase()} 🎉
+          </span>
+          {Array.from({ length: 10 }).map((_, i) => (
+            <span
+              key={i}
+              className="z2t-confetti"
+              style={{
+                left: `${8 + i * 9}%`, fontSize: 13, animationDelay: `${i * 0.05}s`,
+                color: [PALIER_COLORS.minimal, PALIER_COLORS.maximal, PALIER_COLORS.extraordinaire][i % 3],
+              }}
+            >
+              ●
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 13 }}>
+        <span style={{ fontWeight: 700, color: "#1B2A4A" }}>{fmtMoney(ca)} aujourd'hui</span>
+        {highestReached && (
+          <span style={{ fontWeight: 700, color: PALIER_COLORS[highestReached] }}>{PALIER_LABELS[highestReached]} atteint</span>
+        )}
+      </div>
+
+      <div style={{ position: "relative", height: 14, background: "#EEF0F4", borderRadius: 999, overflow: "visible" }}>
+        <div
+          style={{
+            height: "100%", width: `${pct}%`, borderRadius: 999, transition: "width 0.6s ease",
+            background: `linear-gradient(90deg, ${PALIER_COLORS.minimal}, ${PALIER_COLORS.maximal}, ${PALIER_COLORS.extraordinaire})`,
+          }}
+        />
+        {PALIER_ORDER.map((p) => {
+          const seuil = objectifs[p] || 0;
+          if (seuil <= 0) return null;
+          const left = Math.min(100, (seuil / scaleMax) * 100);
+          const done = reached.includes(p);
+          return (
+            <div key={p} style={{ position: "absolute", top: -4, left: `${left}%`, transform: "translateX(-50%)" }} title={`${PALIER_LABELS[p]} — ${fmtMoney(seuil)}`}>
+              <div style={{ width: 3, height: 22, background: done ? "#fff" : PALIER_COLORS[p], borderRadius: 2, boxShadow: "0 0 0 1px rgba(0,0,0,0.06)" }} />
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: "flex", gap: 16, marginTop: 10, flexWrap: "wrap" }}>
+        {PALIER_ORDER.filter((p) => (objectifs[p] || 0) > 0).map((p) => (
+          <div key={p} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <CheckCircle2 size={13} color={reached.includes(p) ? PALIER_COLORS[p] : "#C7CCD6"} />
+            <span style={{ color: reached.includes(p) ? "#1B2A4A" : "#8A93A3", fontWeight: reached.includes(p) ? 700 : 500 }}>
+              {PALIER_LABELS[p]} — {fmtMoney(objectifs[p])}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tableau de bord du vendeur (lecture seule + demande de retrait d'excédent)
 // ---------------------------------------------------------------------------
 
-function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdrawals, notifications, setNotifications }) {
+function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdrawals, notifications, setNotifications, objectives }) {
   const [allDays, setAllDays] = useState(null);
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [withdrawMethod, setWithdrawMethod] = useState("especes"); // "especes" | "mobile"
   const [withdrawNumero, setWithdrawNumero] = useState("");
   const [requestError, setRequestError] = useState("");
   const [requestOk, setRequestOk] = useState(false);
+  const [achievedToday, setAchievedToday] = useState(null); // paliers déjà enregistrés côté serveur pour aujourd'hui
+  const [celebrate, setCelebrate] = useState(null); // palier en cours d'animation
 
   useEffect(() => {
     (async () => {
@@ -1360,6 +1723,36 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
       setAllDays(loaded);
     })();
   }, [daysList]);
+
+  // Charge les paliers déjà atteints aujourd'hui pour éviter de rejouer
+  // l'animation à chaque rechargement de page.
+  useEffect(() => {
+    if (!vendor) return;
+    (async () => {
+      try { setAchievedToday(await store.getAchievementsForVendorDate(vendor.id, today)); }
+      catch (e) { console.error("Chargement des paliers atteints impossible", e); setAchievedToday([]); }
+    })();
+  }, [vendor?.id, today]);
+
+  // Détecte un nouveau palier atteint aujourd'hui : déclenche l'animation
+  // côté vendeur et enregistre l'événement (la contrainte unique côté base
+  // empêche tout doublon même si l'effet se rejoue).
+  useEffect(() => {
+    if (!vendor || allDays === null || achievedToday === null || !objectives) return;
+    const daysToday = allDays.some((d) => d.date === today) ? allDays : [...allDays, day];
+    const caAujourdhui = sumVendorOverRange(daysToday, vendor.id, [today, today]).ca;
+    const reached = reachedPaliers(caAujourdhui, objectives);
+    const nouveaux = reached.filter((p) => !achievedToday.includes(p));
+    if (nouveaux.length === 0) return;
+    (async () => {
+      for (const palier of nouveaux) {
+        await store.recordAchievement({ vendorId: vendor.id, vendorNom: vendor.nom, date: today, palier, montant: caAujourdhui });
+      }
+      setAchievedToday((prev) => [...(prev || []), ...nouveaux]);
+      setCelebrate(nouveaux[nouveaux.length - 1]);
+      setTimeout(() => setCelebrate(null), 3200);
+    })();
+  }, [vendor, allDays, day, today, objectives, achievedToday]);
 
   if (!vendor) return <EmptyState text="Compte non lié à un vendeur." />;
 
@@ -1442,6 +1835,12 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
         <StatCard label="CHIFFRE D'AFFAIRES TOTAL CUMULÉ" value={fmtMoney(caTotal)} accent="#D9A441" />
       </div>
 
+      {objectives && (objectives.minimal > 0 || objectives.maximal > 0 || objectives.extraordinaire > 0) && (
+        <Card title="Objectif du jour">
+          <ObjectiveProgressBar ca={caJour.ca} objectifs={objectives} celebrate={celebrate} />
+        </Card>
+      )}
+
       <Card title="Évolution sur les 15 derniers jours">
         <div style={{ height: 220 }}>
           <ResponsiveContainer width="100%" height="100%">
@@ -1523,19 +1922,31 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
 // Produits
 // ---------------------------------------------------------------------------
 
-function Produits({ products, setProducts }) {
+function Produits({ products, setProducts, reloadProducts }) {
   const [nom, setNom] = useState("");
   const [prix, setPrix] = useState("");
   const [stock, setStock] = useState("");
+  const [categorie, setCategorie] = useState("");
+  const [catEdits, setCatEdits] = useState({});
+
+  const categoriesExistantes = Array.from(new Set(products.map((p) => p.categorie).filter(Boolean)));
 
   const add = async () => {
     if (!nom.trim() || !prix) return;
-    const next = [...products, { id: uid(), nom: nom.trim(), prix: Number(prix), stock: Number(stock) || 0 }];
+    const next = [...products, { id: uid(), nom: nom.trim(), prix: Number(prix), stock: Number(stock) || 0, categorie: categorie.trim() || "Général" }];
     await setProducts(next);
-    setNom(""); setPrix(""); setStock("");
+    setNom(""); setPrix(""); setStock(""); setCategorie("");
   };
 
   const remove = async (id) => { await setProducts(products.filter((p) => p.id !== id)); };
+
+  const saveCategorie = async (id) => {
+    const value = catEdits[id];
+    if (value === undefined) return;
+    await store.updateProductCategorie(id, value);
+    setCatEdits((c) => { const n = { ...c }; delete n[id]; return n; });
+    if (reloadProducts) await reloadProducts();
+  };
 
   return (
     <div>
@@ -1553,6 +1964,13 @@ function Produits({ products, setProducts }) {
             <Label>Stock initial</Label>
             <TextInput type="number" value={stock} onChange={(e) => setStock(e.target.value)} placeholder="0" />
           </div>
+          <div style={{ flex: "1 1 150px" }}>
+            <Label>Catégorie / type</Label>
+            <TextInput list="categories-existantes" value={categorie} onChange={(e) => setCategorie(e.target.value)} placeholder="Ex. Cosmétique" />
+            <datalist id="categories-existantes">
+              {categoriesExistantes.map((c) => <option key={c} value={c} />)}
+            </datalist>
+          </div>
           <Button variant="primary" onClick={add}><Plus size={15} /> Ajouter</Button>
         </div>
       </Card>
@@ -1562,9 +1980,19 @@ function Produits({ products, setProducts }) {
           <EmptyState text="Aucun produit pour le moment. Ajoute ton premier produit ci-dessus." />
         ) : (
           <Table
-            headers={["Produit", "Prix unitaire", "Stock actuel", ""]}
+            headers={["Produit", "Catégorie", "Prix unitaire", "Stock actuel", ""]}
             rows={products.map((p) => [
-              p.nom, fmtMoney(p.prix), p.stock,
+              p.nom,
+              <div key="c" style={{ display: "flex", gap: 6 }}>
+                <TextInput
+                  list="categories-existantes"
+                  value={catEdits[p.id] !== undefined ? catEdits[p.id] : (p.categorie || "Général")}
+                  onChange={(e) => setCatEdits((c) => ({ ...c, [p.id]: e.target.value }))}
+                  onBlur={() => saveCategorie(p.id)}
+                  style={{ minWidth: 130 }}
+                />
+              </div>,
+              fmtMoney(p.prix), p.stock,
               <button key="del" onClick={() => remove(p.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
             ])}
           />
@@ -1589,15 +2017,67 @@ function Stock({ products, setProducts }) {
     setAdjust((a) => ({ ...a, [id]: "" }));
   };
 
-  return (
-    <Card title="Niveaux de stock">
-      {products.length === 0 ? (
+  if (products.length === 0) {
+    return (
+      <Card title="Niveaux de stock">
         <EmptyState text="Ajoute des produits dans l'onglet Produits pour gérer le stock." />
-      ) : (
+      </Card>
+    );
+  }
+
+  const stockData = products.map((p) => ({ nom: p.nom, stock: Number(p.stock) || 0 }));
+
+  const valueByCategory = {};
+  products.forEach((p) => {
+    const cat = p.categorie || "Général";
+    valueByCategory[cat] = (valueByCategory[cat] || 0) + (Number(p.stock) || 0) * (Number(p.prix) || 0);
+  });
+  const categoryData = Object.entries(valueByCategory)
+    .map(([categorie, valeur]) => ({ categorie, valeur }))
+    .sort((a, b) => b.valeur - a.valeur);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 20 }}>
+        <div style={{ flex: "1 1 340px" }}>
+          <Card title="Niveau de stock par produit">
+            <div style={{ height: Math.max(160, stockData.length * 30) }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={stockData} layout="vertical" margin={{ left: 10, right: 20 }}>
+                  <XAxis type="number" hide />
+                  <YAxis type="category" dataKey="nom" width={110} tick={{ fontSize: 12, fill: "#1B2A4A" }} />
+                  <Tooltip formatter={(v) => `${v} unité(s)`} />
+                  <Bar dataKey="stock" radius={[0, 6, 6, 0]} barSize={14}>
+                    {stockData.map((d, i) => (
+                      <Cell key={i} fill={d.stock <= 5 ? "#C1554A" : "#D9A441"} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+        </div>
+        <div style={{ flex: "1 1 280px" }}>
+          <Card title="Valeur du stock par catégorie">
+            <div style={{ height: Math.max(160, categoryData.length * 34) }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={categoryData} layout="vertical" margin={{ left: 10, right: 20 }}>
+                  <XAxis type="number" hide />
+                  <YAxis type="category" dataKey="categorie" width={110} tick={{ fontSize: 12, fill: "#1B2A4A" }} />
+                  <Tooltip formatter={(v) => fmtMoney(v)} />
+                  <Bar dataKey="valeur" fill="#1B2A4A" radius={[0, 6, 6, 0]} barSize={16} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+        </div>
+      </div>
+
+      <Card title="Niveaux de stock">
         <Table
-          headers={["Produit", "Stock actuel", "Statut", "Réapprovisionner"]}
+          headers={["Produit", "Catégorie", "Stock actuel", "Statut", "Réapprovisionner"]}
           rows={products.map((p) => [
-            p.nom, p.stock,
+            p.nom, p.categorie || "Général", p.stock,
             <Badge key="b" ok={Number(p.stock) > 5} okText="OK" warnText="Faible" />,
             <div key="r" style={{ display: "flex", gap: 8 }}>
               <TextInput type="number" placeholder="Qté" style={{ width: 80 }} value={adjust[p.id] || ""} onChange={(e) => setAdjust((a) => ({ ...a, [p.id]: e.target.value }))} />
@@ -1605,8 +2085,8 @@ function Stock({ products, setProducts }) {
             </div>,
           ])}
         />
-      )}
-    </Card>
+      </Card>
+    </div>
   );
 }
 
@@ -3131,6 +3611,167 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
 // ---------------------------------------------------------------------------
 // Historique
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Rapports — bilan mensuel imprimable (valeurs + graphiques), à exporter en
+// PDF via la fonction d'impression du navigateur ("Enregistrer au format PDF").
+// ---------------------------------------------------------------------------
+
+function monthRangeFromInput(monthValue) {
+  // monthValue au format "AAAA-MM"
+  const [y, m] = monthValue.split("-").map(Number);
+  const first = `${monthValue}-01`;
+  const lastDay = new Date(y, m, 0).getDate();
+  const last = `${monthValue}-${String(lastDay).padStart(2, "0")}`;
+  return [first, last];
+}
+
+function monthLabelFR(monthValue) {
+  const [y, m] = monthValue.split("-").map(Number);
+  const months = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+  return `${months[m - 1]} ${y}`;
+}
+
+function Rapports({ vendors, products, daysList, today }) {
+  const [month, setMonth] = useState(today.slice(0, 7));
+  const [loading, setLoading] = useState(false);
+  const [report, setReport] = useState(null);
+
+  const generer = async () => {
+    setLoading(true);
+    const range = monthRangeFromInput(month);
+    const dates = daysList.filter((d) => inRange(d, range));
+    const loaded = await store.getDaysInRange(dates);
+    const productsById = Object.fromEntries(products.map((p) => [p.id, p]));
+
+    let totalCa = 0, totalVendu = 0, totalEspeces = 0, totalMobile = 0, totalDepenses = 0;
+    loaded.forEach((day) => {
+      day.lines.forEach((l) => {
+        if (l.quantiteVendue != null) { totalCa += l.montantAttendu || 0; totalVendu += l.quantiteVendue || 0; }
+      });
+      totalDepenses += (day.expenses || []).reduce((s, e) => s + (Number(e.montant) || 0), 0);
+      vendors.forEach((v) => {
+        const summary = computeVersementSummary(day, v.id);
+        totalMobile += summary.totalMobile;
+        if (summary.finalise) totalEspeces += summary.montantVerseEspeces;
+      });
+    });
+
+    setReport({
+      range,
+      totalCa, totalVendu, totalEspeces, totalMobile, totalDepenses,
+      ranking: aggregateVendorRanking(loaded, range, vendors),
+      byCategory: aggregateRangeByCategory(loaded, range, productsById),
+      dailySeries: buildDailyTotalSeries(loaded, range),
+      joursActifs: loaded.filter((d) => d.lines.length > 0).length,
+    });
+    setLoading(false);
+  };
+
+  return (
+    <div>
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          #rapport-print-area, #rapport-print-area * { visibility: visible; }
+          #rapport-print-area { position: absolute; top: 0; left: 0; width: 100%; margin: 0; padding: 0; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+
+      <Card title="Générer un rapport mensuel">
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 180px" }}>
+            <Label>Mois</Label>
+            <TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+          </div>
+          <Button variant="primary" onClick={generer} disabled={loading}>
+            {loading ? "Génération…" : "Générer"}
+          </Button>
+          {report && (
+            <Button variant="gold" onClick={() => window.print()}>
+              <Printer size={15} /> Imprimer / Enregistrer en PDF
+            </Button>
+          )}
+        </div>
+      </Card>
+
+      {report && (
+        <div id="rapport-print-area">
+          <Card>
+            <div style={{ textAlign: "center", marginBottom: 6 }}>
+              <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 21, fontWeight: 700, color: "#1B2A4A", textTransform: "capitalize" }}>
+                Rapport mensuel — {monthLabelFR(month)}
+              </div>
+              <div style={{ fontSize: 12, color: "#8A93A3" }}>{report.joursActifs} jour(s) d'activité sur la période</div>
+            </div>
+          </Card>
+
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+            <StatCard label="CHIFFRE D'AFFAIRES DU MOIS" value={fmtMoney(report.totalCa)} accent="#D9A441" />
+            <StatCard label="ARTICLES VENDUS" value={report.totalVendu} />
+            <StatCard label="ESPÈCES ENCAISSÉES" value={fmtMoney(report.totalEspeces)} />
+            <StatCard label="PAIEMENTS MOBILES" value={fmtMoney(report.totalMobile)} />
+            <StatCard label="DÉPENSES DU MOIS" value={fmtMoney(report.totalDepenses)} accent="#C1554A" />
+          </div>
+
+          <Card title="Évolution du chiffre d'affaires sur le mois">
+            <div style={{ height: 220 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={report.dailySeries} margin={{ left: 0, right: 10, top: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#EEF0F4" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#8A93A3" }} />
+                  <YAxis tick={{ fontSize: 11, fill: "#8A93A3" }} />
+                  <Tooltip formatter={(v) => fmtMoney(v)} labelFormatter={(l) => `Jour ${l}`} />
+                  <Line type="monotone" dataKey="ca" stroke="#D9A441" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+
+          <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 340px" }}>
+              <Card title="Classement des vendeurs">
+                {report.ranking.length === 0 ? (
+                  <EmptyState text="Aucune vente sur cette période." />
+                ) : (
+                  <>
+                    <div style={{ height: Math.max(140, report.ranking.length * 30), marginBottom: 14 }}>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={report.ranking} layout="vertical" margin={{ left: 10, right: 20 }}>
+                          <XAxis type="number" hide />
+                          <YAxis type="category" dataKey="nom" width={100} tick={{ fontSize: 12, fill: "#1B2A4A" }} />
+                          <Tooltip formatter={(v) => fmtMoney(v)} />
+                          <Bar dataKey="ca" fill="#1B2A4A" radius={[0, 6, 6, 0]} barSize={14} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <Table
+                      headers={["Vendeur", "Vendu", "Chiffre d'affaires"]}
+                      rows={report.ranking.map((r) => [r.nom, r.vendu, fmtMoney(r.ca)])}
+                    />
+                  </>
+                )}
+              </Card>
+            </div>
+            <div style={{ flex: "1 1 300px" }}>
+              <Card title="Performance par type de produit">
+                {report.byCategory.length === 0 ? (
+                  <EmptyState text="Aucune vente sur cette période." />
+                ) : (
+                  <Table
+                    headers={["Catégorie", "Qté vendue", "Chiffre d'affaires"]}
+                    rows={report.byCategory.map((c) => [c.categorie, c.qty, fmtMoney(c.ca)])}
+                  />
+                )}
+              </Card>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Historique({ daysList, today }) {
   const [expanded, setExpanded] = useState(null);

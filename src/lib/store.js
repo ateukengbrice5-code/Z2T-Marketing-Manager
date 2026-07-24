@@ -310,16 +310,21 @@ export async function getAllConversations() {
 export async function getProducts() {
   const { data, error } = await supabase.from("products").select("*").order("nom");
   if (error) throw error;
-  return (data || []).map((p) => ({ id: p.id, nom: p.nom, prix: Number(p.prix), stock: p.stock }));
+  return (data || []).map((p) => ({ id: p.id, nom: p.nom, prix: Number(p.prix), stock: p.stock, categorie: p.categorie || "Général" }));
 }
 
-export async function addProduct({ nom, prix, stock }) {
-  const { error } = await supabase.from("products").insert({ nom, prix, stock });
+export async function addProduct({ nom, prix, stock, categorie }) {
+  const { error } = await supabase.from("products").insert({ nom, prix, stock, categorie: (categorie || "").trim() || "Général" });
   if (error) throw error;
 }
 
 export async function updateProductStock(id, stock) {
   const { error } = await supabase.from("products").update({ stock }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function updateProductCategorie(id, categorie) {
+  const { error } = await supabase.from("products").update({ categorie: (categorie || "").trim() || "Général" }).eq("id", id);
   if (error) throw error;
 }
 
@@ -579,4 +584,57 @@ export async function claimInvite({ token, username, password }) {
   if (error) throw new Error(await readFunctionError(error));
   if (data?.error) throw new Error(data.error);
   return true;
+}
+
+// -----------------------------------------------------------------------------
+// Objectifs de vente quotidiens (mêmes seuils pour tous les vendeurs) et
+// paliers atteints (déclenche l'animation côté vendeur + la notification
+// côté admin).
+// -----------------------------------------------------------------------------
+
+export async function getSalesObjectives() {
+  const { data, error } = await supabase.from("sales_objectives").select("*").eq("id", 1).maybeSingle();
+  if (error) throw error;
+  if (!data) return { minimal: 0, maximal: 0, extraordinaire: 0 };
+  return { minimal: Number(data.objectif_minimal) || 0, maximal: Number(data.objectif_maximal) || 0, extraordinaire: Number(data.objectif_extraordinaire) || 0 };
+}
+
+export async function setSalesObjectives({ minimal, maximal, extraordinaire }, updatedBy) {
+  const { error } = await supabase.from("sales_objectives").update({
+    objectif_minimal: minimal, objectif_maximal: maximal, objectif_extraordinaire: extraordinaire,
+    updated_by: updatedBy || null, updated_at: new Date().toISOString(),
+  }).eq("id", 1);
+  if (error) throw error;
+}
+
+// Paliers déjà atteints par un vendeur, pour une date donnée
+export async function getAchievementsForVendorDate(vendorId, date) {
+  const { data, error } = await supabase.from("objective_achievements").select("*").eq("vendor_id", vendorId).eq("date", date);
+  if (error) throw error;
+  return (data || []).map((a) => a.palier);
+}
+
+// Enregistre un palier atteint (idempotent : la contrainte unique côté base
+// empêche les doublons si l'événement se déclenche deux fois).
+export async function recordAchievement({ vendorId, vendorNom, date, palier, montant }) {
+  const { error } = await supabase.from("objective_achievements").insert({
+    vendor_id: vendorId, vendor_nom: vendorNom, date, palier, montant,
+  });
+  if (error && error.code !== "23505") throw error; // 23505 = doublon déjà enregistré, on ignore
+  return !error;
+}
+
+// Notifications admin (paliers non encore vus par l'administration)
+export async function getUnseenAchievements() {
+  const { data, error } = await supabase.from("objective_achievements").select("*").eq("seen_by_admin", false).order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map((a) => ({
+    id: a.id, vendorId: a.vendor_id, vendorNom: a.vendor_nom, date: a.date,
+    palier: a.palier, montant: Number(a.montant) || 0, createdAt: a.created_at,
+  }));
+}
+
+export async function markAchievementSeen(id) {
+  const { error } = await supabase.from("objective_achievements").update({ seen_by_admin: true }).eq("id", id);
+  if (error) throw error;
 }
