@@ -10,6 +10,24 @@ function usernameToEmail(username) {
   return `${username.trim().toLowerCase()}@z2t.local`;
 }
 
+// supabase.functions.invoke() ne remplit PAS `data` quand la fonction répond
+// avec un code non-2xx : le corps JSON (avec notre message d'erreur en
+// français) reste dans error.context (un objet Response) et n'est jamais lu
+// par défaut, ce qui affichait juste "Edge Function returned a non-2xx
+// status code" à l'utilisateur. Ce helper va chercher le vrai message.
+async function readFunctionError(error) {
+  if (!error) return null;
+  try {
+    if (error.context && typeof error.context.json === "function") {
+      const body = await error.context.json();
+      if (body?.error) return body.error;
+    }
+  } catch (_) {
+    // le corps n'était pas du JSON exploitable, on retombe sur error.message
+  }
+  return error.message || "Erreur lors de l'appel à la fonction.";
+}
+
 export async function getSession() {
   const { data } = await supabase.auth.getSession();
   return data.session;
@@ -96,7 +114,7 @@ export async function createAccount({ username, password, role, vendorId }) {
     body: { action: "create", username, password, role, vendorId: vendorId || null },
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   });
-  if (error) throw new Error(error.message || "Erreur lors de la création du compte.");
+  if (error) throw new Error(await readFunctionError(error));
   if (data?.error) throw new Error(data.error);
   return true;
 }
@@ -108,7 +126,7 @@ export async function deleteAccount(userId) {
     body: { action: "delete", userId },
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   });
-  if (error) throw new Error(error.message || "Erreur lors de la suppression du compte.");
+  if (error) throw new Error(await readFunctionError(error));
   if (data?.error) throw new Error(data.error);
   return true;
 }
@@ -124,7 +142,7 @@ export async function convertVendorToMessenger(userId) {
     body: { action: "convert", userId, newRole: "messenger" },
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   });
-  if (error) throw new Error(error.message || "Erreur lors de la conversion du compte.");
+  if (error) throw new Error(await readFunctionError(error));
   if (data?.error) throw new Error(data.error);
   return true;
 }
@@ -317,13 +335,28 @@ export async function deleteProduct(id) {
 export async function getVendors() {
   const { data, error } = await supabase.from("vendors").select("*").order("nom");
   if (error) throw error;
-  return (data || []).map((v) => ({ id: v.id, nom: v.nom }));
+  return (data || []).map((v) => ({
+    id: v.id, nom: v.nom, prenom: v.prenom,
+    numeroCni: v.numero_cni, dateNaissance: v.date_naissance,
+    telephone: v.telephone, photoUrl: v.photo_url,
+    dateEnregistrement: v.date_enregistrement,
+  }));
 }
 
-export async function addVendor(nom) {
-  const { data, error } = await supabase.from("vendors").insert({ nom }).select().single();
+export async function addVendor({ nom, prenom, numeroCni, dateNaissance, telephone }) {
+  const { data, error } = await supabase.from("vendors").insert({
+    nom, prenom: prenom || null,
+    numero_cni: numeroCni || null,
+    date_naissance: dateNaissance || null,
+    telephone: telephone || null,
+  }).select().single();
   if (error) throw error;
-  return { id: data.id, nom: data.nom };
+  return {
+    id: data.id, nom: data.nom, prenom: data.prenom,
+    numeroCni: data.numero_cni, dateNaissance: data.date_naissance,
+    telephone: data.telephone, photoUrl: data.photo_url,
+    dateEnregistrement: data.date_enregistrement,
+  };
 }
 
 export async function deleteVendor(id) {
@@ -430,4 +463,111 @@ export async function createNotification({ vendorId, message }) {
 export async function markNotificationRead(id) {
   const { error } = await supabase.from("notifications").update({ read: true, read_at: new Date().toISOString() }).eq("id", id);
   if (error) throw error;
+}
+
+// -----------------------------------------------------------------------------
+// Photo de profil vendeur
+// -----------------------------------------------------------------------------
+
+export async function uploadVendorPhoto(vendorId, file) {
+  const ext = (file.name && file.name.includes(".")) ? file.name.split(".").pop() : "jpg";
+  const path = `${vendorId}-${Date.now()}.${ext}`;
+  const { error: uploadError } = await supabase.storage
+    .from("vendor_photos")
+    .upload(path, file, { contentType: file.type || "image/jpeg", upsert: true });
+  if (uploadError) throw uploadError;
+
+  const { data: pub } = supabase.storage.from("vendor_photos").getPublicUrl(path);
+  const { error: updateError } = await supabase.from("vendors").update({ photo_url: pub.publicUrl }).eq("id", vendorId);
+  if (updateError) throw updateError;
+  return pub.publicUrl;
+}
+
+// -----------------------------------------------------------------------------
+// Présences / absences (fiche vendeur)
+// -----------------------------------------------------------------------------
+
+export async function getAttendanceForDate(date) {
+  const { data, error } = await supabase.from("vendor_attendance").select("*").eq("date", date);
+  if (error) throw error;
+  return (data || []).map((a) => ({ id: a.id, vendorId: a.vendor_id, date: a.date, statut: a.statut, notes: a.notes }));
+}
+
+export async function getVendorAttendanceHistory(vendorId, limit = 60) {
+  const { data, error } = await supabase
+    .from("vendor_attendance").select("*").eq("vendor_id", vendorId)
+    .order("date", { ascending: false }).limit(limit);
+  if (error) throw error;
+  return (data || []).map((a) => ({
+    id: a.id, date: a.date, statut: a.statut, notes: a.notes,
+    heureArrivee: a.heure_arrivee, heureDepart: a.heure_depart,
+  }));
+}
+
+// statut : "present" | "absent_autorise" | "absent_non_autorise"
+export async function setVendorAttendance({ vendorId, date, statut, notes }) {
+  const { error } = await supabase.from("vendor_attendance").upsert(
+    { vendor_id: vendorId, date, statut, notes: notes || null },
+    { onConflict: "vendor_id,date" }
+  );
+  if (error) throw error;
+}
+
+// -----------------------------------------------------------------------------
+// Anniversaires
+// -----------------------------------------------------------------------------
+
+export async function getTodaysBirthdays() {
+  const { data, error } = await supabase.from("vendors_with_birthday_today").select("*");
+  if (error) throw error;
+  return (data || []).map((v) => ({ id: v.id, nom: v.nom, prenom: v.prenom, photoUrl: v.photo_url, age: v.age }));
+}
+
+// -----------------------------------------------------------------------------
+// Liens d'invitation — un vendeur crée lui-même son compte à partir d'un lien
+// généré par un admin/gestionnaire, sans que celui-ci ait à saisir un mot de
+// passe à sa place.
+// -----------------------------------------------------------------------------
+
+function randomToken() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export async function createInviteLink({ vendorId, role = "vendor", createdBy, expiresInDays = 7 }) {
+  const token = randomToken();
+  const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString();
+  const { error } = await supabase.from("invite_links").insert({
+    token, role, vendor_id: role === "vendor" ? vendorId : null,
+    created_by: createdBy || null, expires_at: expiresAt,
+  });
+  if (error) throw error;
+  return { token, url: `${window.location.origin}${window.location.pathname}?invite=${token}` };
+}
+
+export async function getInviteLinkForVendor(vendorId) {
+  const { data, error } = await supabase
+    .from("invite_links").select("*").eq("vendor_id", vendorId)
+    .is("used_at", null).order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  if (data.expires_at && new Date(data.expires_at) < new Date()) return null;
+  return { token: data.token, url: `${window.location.origin}${window.location.pathname}?invite=${data.token}` };
+}
+
+export async function revokeInviteLink(id) {
+  const { error } = await supabase.from("invite_links").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// Appelée depuis l'écran public de création de compte (pas de session requise) :
+// passe par la fonction Edge claim-invite (verify_jwt désactivé exprès).
+export async function claimInvite({ token, username, password }) {
+  const { data, error } = await supabase.functions.invoke("claim-invite", {
+    body: { token, username, password },
+  });
+  if (error) throw new Error(await readFunctionError(error));
+  if (data?.error) throw new Error(data.error);
+  return true;
 }

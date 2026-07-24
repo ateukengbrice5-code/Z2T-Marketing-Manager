@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Package, Boxes, Users, Truck, MoonStar, Wallet, History,
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown,
   Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye,
-  MessageSquare, Send, X,
+  MessageSquare, Send, X, Link2, Cake, Camera,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid } from "recharts";
 import * as store from "./lib/store.js";
@@ -571,9 +571,69 @@ function LoginScreen({ onLoggedIn }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Agrégation pour le tableau de bord (meilleur vendeur / produits par période)
-// ---------------------------------------------------------------------------
+// Écran public (pas de session requise) permettant à un vendeur de créer
+// lui-même son compte à partir d'un lien d'invitation généré par un admin.
+function ClaimInviteScreen({ token, onClaimed }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const submit = async () => {
+    if (!username.trim() || !password) { setError("Choisis un nom d'utilisateur et un mot de passe."); return; }
+    if (password.length < 6) { setError("Le mot de passe doit contenir au moins 6 caractères."); return; }
+    setBusy(true);
+    setError("");
+    try {
+      await store.claimInvite({ token, username: username.trim(), password });
+      setDone(true);
+    } catch (e) {
+      setError(e.message || "Ce lien d'invitation n'est plus valide.");
+    }
+    setBusy(false);
+  };
+
+  const onKeyDown = (e) => { if (e.key === "Enter") submit(); };
+
+  if (done) {
+    return (
+      <AuthShell>
+        <div style={{ textAlign: "center", padding: "10px 0" }}>
+          <CheckCircle2 size={40} color="#3F9C6D" style={{ marginBottom: 10 }} />
+          <p style={{ color: "#233047", fontSize: 14.5, marginBottom: 18 }}>
+            Ton compte est prêt ! Tu peux maintenant te connecter avec ton nom d'utilisateur et ton mot de passe.
+          </p>
+          <Button variant="primary" onClick={onClaimed} style={{ width: "100%", justifyContent: "center" }}>
+            Aller à la connexion
+          </Button>
+        </div>
+      </AuthShell>
+    );
+  }
+
+  return (
+    <AuthShell>
+      <p style={{ color: "#5B6472", fontSize: 13.5, marginTop: 0, marginBottom: 20 }}>
+        Bienvenue ! Choisis ton nom d'utilisateur et ton mot de passe pour activer ton compte.
+      </p>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Nom d'utilisateur</Label>
+        <TextInput value={username} onChange={(e) => setUsername(e.target.value)} onKeyDown={onKeyDown} />
+      </div>
+      <div style={{ marginBottom: 10 }}>
+        <Label>Mot de passe (6 caractères minimum)</Label>
+        <TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={onKeyDown} />
+      </div>
+      {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      <Button variant="primary" onClick={submit} disabled={busy} style={{ width: "100%", justifyContent: "center", marginTop: 6 }}>
+        {busy ? "Création…" : "Activer mon compte"}
+      </Button>
+    </AuthShell>
+  );
+}
+
+
 
 function aggregateRange(days, range) {
   const vendorTotals = {};
@@ -916,6 +976,19 @@ export default function App() {
     };
   }, [currentUser?.id]);
 
+  // Lien d'invitation (?invite=TOKEN) : prioritaire sur tout le reste, y
+  // compris pendant le chargement — un vendeur qui clique ce lien ne doit
+  // jamais voir l'écran de connexion classique avant d'avoir activé son compte.
+  const inviteToken = new URLSearchParams(window.location.search).get("invite");
+  if (inviteToken && !currentUser) {
+    return (
+      <ClaimInviteScreen
+        token={inviteToken}
+        onClaimed={() => { window.location.href = window.location.pathname; }}
+      />
+    );
+  }
+
   if (loading || hasAccount === null) {
     return (
       <div style={{ padding: 60, textAlign: "center", color: "#5B6472", fontFamily: "Calibri, sans-serif" }}>
@@ -1063,7 +1136,7 @@ export default function App() {
           <Caisse vendors={vendors} day={day} setDay={persistDay} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} daysList={daysList} today={today} currentUser={currentUser} />
         )}
         {tab === "messagerie" && (
-          <Messagerie currentUser={currentUser} />
+          <Messagerie currentUser={currentUser} vendors={vendors} />
         )}
         {tab === "historique" && isAdmin && <Historique daysList={daysList} today={today} />}
         {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
@@ -1124,6 +1197,7 @@ function Dashboard({ products, vendors, day, daysList, today }) {
 
   return (
     <div>
+      <BirthdayBalloons />
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 22 }}>
         <StatCard label="ARTICLES VENDUS AUJOURD'HUI" value={totalVendu} sub={`${day.lines.length} distribution(s) en cours`} />
         <StatCard label="MONTANT ATTENDU" value={fmtMoney(totalAttendu)} />
@@ -1337,6 +1411,7 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
 
   return (
     <div>
+      <BirthdayBalloons />
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, color: "#8A93A3", fontSize: 12.5 }}>
         <Eye size={14} /> Espace de consultation — tes ventes sont saisies par l'administration.
       </div>
@@ -1541,15 +1616,14 @@ function Stock({ products, setProducts }) {
 
 function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
   const [nom, setNom] = useState("");
+  const [prenom, setPrenom] = useState("");
+  const [numeroCni, setNumeroCni] = useState("");
+  const [dateNaissance, setDateNaissance] = useState("");
+  const [telephone, setTelephone] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-
-  const [mgrUsername, setMgrUsername] = useState("");
-  const [mgrPassword, setMgrPassword] = useState("");
-  const [mgrError, setMgrError] = useState("");
-  const [mgrBusy, setMgrBusy] = useState(false);
 
   const [adminName, setAdminName] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
@@ -1566,6 +1640,25 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
   const [secondaryAdmins, setSecondaryAdmins] = useState([]);
   const [messengers, setMessengers] = useState([]);
   const [presence, setPresence] = useState({});
+
+  const [ficheVendorId, setFicheVendorId] = useState(null);
+  const [inviteUrls, setInviteUrls] = useState({}); // vendorId -> url
+  const [inviteBusy, setInviteBusy] = useState(null);
+
+  const generateInvite = async (vendorId) => {
+    setInviteBusy(vendorId);
+    try {
+      const { url } = await store.createInviteLink({ vendorId, role: "vendor", createdBy: currentUser?.username });
+      setInviteUrls((m) => ({ ...m, [vendorId]: url }));
+    } catch (e) {
+      setError(e.message || "Erreur lors de la création du lien.");
+    }
+    setInviteBusy(null);
+  };
+
+  const copyInvite = (url) => {
+    navigator.clipboard?.writeText(url);
+  };
 
   const reloadAccounts = async () => {
     const [va, ma, sa, ms, pr] = await Promise.all([
@@ -1612,14 +1705,20 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
     setError("");
     setBusy(true);
     try {
-      const vendor = await store.addVendor(nom.trim());
+      const vendor = await store.addVendor({
+        nom: nom.trim(),
+        prenom: prenom.trim(),
+        numeroCni: numeroCni.trim(),
+        dateNaissance: dateNaissance || null,
+        telephone: telephone.trim(),
+      });
       if (username.trim()) {
         await store.createAccount({ username: username.trim(), password, role: "vendor", vendorId: vendor.id });
       }
       await reloadVendors();
       await reloadAccounts();
       store.logActivity(currentUser, "add_vendor", `Vendeur ajouté : ${nom.trim()}.`);
-      setNom(""); setUsername(""); setPassword("");
+      setNom(""); setPrenom(""); setNumeroCni(""); setDateNaissance(""); setTelephone(""); setUsername(""); setPassword("");
     } catch (e) {
       setError(e.message || "Erreur lors de la création.");
     }
@@ -1656,29 +1755,15 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
     }
   };
 
-  const addManager = async () => {
-    if (!mgrUsername.trim() || !mgrPassword) { setMgrError("Indique un nom d'utilisateur et un mot de passe."); return; }
-    if (mgrPassword.length < 6) { setMgrError("Le mot de passe doit contenir au moins 6 caractères."); return; }
-    setMgrError("");
-    setMgrBusy(true);
-    try {
-      await store.createAccount({ username: mgrUsername.trim(), password: mgrPassword, role: "manager" });
-      await reloadAccounts();
-      store.logActivity(currentUser, "add_manager", `Compte gestionnaire créé : ${mgrUsername.trim()}.`);
-      setMgrUsername(""); setMgrPassword("");
-    } catch (e) {
-      setMgrError(e.message || "Erreur lors de la création.");
-    }
-    setMgrBusy(false);
-  };
-
+  // La création de comptes gestionnaire n'est plus proposée dans l'interface ;
+  // cette fonction ne fait plus que permettre de retirer un compte existant.
   const removeManager = async (id, name) => {
     try {
       await store.deleteAccount(id);
       await reloadAccounts();
       store.logActivity(currentUser, "delete_manager", `Compte gestionnaire supprimé : ${name}.`);
     } catch (e) {
-      setMgrError(e.message || "Erreur lors de la suppression.");
+      setError(e.message || "Erreur lors de la suppression.");
     }
   };
 
@@ -1719,6 +1804,30 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
 
         <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #F0F1F4" }}>
           <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
+            Informations complémentaires (facultatif)
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Prénom</Label>
+              <TextInput value={prenom} onChange={(e) => setPrenom(e.target.value)} />
+            </div>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Numéro CNI</Label>
+              <TextInput value={numeroCni} onChange={(e) => setNumeroCni(e.target.value)} />
+            </div>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Date de naissance</Label>
+              <TextInput type="date" value={dateNaissance} onChange={(e) => setDateNaissance(e.target.value)} />
+            </div>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Téléphone</Label>
+              <TextInput value={telephone} onChange={(e) => setTelephone(e.target.value)} placeholder="Ex. 6XX XX XX XX" />
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #F0F1F4" }}>
+          <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
             Accès de connexion (facultatif) — laisse vide si ce vendeur n'a pas besoin de se connecter
           </div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -1740,56 +1849,68 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
           <EmptyState text="Aucun vendeur enregistré." />
         ) : (
           <Table
-            headers={["Nom", "Compte de connexion", "Présence", "", ""]}
+            headers={["Nom", "CNI", "Téléphone", "Compte de connexion", "Présence", "", "", ""]}
             rows={vendors.map((v) => {
               const u = vendorAccounts.find((u) => u.vendorId === v.id);
               const p = presence[v.id];
+              const invite = inviteUrls[v.id];
               return [
-                v.nom, u ? u.username : "— aucun —",
+                v.nom, v.numeroCni || "—", v.telephone || "—",
+                u ? u.username : "— aucun —",
                 u ? <PresenceDot key="p" isOnline={p?.isOnline} lastSeenAt={p?.lastSeenAt} showLabel /> : "—",
+                <button key="fiche" onClick={() => setFicheVendorId(v.id)} title="Voir la fiche détaillée" style={{ ...iconBtnStyle, color: "#5B6472" }}>
+                  <Eye size={15} />
+                </button>,
                 u ? (
                   <button key="conv" onClick={() => convertToMessenger(u.id, v.nom)} title="Passer en compte messagerie uniquement" style={{ ...iconBtnStyle, color: "#5B6472" }}>
                     <MessageSquare size={15} />
                   </button>
-                ) : "",
+                ) : invite ? (
+                  <button key="copy" onClick={() => copyInvite(invite)} title="Copier le lien d'invitation" style={{ ...iconBtnStyle, color: "#3F9C6D" }}>
+                    <Link2 size={15} />
+                  </button>
+                ) : (
+                  <button key="invite" onClick={() => generateInvite(v.id)} disabled={inviteBusy === v.id} title="Générer un lien d'invitation pour ce vendeur" style={{ ...iconBtnStyle, color: "#C79A3A" }}>
+                    <Send size={15} />
+                  </button>
+                ),
                 <button key="del" onClick={() => remove(v.id, v.nom)} style={iconBtnStyle}><Trash2 size={15} /></button>,
               ];
             })}
           />
         )}
+        {Object.keys(inviteUrls).length > 0 && (
+          <div style={{ marginTop: 14, fontSize: 12, color: "#8A93A3" }}>
+            Clique l'icône <Link2 size={11} style={{ verticalAlign: "middle" }} /> pour copier le lien d'un vendeur et le lui envoyer (WhatsApp, SMS…) : il choisira lui-même son nom d'utilisateur et son mot de passe.
+          </div>
+        )}
       </Card>
+
+      {ficheVendorId && (
+        <VendorFiche
+          vendor={vendors.find((v) => v.id === ficheVendorId)}
+          onClose={() => setFicheVendorId(null)}
+          currentUser={currentUser}
+        />
+      )}
 
       {isAdmin && (
         <>
-        <Card title="Comptes gestionnaires (Finances / Manager)">
-          <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
-            Un gestionnaire a accès au Tableau de bord, aux Finances (Caisse), au Stock et au Personnel — rien d'autre.
-          </div>
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-            <div style={{ flex: "1 1 160px" }}>
-              <Label>Nom d'utilisateur</Label>
-              <TextInput value={mgrUsername} onChange={(e) => setMgrUsername(e.target.value)} />
+        {managers.length > 0 && (
+          <Card title="Comptes gestionnaires (Finances / Manager)">
+            <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
+              Un gestionnaire a accès au Tableau de bord, aux Finances (Caisse), au Stock et au Personnel — rien d'autre.
+              La création de nouveaux comptes gestionnaire n'est plus proposée ici.
             </div>
-            <div style={{ flex: "1 1 160px" }}>
-              <Label>Mot de passe</Label>
-              <TextInput type="password" value={mgrPassword} onChange={(e) => setMgrPassword(e.target.value)} />
-            </div>
-            <Button onClick={addManager} disabled={mgrBusy}><Plus size={15} /> {mgrBusy ? "Création…" : "Créer le compte"}</Button>
-          </div>
-          {mgrError && <div style={{ color: "#C1554A", fontSize: 12.5, marginTop: 10 }}>{mgrError}</div>}
-
-          {managers.length > 0 && (
-            <div style={{ marginTop: 16 }}>
-              <Table
-                headers={["Nom d'utilisateur", ""]}
-                rows={managers.map((m) => [
-                  m.username,
-                  <button key="del" onClick={() => removeManager(m.id, m.username)} style={iconBtnStyle}><Trash2 size={15} /></button>,
-                ])}
-              />
-            </div>
-          )}
-        </Card>
+            <Table
+              headers={["Nom d'utilisateur", ""]}
+              rows={managers.map((m) => [
+                m.username,
+                <button key="del" onClick={() => removeManager(m.id, m.username)} style={iconBtnStyle}><Trash2 size={15} /></button>,
+              ])}
+            />
+          </Card>
+        )}
 
         <Card title="Comptes agent messagerie">
           <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
@@ -1860,8 +1981,276 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser }) {
 }
 
 // ---------------------------------------------------------------------------
-// Distribution (matin)
+// Fiche vendeur détaillée (photo, infos, pointage, présences/absences)
 // ---------------------------------------------------------------------------
+
+function fmtDateFr(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso + "T00:00:00");
+  return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" });
+}
+
+const STATUT_LABELS = {
+  present: { label: "Présent", color: "#3F9C6D" },
+  absent_autorise: { label: "Absence autorisée", color: "#C79A3A" },
+  absent_non_autorise: { label: "Absence non autorisée", color: "#C1554A" },
+};
+
+function VendorFiche({ vendor, onClose, currentUser }) {
+  const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [photoUrl, setPhotoUrl] = useState(vendor?.photoUrl || "");
+  const [uploading, setUploading] = useState(false);
+  const [statut, setStatut] = useState("present");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const fileRef = useRef(null);
+  const today = todayISO();
+
+  const load = async () => {
+    setLoading(true);
+    const h = await store.getVendorAttendanceHistory(vendor.id);
+    setHistory(h);
+    const t = h.find((a) => a.date === today);
+    if (t) { setStatut(t.statut); setNotes(t.notes || ""); }
+    setLoading(false);
+  };
+
+  useEffect(() => { if (vendor) load(); }, [vendor?.id]);
+
+  if (!vendor) return null;
+
+  const presentCount = history.filter((a) => a.statut === "present").length;
+  const absAutorise = history.filter((a) => a.statut === "absent_autorise").length;
+  const absNonAutorise = history.filter((a) => a.statut === "absent_non_autorise").length;
+
+  const onPickPhoto = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setError("");
+    try {
+      const url = await store.uploadVendorPhoto(vendor.id, file);
+      setPhotoUrl(url);
+    } catch (err) {
+      setError(err.message || "Erreur lors de l'envoi de la photo.");
+    }
+    setUploading(false);
+  };
+
+  const saveAttendance = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await store.setVendorAttendance({ vendorId: vendor.id, date: today, statut, notes });
+      await load();
+      store.logActivity(currentUser, "set_attendance", `Présence du ${fmtDateFr(today)} pour ${vendor.nom} : ${STATUT_LABELS[statut].label}.`);
+    } catch (err) {
+      setError(err.message || "Erreur lors de l'enregistrement.");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(27,42,74,0.55)", zIndex: 200,
+      display: "flex", alignItems: "flex-start", justifyContent: "center", overflowY: "auto", padding: "40px 16px",
+    }}>
+      <div style={{ background: "#fff", borderRadius: 16, maxWidth: 640, width: "100%", padding: 24, position: "relative" }}>
+        <button onClick={onClose} style={{ position: "absolute", top: 16, right: 16, background: "none", border: "none", cursor: "pointer", color: "#8A93A3" }}>
+          <X size={20} />
+        </button>
+
+        <div style={{ display: "flex", gap: 18, alignItems: "center", marginBottom: 20 }}>
+          <div style={{ position: "relative" }}>
+            <div style={{
+              width: 84, height: 84, borderRadius: "50%", background: "#EEF0F4", overflow: "hidden",
+              display: "flex", alignItems: "center", justifyContent: "center", border: "3px solid #D9A441",
+            }}>
+              {photoUrl ? (
+                <img src={photoUrl} alt={vendor.nom} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              ) : (
+                <Users size={32} color="#B7BECB" />
+              )}
+            </div>
+            <button
+              onClick={() => fileRef.current?.click()}
+              disabled={uploading}
+              title="Changer la photo"
+              style={{
+                position: "absolute", bottom: -2, right: -2, background: "#1B2A4A", borderRadius: "50%",
+                width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center",
+                border: "2px solid #fff", cursor: "pointer",
+              }}
+            >
+              <Camera size={13} color="#fff" />
+            </button>
+            <input ref={fileRef} type="file" accept="image/*" onChange={onPickPhoto} style={{ display: "none" }} />
+          </div>
+          <div>
+            <h2 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", fontSize: 21, color: "#1B2A4A" }}>{vendor.nom}</h2>
+            <div style={{ fontSize: 12.5, color: "#8A93A3", marginTop: 4 }}>
+              {vendor.numeroCni ? `CNI ${vendor.numeroCni}` : "CNI non renseigné"} · {vendor.telephone || "téléphone non renseigné"}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+          <div style={{ flex: "1 1 140px" }}>
+            <Label>Date de naissance</Label>
+            <div style={{ fontSize: 13.5, color: "#1B2A4A" }}>{fmtDateFr(vendor.dateNaissance)}</div>
+          </div>
+          <div style={{ flex: "1 1 140px" }}>
+            <Label>Date d'enregistrement</Label>
+            <div style={{ fontSize: 13.5, color: "#1B2A4A" }}>
+              {fmtDateFr(vendor.dateEnregistrement)}
+              <span style={{ display: "block", fontSize: 11, color: "#9AA2B1", fontStyle: "italic" }}>sert de repère informatif — n'affecte pas les calculs de bonus</span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+          <div style={{ flex: 1, textAlign: "center", background: "#F3FAF6", borderRadius: 10, padding: "10px 6px" }}>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#3F9C6D" }}>{presentCount}</div>
+            <div style={{ fontSize: 11, color: "#5B6472" }}>jours présents</div>
+          </div>
+          <div style={{ flex: 1, textAlign: "center", background: "#FBF6EA", borderRadius: 10, padding: "10px 6px" }}>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#C79A3A" }}>{absAutorise}</div>
+            <div style={{ fontSize: 11, color: "#5B6472" }}>absences autorisées</div>
+          </div>
+          <div style={{ flex: 1, textAlign: "center", background: "#FBF0EE", borderRadius: 10, padding: "10px 6px" }}>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#C1554A" }}>{absNonAutorise}</div>
+            <div style={{ fontSize: 11, color: "#5B6472" }}>absences non autorisées</div>
+          </div>
+        </div>
+
+        <div style={{ borderTop: "1px solid #F0F1F4", paddingTop: 16, marginBottom: 16 }}>
+          <Label>Pointage d'aujourd'hui ({fmtDateFr(today)})</Label>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+            {Object.entries(STATUT_LABELS).map(([key, { label, color }]) => (
+              <button
+                key={key}
+                onClick={() => setStatut(key)}
+                style={{
+                  padding: "7px 12px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+                  border: `1.5px solid ${statut === key ? color : "#D8DCE3"}`,
+                  background: statut === key ? color : "#fff",
+                  color: statut === key ? "#fff" : "#5B6472",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <TextInput placeholder="Note (facultatif)" value={notes} onChange={(e) => setNotes(e.target.value)} style={{ marginBottom: 10 }} />
+          <Button variant="primary" onClick={saveAttendance} disabled={saving}>{saving ? "Enregistrement…" : "Enregistrer le pointage"}</Button>
+        </div>
+
+        {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+
+        <div style={{ borderTop: "1px solid #F0F1F4", paddingTop: 16 }}>
+          <Label>Historique récent</Label>
+          {loading ? (
+            <div style={{ fontSize: 12.5, color: "#9AA2B1" }}>Chargement…</div>
+          ) : history.length === 0 ? (
+            <EmptyState text="Aucun pointage enregistré pour l'instant." />
+          ) : (
+            <div style={{ maxHeight: 220, overflowY: "auto" }}>
+              <Table
+                headers={["Date", "Statut", "Note"]}
+                rows={history.map((a) => [
+                  fmtDateFr(a.date),
+                  <span key="s" style={{ color: STATUT_LABELS[a.statut]?.color, fontWeight: 600 }}>{STATUT_LABELS[a.statut]?.label || a.statut}</span>,
+                  a.notes || "—",
+                ])}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Petite en-tête réutilisable (photo + nom + CNI/téléphone) affichée partout
+// où un admin voit un vendeur en contexte : retour du soir, messagerie.
+function VendorMiniHeader({ vendor }) {
+  if (!vendor) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+      <div style={{
+        width: 38, height: 38, borderRadius: "50%", background: "#EEF0F4", overflow: "hidden",
+        display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: "2px solid #D9A441",
+      }}>
+        {vendor.photoUrl ? (
+          <img src={vendor.photoUrl} alt={vendor.nom} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        ) : (
+          <Users size={16} color="#B7BECB" />
+        )}
+      </div>
+      <div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "#1B2A4A" }}>{vendor.nom}</div>
+        <div style={{ fontSize: 11, color: "#8A93A3" }}>
+          {vendor.numeroCni ? `CNI ${vendor.numeroCni}` : ""}{vendor.numeroCni && vendor.telephone ? " · " : ""}{vendor.telephone || ""}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Petite fête de ballons pour les anniversaires du jour — visible sur le
+// tableau de bord de tout le monde (admin, gestionnaire, vendeurs).
+function BirthdayBalloons() {
+  const [birthdays, setBirthdays] = useState([]);
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    store.getTodaysBirthdays().then(setBirthdays).catch(() => setBirthdays([]));
+  }, []);
+
+  if (dismissed || birthdays.length === 0) return null;
+
+  const colors = ["#D9A441", "#C1554A", "#3F9C6D", "#4A7FC7", "#B564C1"];
+
+  return (
+    <div style={{
+      position: "relative", borderRadius: 14, padding: "18px 22px", marginBottom: 20, overflow: "hidden",
+      background: "linear-gradient(135deg, #1B2A4A, #2E3F66)", color: "#fff",
+    }}>
+      <button onClick={() => setDismissed(true)} style={{ position: "absolute", top: 10, right: 10, background: "none", border: "none", color: "#fff", opacity: 0.7, cursor: "pointer" }}>
+        <X size={16} />
+      </button>
+      <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}>
+        {Array.from({ length: 18 }).map((_, i) => (
+          <div key={i} style={{
+            position: "absolute", bottom: -40, left: `${(i * 53) % 100}%`,
+            width: 22, height: 28, borderRadius: "50% 50% 50% 50% / 60% 60% 40% 40%",
+            background: colors[i % colors.length], opacity: 0.85,
+            animation: `z2t-balloon-rise ${5 + (i % 5)}s linear ${i * 0.35}s infinite`,
+          }} />
+        ))}
+      </div>
+      <style>{`
+        @keyframes z2t-balloon-rise {
+          0% { transform: translateY(0) translateX(0); opacity: 0.9; }
+          100% { transform: translateY(-420px) translateX(${Math.random() > 0.5 ? "" : "-"}30px); opacity: 0; }
+        }
+      `}</style>
+      <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 10 }}>
+        <Cake size={26} />
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15.5, fontFamily: "Cambria, Georgia, serif" }}>
+            🎉 Joyeux anniversaire {birthdays.map((b) => b.nom).join(", ")} !
+          </div>
+          <div style={{ fontSize: 12, opacity: 0.85 }}>Toute l'équipe Z2T te souhaite une merveilleuse journée.</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 
 function Distribution({ products, setProducts, vendors, day, setDay, ensureTodayInList, daysList }) {
   const [vendorId, setVendorId] = useState("");
@@ -2039,6 +2428,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
         ) : (
           <div style={{ fontSize: 14, fontWeight: 700, color: "#1B2A4A" }}>Vendeur : {vendor.nom}</div>
         )}
+        {isAdmin && <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #F0F1F4" }}><VendorMiniHeader vendor={vendor} /></div>}
       </Card>
 
       <Card title={`Produits distribués à ${vendor.nom} aujourd'hui`}>
@@ -2182,7 +2572,7 @@ function timeShort(iso) {
 
 const ROLE_GROUP_LABEL = { admin: "Administrateurs", manager: "Gestionnaires", vendor: "Vendeurs", messenger: "Agents messagerie" };
 
-function Messagerie({ currentUser }) {
+function Messagerie({ currentUser, vendors = [] }) {
   const [users, setUsers] = useState(null);
   const [selectedUserId, setSelectedUserId] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -2411,7 +2801,13 @@ function Messagerie({ currentUser }) {
       </div>
       <div className="dash-col-main" style={{ flex: "2 1 380px" }}>
         {selectedUser ? (
-          <Card title={`Discussion avec ${selectedUser.username}`}>{thread}</Card>
+          <Card title={`Discussion avec ${selectedUser.username}`}>
+            {selectedUser.role === "vendor" && selectedUser.vendorId && (() => {
+              const v = vendors.find((vv) => vv.id === selectedUser.vendorId);
+              return v ? <div style={{ paddingBottom: 12, marginBottom: 12, borderBottom: "1px solid #F0F1F4" }}><VendorMiniHeader vendor={v} /></div> : null;
+            })()}
+            {thread}
+          </Card>
         ) : (
           <Card title="Messagerie"><EmptyState text="Choisis quelqu'un dans l'annuaire." /></Card>
         )}
