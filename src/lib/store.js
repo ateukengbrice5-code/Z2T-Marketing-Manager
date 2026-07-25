@@ -342,23 +342,24 @@ export async function getVendors() {
   if (error) throw error;
   return (data || []).map((v) => ({
     id: v.id, nom: v.nom, prenom: v.prenom,
-    numeroCni: v.numero_cni, dateNaissance: v.date_naissance,
+    numeroCni: v.numero_cni, pieceNature: v.piece_nature, contractStatut: v.contract_statut || "actif", dateNaissance: v.date_naissance,
     telephone: v.telephone, photoUrl: v.photo_url,
     dateEnregistrement: v.date_enregistrement,
   }));
 }
 
-export async function addVendor({ nom, prenom, numeroCni, dateNaissance, telephone }) {
+export async function addVendor({ nom, prenom, numeroCni, pieceNature, dateNaissance, telephone }) {
   const { data, error } = await supabase.from("vendors").insert({
     nom, prenom: prenom || null,
     numero_cni: numeroCni || null,
+    piece_nature: pieceNature || null,
     date_naissance: dateNaissance || null,
     telephone: telephone || null,
   }).select().single();
   if (error) throw error;
   return {
     id: data.id, nom: data.nom, prenom: data.prenom,
-    numeroCni: data.numero_cni, dateNaissance: data.date_naissance,
+    numeroCni: data.numero_cni, pieceNature: data.piece_nature, contractStatut: data.contract_statut || "actif", dateNaissance: data.date_naissance,
     telephone: data.telephone, photoUrl: data.photo_url,
     dateEnregistrement: data.date_enregistrement,
   };
@@ -366,6 +367,12 @@ export async function addVendor({ nom, prenom, numeroCni, dateNaissance, telepho
 
 export async function deleteVendor(id) {
   const { error } = await supabase.from("vendors").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// statut : "actif" | "en_pause" | "cloture"
+export async function setVendorContractStatut(vendorId, statut) {
+  const { error } = await supabase.from("vendors").update({ contract_statut: statut }).eq("id", vendorId);
   if (error) throw error;
 }
 
@@ -457,16 +464,28 @@ export async function updateWithdrawalStatus(id, statut, { approvedBy, refusalRe
 export async function getNotifications() {
   const { data, error } = await supabase.from("notifications").select("*").order("created_at", { ascending: false });
   if (error) throw error;
-  return (data || []).map((n) => ({ id: n.id, vendorId: n.vendor_id, message: n.message, read: n.read, createdAt: n.created_at }));
+  return (data || []).map((n) => ({
+    id: n.id, vendorId: n.vendor_id, message: n.message, read: n.read, createdAt: n.created_at,
+    type: n.type || "general", seenByAdmin: n.seen_by_admin,
+  }));
 }
 
-export async function createNotification({ vendorId, message }) {
-  const { error } = await supabase.from("notifications").insert({ vendor_id: vendorId, message, read: false });
+export async function createNotification({ vendorId, message, type, seenByAdmin }) {
+  const finalType = type || "general";
+  const { error } = await supabase.from("notifications").insert({
+    vendor_id: vendorId, message, read: false, type: finalType,
+    seen_by_admin: seenByAdmin !== undefined ? seenByAdmin : finalType === "general",
+  });
   if (error) throw error;
 }
 
 export async function markNotificationRead(id) {
   const { error } = await supabase.from("notifications").update({ read: true, read_at: new Date().toISOString() }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function markNotificationSeenByAdmin(id) {
+  const { error } = await supabase.from("notifications").update({ seen_by_admin: true }).eq("id", id);
   if (error) throw error;
 }
 
@@ -495,7 +514,7 @@ export async function uploadVendorPhoto(vendorId, file) {
 export async function getAttendanceForDate(date) {
   const { data, error } = await supabase.from("vendor_attendance").select("*").eq("date", date);
   if (error) throw error;
-  return (data || []).map((a) => ({ id: a.id, vendorId: a.vendor_id, date: a.date, statut: a.statut, notes: a.notes }));
+  return (data || []).map((a) => ({ id: a.id, vendorId: a.vendor_id, date: a.date, statut: a.statut, notes: a.notes, heure: a.heure_arrivee }));
 }
 
 export async function getVendorAttendanceHistory(vendorId, limit = 60) {
@@ -510,9 +529,9 @@ export async function getVendorAttendanceHistory(vendorId, limit = 60) {
 }
 
 // statut : "present" | "absent_autorise" | "absent_non_autorise"
-export async function setVendorAttendance({ vendorId, date, statut, notes }) {
+export async function setVendorAttendance({ vendorId, date, statut, notes, heure, validatedBy }) {
   const { error } = await supabase.from("vendor_attendance").upsert(
-    { vendor_id: vendorId, date, statut, notes: notes || null },
+    { vendor_id: vendorId, date, statut, notes: notes || null, heure_arrivee: heure || null, validated_by: validatedBy || null },
     { onConflict: "vendor_id,date" }
   );
   if (error) throw error;
@@ -520,10 +539,96 @@ export async function setVendorAttendance({ vendorId, date, statut, notes }) {
 
 // Enregistre le pointage de toute l'équipe pour une date donnée en un seul
 // aller-retour (écran "Pointage du jour").
-export async function setVendorAttendanceBulk(date, entries) {
-  // entries: [{ vendorId, statut, notes }]
-  const rows = entries.map((e) => ({ vendor_id: e.vendorId, date, statut: e.statut, notes: e.notes || null }));
+export async function setVendorAttendanceBulk(date, entries, validatedBy) {
+  // entries: [{ vendorId, statut, notes, heure }]
+  const rows = entries.map((e) => ({
+    vendor_id: e.vendorId, date, statut: e.statut, notes: e.notes || null,
+    heure_arrivee: e.heure || null, validated_by: validatedBy || null,
+  }));
   const { error } = await supabase.from("vendor_attendance").upsert(rows, { onConflict: "vendor_id,date" });
+  if (error) throw error;
+}
+
+// -----------------------------------------------------------------------------
+// Cycles de salaire — 26 jours de présence payable déclenchent un versement.
+// Un cycle démarre au lendemain de la fin du cycle précédent (ou à la date
+// d'enregistrement du vendeur s'il n'y a jamais eu de versement).
+// -----------------------------------------------------------------------------
+
+export async function getLatestSalaryCycle(vendorId) {
+  const { data, error } = await supabase
+    .from("salary_cycles").select("*").eq("vendor_id", vendorId)
+    .order("cycle_end", { ascending: false }).limit(1).maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return mapSalaryCycle(data);
+}
+
+export async function getSalaryCycleHistory(vendorId) {
+  const { data, error } = await supabase
+    .from("salary_cycles").select("*").eq("vendor_id", vendorId)
+    .order("cycle_end", { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapSalaryCycle);
+}
+
+function mapSalaryCycle(c) {
+  return {
+    id: c.id, vendorId: c.vendor_id, cycleStart: c.cycle_start, cycleEnd: c.cycle_end,
+    joursComptes: c.jours_comptes, montant: c.montant !== null && c.montant !== undefined ? Number(c.montant) : null,
+    paidBy: c.paid_by, paidAt: c.paid_at,
+  };
+}
+
+// Clôture le cycle en cours (enregistre le versement) — le prochain cycle
+// démarrera automatiquement le lendemain de cycleEnd.
+export async function markSalaryCyclePaid({ vendorId, cycleStart, cycleEnd, joursComptes, montant, paidBy }) {
+  const { error } = await supabase.from("salary_cycles").insert({
+    vendor_id: vendorId, cycle_start: cycleStart, cycle_end: cycleEnd,
+    jours_comptes: joursComptes, montant: montant ?? null, paid_by: paidBy || null,
+  });
+  if (error) throw error;
+}
+
+// -----------------------------------------------------------------------------
+// Contestations de présence — un vendeur peut signaler un jour de sa fiche
+// de présence qui lui semble mal renseigné ; l'administration répond et
+// marque la contestation comme résolue.
+// -----------------------------------------------------------------------------
+
+export async function createAttendanceContestation({ vendorId, date, message }) {
+  const { error } = await supabase.from("attendance_contestations").insert({ vendor_id: vendorId, date, message });
+  if (error) throw error;
+}
+
+export async function getContestationsForVendor(vendorId) {
+  const { data, error } = await supabase
+    .from("attendance_contestations").select("*").eq("vendor_id", vendorId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapContestation);
+}
+
+// Toutes les contestations, non résolues en premier — réservé à l'admin/manager.
+export async function getAllContestations() {
+  const { data, error } = await supabase
+    .from("attendance_contestations").select("*")
+    .order("resolved", { ascending: true }).order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapContestation);
+}
+
+function mapContestation(c) {
+  return {
+    id: c.id, vendorId: c.vendor_id, date: c.date, message: c.message, createdAt: c.created_at,
+    resolved: c.resolved, adminResponse: c.admin_response, resolvedBy: c.resolved_by, resolvedAt: c.resolved_at,
+  };
+}
+
+export async function resolveContestation(id, { adminResponse, resolvedBy }) {
+  const { error } = await supabase.from("attendance_contestations").update({
+    resolved: true, admin_response: adminResponse || null, resolved_by: resolvedBy || null, resolved_at: new Date().toISOString(),
+  }).eq("id", id);
   if (error) throw error;
 }
 
