@@ -3579,6 +3579,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
   const [vendorId, setVendorId] = useState("");
   const [productId, setProductId] = useState("");
   const [qty, setQty] = useState("");
+  const [cart, setCart] = useState([]); // { productId, productNom, qty } — produits en attente d'être validés en une fois
   const [error, setError] = useState("");
   const [editQty, setEditQty] = useState({}); // lineId -> valeur en cours d'édition
 
@@ -3592,36 +3593,84 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
     ? day.lines.filter((l) => l.vendorId === vendorId && l.quantiteRestante === null)
     : [];
 
-  const distribute = async () => {
+  // Vide le panier si on change de vendeur, pour éviter de mélanger deux remises.
+  const selectVendor = (id) => {
+    setVendorId(id);
+    setError("");
+    setCart([]);
+  };
+
+  // Stock restant pour un produit en tenant compte de ce qui est déjà
+  // placé dans le panier (pas encore validé / déduit du stock réel).
+  const stockRestant = (product) => {
+    const dejaDansPanier = cart.filter((c) => c.productId === product.id).reduce((s, c) => s + c.qty, 0);
+    return product.stock - dejaDansPanier;
+  };
+
+  // Ajoute le produit + quantité choisis à la liste d'attente, sans encore
+  // toucher au stock ni au jour — permet d'accumuler plusieurs produits
+  // avant de valider la remise en une seule fois.
+  const addToCart = () => {
     setError("");
     const q = Number(qty);
-    if (!vendorId || !productId || !q) return;
-    const vendor = activeVendors.find((v) => v.id === vendorId);
-    if (!vendor) return; // vendeur clôturé (ou introuvable) : distribution bloquée
+    if (!productId || !q || q <= 0) return;
     const product = products.find((p) => p.id === productId);
     if (!product) return;
-    if (product.stock < q) {
-      setError(`Stock insuffisant : il ne reste que ${product.stock} en stock pour ce produit.`);
+    const restant = stockRestant(product);
+    if (restant < q) {
+      setError(`Stock insuffisant : il ne reste que ${restant} en stock pour ce produit.`);
       return;
     }
+    setCart((c) => {
+      const existing = c.find((x) => x.productId === productId);
+      if (existing) return c.map((x) => (x.productId === productId ? { ...x, qty: x.qty + q } : x));
+      return [...c, { productId, productNom: product.nom, qty: q }];
+    });
+    setProductId("");
+    setQty("");
+  };
 
-    // Si ce vendeur a déjà une ligne en attente pour ce même produit, on
-    // ajoute la quantité à la ligne existante au lieu d'en créer une deuxième.
-    const existingLine = day.lines.find(
-      (l) => l.vendorId === vendorId && l.productId === productId && l.quantiteRestante === null
-    );
+  const removeFromCart = (pid) => setCart((c) => c.filter((x) => x.productId !== pid));
 
-    const nextLines = existingLine
-      ? day.lines.map((l) => (l.id === existingLine.id ? { ...l, quantiteRemise: l.quantiteRemise + q } : l))
-      : [...day.lines, {
-          id: uid(), vendorId, vendorNom: vendor.nom, productId, productNom: product.nom, prix: product.prix,
-          quantiteRemise: q, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
-        }];
+  // Valide en une fois tous les produits accumulés dans le panier : une
+  // seule mise à jour de `day` et de `products` pour toute la remise.
+  const validateDistribution = async () => {
+    setError("");
+    if (!vendorId || cart.length === 0) return;
+    const vendor = activeVendors.find((v) => v.id === vendorId);
+    if (!vendor) return; // vendeur clôturé (ou introuvable) : distribution bloquée
+
+    for (const item of cart) {
+      const product = products.find((p) => p.id === item.productId);
+      if (!product || product.stock < item.qty) {
+        setError(`Stock insuffisant pour ${item.productNom}.`);
+        return;
+      }
+    }
+
+    let nextLines = [...day.lines];
+    let nextProducts = [...products];
+
+    cart.forEach((item) => {
+      const product = nextProducts.find((p) => p.id === item.productId);
+      // Si ce vendeur a déjà une ligne en attente pour ce même produit, on
+      // ajoute la quantité à la ligne existante au lieu d'en créer une deuxième.
+      const existingLine = nextLines.find(
+        (l) => l.vendorId === vendorId && l.productId === item.productId && l.quantiteRestante === null
+      );
+      nextLines = existingLine
+        ? nextLines.map((l) => (l.id === existingLine.id ? { ...l, quantiteRemise: l.quantiteRemise + item.qty } : l))
+        : [...nextLines, {
+            id: uid(), vendorId, vendorNom: vendor.nom, productId: item.productId, productNom: item.productNom,
+            prix: product.prix, quantiteRemise: item.qty, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
+          }];
+      nextProducts = nextProducts.map((p) => (p.id === item.productId ? { ...p, stock: p.stock - item.qty } : p));
+    });
 
     await setDay({ ...day, lines: nextLines });
-    await setProducts(products.map((p) => (p.id === productId ? { ...p, stock: p.stock - q } : p)));
+    await setProducts(nextProducts);
     await ensureTodayInList(daysList);
-    setQty("");
+    setCart([]);
   };
 
   const saveEditedQty = async (line) => {
@@ -3661,7 +3710,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
   return (
     <div>
       <Card title="Vendeurs actifs">
-        <VendorPicker vendors={activeVendors} selectedId={vendorId} onSelect={(id) => { setVendorId(id); setError(""); }} />
+        <VendorPicker vendors={activeVendors} selectedId={vendorId} onSelect={selectVendor} />
         {activeVendors.length === 0 && (
           <div style={{ fontSize: 12.5, color: "#C1554A" }}>
             {vendors.length === 0
@@ -3681,19 +3730,37 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
           </div>
           <div style={{ flex: "1 1 180px" }}>
             <Label>Produit</Label>
-            <Select value={productId} onChange={(e) => setProductId(e.target.value)}>
+            <Select value={productId} onChange={(e) => setProductId(e.target.value)} disabled={!selectedVendor}>
               <option value="">Choisir…</option>
-              {products.map((p) => <option key={p.id} value={p.id}>{p.nom} — {p.stock} en stock</option>)}
+              {products.map((p) => <option key={p.id} value={p.id}>{p.nom} — {stockRestant(p)} en stock</option>)}
             </Select>
           </div>
           <div style={{ flex: "1 1 100px" }}>
-            <Label>Quantité remise</Label>
-            <TextInput type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="20" />
+            <Label>Quantité</Label>
+            <TextInput type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="20" disabled={!selectedVendor} />
           </div>
-          <Button onClick={distribute}><Truck size={15} /> Remettre</Button>
+          <Button variant="ghost" onClick={addToCart} disabled={!selectedVendor}><Plus size={15} /> Ajouter à la liste</Button>
         </div>
         {error && (
           <div style={{ marginTop: 10, fontSize: 12.5, color: "#C1554A" }}>{error}</div>
+        )}
+
+        {cart.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <Table
+              headers={["Produit", "Quantité", ""]}
+              rows={cart.map((item) => [
+                item.productNom,
+                item.qty,
+                <button key="del" onClick={() => removeFromCart(item.productId)} title="Retirer de la liste" style={iconBtnStyle}><Trash2 size={15} /></button>,
+              ])}
+            />
+            <div style={{ marginTop: 12, display: "flex", justifyContent: "flex-end" }}>
+              <Button onClick={validateDistribution}>
+                <Truck size={15} /> Valider la remise ({cart.length} produit{cart.length > 1 ? "s" : ""})
+              </Button>
+            </div>
+          </div>
         )}
       </Card>
 
@@ -5070,9 +5137,42 @@ function eventBadgeColor(eventType) {
   return "#1B2A4A";
 }
 
+// Sélecteur de période pour le journal — mêmes options que Rapports, plus
+// une option "Toutes les dates" par défaut (le journal n'a pas de raison
+// d'être restreint tant que l'admin n'a pas choisi de filtrer).
+const JOURNAL_PERIOD_OPTIONS = [
+  { key: "toutes", label: "Toutes les dates" },
+  { key: "semaine", label: "Semaine" },
+  { key: "mois", label: "Mois" },
+  { key: "trimestre", label: "Trimestre" },
+  { key: "annee", label: "Année" },
+];
+
+function JournalPeriodSelector({ value, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {JOURNAL_PERIOD_OPTIONS.map((o) => (
+        <button
+          key={o.key}
+          onClick={() => onChange(o.key)}
+          style={{
+            padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer",
+            border: value === o.key ? "2px solid #D9A441" : "1px solid #D8DCE3",
+            background: value === o.key ? "#FFF8EC" : "#fff", color: "#1B2A4A",
+          }}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function JournalActivite() {
   const [entries, setEntries] = useState(null);
   const [filterUser, setFilterUser] = useState("");
+  const [periodType, setPeriodType] = useState("toutes");
+  const [month, setMonth] = useState(todayISO().slice(0, 7));
 
   useEffect(() => {
     (async () => setEntries(await store.getActivityLog()))();
@@ -5080,8 +5180,15 @@ function JournalActivite() {
 
   if (entries === null) return <EmptyState text="Chargement du journal…" />;
 
+  const today = todayISO();
+  const range = periodType === "toutes" ? null : rangeForPeriod(periodType, today, month);
+
   const usernames = Array.from(new Set(entries.map((e) => e.username)));
-  const filtered = filterUser ? entries.filter((e) => e.username === filterUser) : entries;
+  const filtered = entries.filter((e) => {
+    if (filterUser && e.username !== filterUser) return false;
+    if (range && !inRange(String(e.createdAt).slice(0, 10), range)) return false;
+    return true;
+  });
 
   return (
     <Card
@@ -5095,8 +5202,26 @@ function JournalActivite() {
         )
       }
     >
+      <div style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div>
+          <Label>Période</Label>
+          <JournalPeriodSelector value={periodType} onChange={setPeriodType} />
+        </div>
+        {periodType === "mois" && (
+          <div style={{ maxWidth: 220 }}>
+            <Label>Mois</Label>
+            <TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+          </div>
+        )}
+        {range && (
+          <div style={{ fontSize: 12.5, color: "#8A93A3" }}>
+            {periodLabelFR(periodType, range, month)} — {filtered.length} événement{filtered.length > 1 ? "s" : ""}
+          </div>
+        )}
+      </div>
+
       {filtered.length === 0 ? (
-        <EmptyState text="Aucune activité enregistrée pour l'instant." />
+        <EmptyState text={range || filterUser ? "Aucune activité pour ces critères." : "Aucune activité enregistrée pour l'instant."} />
       ) : (
         <Table
           headers={["Date", "Compte", "Événement", "Détail", "Adresse IP", "Appareil"]}
