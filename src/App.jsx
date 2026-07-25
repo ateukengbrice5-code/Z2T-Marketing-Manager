@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Package, Boxes, Users, Truck, MoonStar, Wallet, History,
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown,
   Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye,
-  MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, Menu,
+  MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, Menu, UserCircle,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Cell } from "recharts";
 import * as store from "./lib/store.js";
@@ -1475,7 +1475,7 @@ export default function App() {
         {tab === "rapports" && canManage && (
           <Rapports vendors={vendors} products={products} daysList={daysList} today={today} />
         )}
-        {tab === "historique" && isAdmin && <Historique vendors={vendors} daysList={daysList} today={today} />}
+        {tab === "historique" && isAdmin && <Historique vendors={vendors} daysList={daysList} today={today} currentUser={currentUser} reloadVendors={reloadVendors} />}
         {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
         {tab === "supervision" && isAdmin && currentUser.isPrimary && <Supervision currentUser={currentUser} />}
         </div>
@@ -4475,11 +4475,21 @@ function ProductReportPeriod({ titre, data }) {
   );
 }
 
-function Historique({ vendors, daysList, today }) {
+function paymentModeInfo(summary) {
+  const hasEspeces = summary.finalise && summary.montantVerseEspeces > 0;
+  const hasMobile = summary.totalMobile > 0;
+  if (hasEspeces && hasMobile) return { label: "Espèces + Mobile", color: "#1B2A4A" };
+  if (hasEspeces) return { label: "Espèces", color: "#3F8361" };
+  if (hasMobile) return { label: "Mobile", color: "#1B2A4A" };
+  return { label: "Non finalisé", color: "#9AA2B1" };
+}
+
+function Historique({ vendors, daysList, today, currentUser, reloadVendors }) {
   const [selectedVendorId, setSelectedVendorId] = useState(vendors[0]?.id || "");
   const [allDays, setAllDays] = useState(null);
   const [loading, setLoading] = useState(true);
   const [expandedDate, setExpandedDate] = useState(null);
+  const [ficheVendorId, setFicheVendorId] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -4521,14 +4531,11 @@ function Historique({ vendors, daysList, today }) {
 
   return (
     <div>
-      <Card title="Choisir un vendeur">
-        <div style={{ maxWidth: 280 }}>
-          <Select value={vendor.id} onChange={(e) => { setSelectedVendorId(e.target.value); setExpandedDate(null); }}>
-            {vendors.map((v) => <option key={v.id} value={v.id}>{v.nom}</option>)}
-          </Select>
-        </div>
-        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #F0F1F4" }}>
+      <Card title="Vendeurs">
+        <VendorPicker vendors={vendors} selectedId={vendor.id} onSelect={(id) => { setSelectedVendorId(id); setExpandedDate(null); }} />
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #F0F1F4", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <VendorMiniHeader vendor={vendor} />
+          <Button variant="ghost" onClick={() => setFicheVendorId(vendor.id)}><UserCircle size={15} /> Voir sa fiche personnelle</Button>
         </div>
       </Card>
 
@@ -4549,19 +4556,21 @@ function Historique({ vendors, daysList, today }) {
             ) : (
               vendorDays.map((d) => {
                 const isOpen = expandedDate === d.date;
+                const mode = paymentModeInfo(d.summary);
                 return (
                   <div key={d.date} style={{ borderBottom: "1px solid #F0F1F4" }}>
                     <button
                       onClick={() => setExpandedDate(isOpen ? null : d.date)}
-                      style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 4px", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}
+                      style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 4px", background: "none", border: "none", cursor: "pointer", textAlign: "left", flexWrap: "wrap", gap: 6 }}
                     >
                       <span style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, color: "#1B2A4A" }}>
                         {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                         {formatDateFR(d.date)}
                         {d.date === today && <span style={{ fontSize: 11, color: "#D9A441", fontWeight: 700 }}>AUJOURD'HUI</span>}
                       </span>
-                      <span style={{ fontSize: 13, color: "#5B6472" }}>
-                        {fmtMoney(d.summary.montantAttendu)} attendu · {fmtMoney(d.summary.finalise ? d.summary.montantVerseEspeces : 0)} espèces · {fmtMoney(d.summary.totalMobile)} mobile
+                      <span style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, color: "#5B6472" }}>
+                        <span>{fmtMoney(d.summary.montantAttendu)} · {d.totalVendu} pièce{d.totalVendu > 1 ? "s" : ""}</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: mode.color }}>{mode.label}</span>
                       </span>
                     </button>
 
@@ -4598,6 +4607,16 @@ function Historique({ vendors, daysList, today }) {
             )}
           </Card>
         </>
+      )}
+
+      {ficheVendorId && (
+        <VendorFiche
+          vendor={vendors.find((v) => v.id === ficheVendorId)}
+          onClose={() => setFicheVendorId(null)}
+          currentUser={currentUser}
+          reloadVendors={reloadVendors}
+          daysList={daysList}
+        />
       )}
     </div>
   );
