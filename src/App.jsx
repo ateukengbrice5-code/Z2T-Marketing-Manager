@@ -1475,7 +1475,7 @@ export default function App() {
         {tab === "rapports" && canManage && (
           <Rapports vendors={vendors} products={products} daysList={daysList} today={today} />
         )}
-        {tab === "historique" && isAdmin && <Historique daysList={daysList} today={today} />}
+        {tab === "historique" && isAdmin && <Historique vendors={vendors} daysList={daysList} today={today} />}
         {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
         {tab === "supervision" && isAdmin && currentUser.isPrimary && <Supervision currentUser={currentUser} />}
         </div>
@@ -3383,43 +3383,146 @@ function BirthdayBalloons() {
 
 
 
+// Liste de vendeurs actifs sous forme de cartes cliquables — utilisée en
+// haut de Distribution et Retour du soir pour choisir le vendeur concerné.
+function VendorPicker({ vendors, selectedId, onSelect }) {
+  if (vendors.length === 0) return null;
+  return (
+    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+      {vendors.map((v) => {
+        const active = v.id === selectedId;
+        return (
+          <button
+            key={v.id}
+            onClick={() => onSelect(v.id)}
+            style={{
+              display: "flex", alignItems: "center", gap: 8, padding: "6px 14px 6px 6px",
+              borderRadius: 999, cursor: "pointer", fontSize: 13, fontWeight: 600,
+              border: active ? "2px solid #D9A441" : "1px solid #D8DCE3",
+              background: active ? "#FFF8EC" : "#fff", color: "#1B2A4A",
+            }}
+          >
+            <span style={{
+              width: 26, height: 26, borderRadius: "50%", background: "#EEF0F4", overflow: "hidden",
+              display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+            }}>
+              {v.photoUrl ? (
+                <img src={v.photoUrl} alt={v.nom} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              ) : (
+                <Users size={13} color="#B7BECB" />
+              )}
+            </span>
+            {v.nom}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function Distribution({ products, setProducts, vendors, day, setDay, ensureTodayInList, daysList }) {
   const [vendorId, setVendorId] = useState("");
   const [productId, setProductId] = useState("");
   const [qty, setQty] = useState("");
+  const [error, setError] = useState("");
+  const [editQty, setEditQty] = useState({}); // lineId -> valeur en cours d'édition
 
   // Un vendeur au contrat clôturé ne doit plus recevoir de nouvelle
   // distribution, même saisie manuellement par l'administrateur.
   const activeVendors = vendors.filter((v) => v.contractStatut !== "cloture");
+  const selectedVendor = activeVendors.find((v) => v.id === vendorId);
+
+  // Produits déjà en main du vendeur sélectionné, pas encore retournés.
+  const pendingForSelectedVendor = vendorId
+    ? day.lines.filter((l) => l.vendorId === vendorId && l.quantiteRestante === null)
+    : [];
 
   const distribute = async () => {
+    setError("");
     const q = Number(qty);
     if (!vendorId || !productId || !q) return;
     const vendor = activeVendors.find((v) => v.id === vendorId);
     if (!vendor) return; // vendeur clôturé (ou introuvable) : distribution bloquée
     const product = products.find((p) => p.id === productId);
-    if (!product || product.stock < q) return;
+    if (!product) return;
+    if (product.stock < q) {
+      setError(`Stock insuffisant : il ne reste que ${product.stock} en stock pour ce produit.`);
+      return;
+    }
 
-    const line = {
-      id: uid(), vendorId, vendorNom: vendor.nom, productId, productNom: product.nom, prix: product.prix,
-      quantiteRemise: q, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
-    };
-    await setDay({ ...day, lines: [...day.lines, line] });
+    // Si ce vendeur a déjà une ligne en attente pour ce même produit, on
+    // ajoute la quantité à la ligne existante au lieu d'en créer une deuxième.
+    const existingLine = day.lines.find(
+      (l) => l.vendorId === vendorId && l.productId === productId && l.quantiteRestante === null
+    );
+
+    const nextLines = existingLine
+      ? day.lines.map((l) => (l.id === existingLine.id ? { ...l, quantiteRemise: l.quantiteRemise + q } : l))
+      : [...day.lines, {
+          id: uid(), vendorId, vendorNom: vendor.nom, productId, productNom: product.nom, prix: product.prix,
+          quantiteRemise: q, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
+        }];
+
+    await setDay({ ...day, lines: nextLines });
     await setProducts(products.map((p) => (p.id === productId ? { ...p, stock: p.stock - q } : p)));
     await ensureTodayInList(daysList);
     setQty("");
   };
 
+  const saveEditedQty = async (line) => {
+    setError("");
+    const raw = editQty[line.id];
+    if (raw === undefined || raw === "") return;
+    const newQty = Number(raw);
+    if (Number.isNaN(newQty) || newQty <= 0) {
+      setError("Quantité invalide — utilise la corbeille pour annuler complètement cette distribution.");
+      return;
+    }
+    const diff = newQty - line.quantiteRemise; // >0 = on prend plus de stock, <0 = on en rend
+    const product = products.find((p) => p.id === line.productId);
+    if (diff > 0 && product && product.stock < diff) {
+      setError(`Stock insuffisant pour augmenter cette quantité : il ne reste que ${product.stock} en stock.`);
+      return;
+    }
+    const nextLines = day.lines.map((l) => (l.id === line.id ? { ...l, quantiteRemise: newQty } : l));
+    await setDay({ ...day, lines: nextLines });
+    if (product) {
+      await setProducts(products.map((p) => (p.id === line.productId ? { ...p, stock: p.stock - diff } : p)));
+    }
+    setEditQty((s) => { const n = { ...s }; delete n[line.id]; return n; });
+  };
+
+  const cancelDistribution = async (line) => {
+    setError("");
+    const nextLines = day.lines.filter((l) => l.id !== line.id);
+    await setDay({ ...day, lines: nextLines });
+    const product = products.find((p) => p.id === line.productId);
+    if (product) {
+      await setProducts(products.map((p) => (p.id === line.productId ? { ...p, stock: p.stock + line.quantiteRemise } : p)));
+    }
+    setEditQty((s) => { const n = { ...s }; delete n[line.id]; return n; });
+  };
+
   return (
     <div>
+      <Card title="Vendeurs actifs">
+        <VendorPicker vendors={activeVendors} selectedId={vendorId} onSelect={(id) => { setVendorId(id); setError(""); }} />
+        {activeVendors.length === 0 && (
+          <div style={{ fontSize: 12.5, color: "#C1554A" }}>
+            {vendors.length === 0
+              ? "Ajoute d'abord un vendeur dans l'onglet Vendeurs & comptes."
+              : "Tous les vendeurs sont au contrat clôturé — aucune distribution n'est possible."}
+          </div>
+        )}
+      </Card>
+
       <Card title="Remettre des produits à un vendeur">
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <div style={{ flex: "1 1 180px" }}>
-            <Label>Vendeur</Label>
-            <Select value={vendorId} onChange={(e) => setVendorId(e.target.value)}>
-              <option value="">Choisir…</option>
-              {activeVendors.map((v) => <option key={v.id} value={v.id}>{v.nom}</option>)}
-            </Select>
+          <div style={{ flex: "1 1 220px" }}>
+            <Label>Vendeur sélectionné</Label>
+            <div style={{ padding: "9px 12px", borderRadius: 8, border: "1px solid #D8DCE3", fontSize: 13.5, color: selectedVendor ? "#1B2A4A" : "#9AA2B1", fontWeight: selectedVendor ? 600 : 400 }}>
+              {selectedVendor ? selectedVendor.nom : "Choisis un vendeur ci-dessus"}
+            </div>
           </div>
           <div style={{ flex: "1 1 180px" }}>
             <Label>Produit</Label>
@@ -3434,14 +3537,28 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
           </div>
           <Button onClick={distribute}><Truck size={15} /> Remettre</Button>
         </div>
-        {activeVendors.length === 0 && (
-          <div style={{ marginTop: 10, fontSize: 12.5, color: "#C1554A" }}>
-            {vendors.length === 0
-              ? "Ajoute d'abord un vendeur dans l'onglet Vendeurs & comptes."
-              : "Tous les vendeurs sont au contrat clôturé — aucune distribution n'est possible."}
-          </div>
+        {error && (
+          <div style={{ marginTop: 10, fontSize: 12.5, color: "#C1554A" }}>{error}</div>
         )}
       </Card>
+
+      {selectedVendor && pendingForSelectedVendor.length > 0 && (
+        <Card title={`Produits déjà remis à ${selectedVendor.nom} (en attente de retour)`}>
+          <Table
+            headers={["Produit", "Quantité remise", "", ""]}
+            rows={pendingForSelectedVendor.map((l) => [
+              l.productNom,
+              <TextInput
+                key="q" type="number" style={{ width: 90 }}
+                value={editQty[l.id] ?? l.quantiteRemise}
+                onChange={(e) => setEditQty((s) => ({ ...s, [l.id]: e.target.value }))}
+              />,
+              <Button key="save" variant="ghost" onClick={() => saveEditedQty(l)}>Enregistrer</Button>,
+              <button key="del" onClick={() => cancelDistribution(l)} title="Annuler cette distribution" style={iconBtnStyle}><Trash2 size={15} /></button>,
+            ])}
+          />
+        </Card>
+      )}
 
       <Card title="Distributions du jour">
         {day.lines.length === 0 ? (
@@ -3574,11 +3691,9 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
 
       <Card title="Retour du soir">
         {isAdmin ? (
-          <div style={{ maxWidth: 280 }}>
+          <div>
             <Label>Choisir un vendeur</Label>
-            <Select value={selectedVendorId} onChange={(e) => setSelectedVendorId(e.target.value)}>
-              {activeVendors.map((v) => <option key={v.id} value={v.id}>{v.nom}</option>)}
-            </Select>
+            <VendorPicker vendors={activeVendors} selectedId={selectedVendorId} onSelect={setSelectedVendorId} />
           </div>
         ) : (
           <div style={{ fontSize: 14, fontWeight: 700, color: "#1B2A4A" }}>Vendeur : {vendor.nom}</div>
@@ -4360,120 +4475,131 @@ function ProductReportPeriod({ titre, data }) {
   );
 }
 
-// Regroupe les lignes d'une journée par vendeur (une entrée par vendeur,
-// avec la liste de ses produits vendus ce jour-là) — évite de répéter le
-// nom du vendeur sur chaque ligne produit.
-function groupLinesByVendor(lines) {
-  const byVendor = {};
-  const order = [];
-  lines.forEach((l) => {
-    if (!byVendor[l.vendorId]) {
-      byVendor[l.vendorId] = { vendorId: l.vendorId, vendorNom: l.vendorNom, lines: [], totalAttendu: 0 };
-      order.push(l.vendorId);
-    }
-    byVendor[l.vendorId].lines.push(l);
-    byVendor[l.vendorId].totalAttendu += l.montantAttendu || 0;
-  });
-  return order.map((id) => byVendor[id]);
-}
+function Historique({ vendors, daysList, today }) {
+  const [selectedVendorId, setSelectedVendorId] = useState(vendors[0]?.id || "");
+  const [allDays, setAllDays] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [expandedDate, setExpandedDate] = useState(null);
 
-function Historique({ daysList, today }) {
-  const [expanded, setExpanded] = useState(null);
-  const [cache, setCache] = useState({});
-  const [expandedVendors, setExpandedVendors] = useState({}); // clé "date-vendorId" -> bool
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const loaded = await store.getDaysInRange(daysList || []);
+      setAllDays(loaded);
+      setLoading(false);
+    })();
+  }, [daysList]);
 
-  const toggle = async (date) => {
-    if (expanded === date) { setExpanded(null); return; }
-    setExpanded(date);
-    if (!cache[date]) {
-      const d = await store.getDay(date);
-      setCache((c) => ({ ...c, [date]: d }));
-    }
-  };
+  useEffect(() => {
+    if (!selectedVendorId && vendors[0]) setSelectedVendorId(vendors[0].id);
+  }, [vendors]);
 
-  const toggleVendor = (key) => {
-    setExpandedVendors((v) => ({ ...v, [key]: !v[key] }));
-  };
-
-  if (daysList.length === 0) {
-    return <Card title="Historique des journées"><EmptyState text="L'historique se remplira automatiquement dès qu'une distribution sera enregistrée." /></Card>;
+  if (vendors.length === 0) {
+    return <Card title="Historique"><EmptyState text="Ajoute d'abord un vendeur dans l'onglet Vendeurs & comptes." /></Card>;
   }
 
+  const vendor = vendors.find((v) => v.id === selectedVendorId) || vendors[0];
+
+  // Jours où ce vendeur a eu de l'activité, du plus récent au plus ancien.
+  const vendorDays = (allDays || [])
+    .filter((d) => d.lines.some((l) => l.vendorId === vendor.id))
+    .map((d) => {
+      const lines = d.lines.filter((l) => l.vendorId === vendor.id);
+      const summary = computeVersementSummary(d, vendor.id);
+      const totalVendu = lines.reduce((s, l) => s + (l.quantiteVendue || 0), 0);
+      return { date: d.date, lines, summary, totalVendu };
+    })
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  const totaux = vendorDays.reduce((acc, d) => {
+    acc.ca += d.summary.montantAttendu;
+    acc.qte += d.totalVendu;
+    acc.especes += d.summary.finalise ? d.summary.montantVerseEspeces : 0;
+    acc.mobile += d.summary.totalMobile;
+    return acc;
+  }, { ca: 0, qte: 0, especes: 0, mobile: 0 });
+
   return (
-    <Card title="Historique des journées">
-      {daysList.map((date) => {
-        const d = cache[date];
-        const isOpen = expanded === date;
-        const totalAttendu = d ? d.lines.reduce((s, l) => s + (l.montantAttendu || 0), 0) : null;
-        const totalEspeces = d ? Object.keys(d.versements || {}).reduce((s, vid) => {
-          const summary = computeVersementSummary(d, vid);
-          return s + (summary.finalise ? summary.montantVerseEspeces : 0);
-        }, 0) : null;
-        const totalMobile = d ? Object.keys(d.versements || {}).reduce((s, vid) => s + computeVersementSummary(d, vid).totalMobile, 0) : null;
+    <div>
+      <Card title="Choisir un vendeur">
+        <div style={{ maxWidth: 280 }}>
+          <Select value={vendor.id} onChange={(e) => { setSelectedVendorId(e.target.value); setExpandedDate(null); }}>
+            {vendors.map((v) => <option key={v.id} value={v.id}>{v.nom}</option>)}
+          </Select>
+        </div>
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #F0F1F4" }}>
+          <VendorMiniHeader vendor={vendor} />
+        </div>
+      </Card>
 
-        return (
-          <div key={date} style={{ borderBottom: "1px solid #F0F1F4" }}>
-            <button
-              onClick={() => toggle(date)}
-              style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 4px", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}
-            >
-              <span style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, color: "#1B2A4A" }}>
-                {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                {formatDateFR(date)}
-                {date === today && <span style={{ fontSize: 11, color: "#D9A441", fontWeight: 700 }}>AUJOURD'HUI</span>}
-              </span>
-              {d && (
-                <span style={{ fontSize: 13, color: "#5B6472" }}>
-                  {fmtMoney(totalAttendu)} attendu · {fmtMoney(totalEspeces)} espèces · {fmtMoney(totalMobile)} mobile
-                </span>
-              )}
-            </button>
+      {loading ? (
+        <Card><EmptyState text="Chargement de l'historique…" /></Card>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+            <StatCard label="CHIFFRE D'AFFAIRES TOTAL" value={fmtMoney(totaux.ca)} accent="#D9A441" />
+            <StatCard label="QUANTITÉ TOTALE VENDUE" value={totaux.qte} />
+            <StatCard label="TOTAL REÇU EN ESPÈCES" value={fmtMoney(totaux.especes)} accent="#3F8361" />
+            <StatCard label="TOTAL REÇU EN MOBILE" value={fmtMoney(totaux.mobile)} accent="#1B2A4A" />
+          </div>
 
-            {isOpen && d && (
-              <div style={{ padding: "4px 4px 16px 23px" }}>
-                {d.lines.length === 0 ? (
-                  <EmptyState text="Aucune activité ce jour-là." />
-                ) : (
-                  groupLinesByVendor(d.lines).map((v) => {
-                    const vendorKey = `${date}-${v.vendorId}`;
-                    const vendorOpen = !!expandedVendors[vendorKey];
-                    return (
-                      <div key={vendorKey} style={{ borderBottom: "1px solid #F5F6F8" }}>
-                        <button
-                          onClick={() => toggleVendor(vendorKey)}
-                          style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 4px", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}
-                        >
-                          <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, color: "#1B2A4A", fontSize: 13.5 }}>
-                            {vendorOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                            {v.vendorNom}
-                            <span style={{ fontWeight: 400, color: "#9AA2B1", fontSize: 12 }}>
-                              ({v.lines.length} produit{v.lines.length > 1 ? "s" : ""})
-                            </span>
-                          </span>
-                          <span style={{ fontSize: 13, color: "#5B6472" }}>{fmtMoney(v.totalAttendu)}</span>
-                        </button>
-                        {vendorOpen && (
-                          <div style={{ padding: "0 0 10px 19px" }}>
-                            <Table
-                              headers={["Produit", "Remis", "Restant", "Vendu", "Montant attendu"]}
-                              rows={v.lines.map((l) => [
-                                l.productNom, l.quantiteRemise,
-                                l.quantiteRestante ?? "—", l.quantiteVendue ?? "—",
-                                l.montantAttendu ? fmtMoney(l.montantAttendu) : "—",
-                              ])}
-                            />
+          <Card title={`Historique détaillé — ${vendor.nom}`}>
+            {vendorDays.length === 0 ? (
+              <EmptyState text="Aucune activité enregistrée pour ce vendeur." />
+            ) : (
+              vendorDays.map((d) => {
+                const isOpen = expandedDate === d.date;
+                return (
+                  <div key={d.date} style={{ borderBottom: "1px solid #F0F1F4" }}>
+                    <button
+                      onClick={() => setExpandedDate(isOpen ? null : d.date)}
+                      style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 4px", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}
+                    >
+                      <span style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, color: "#1B2A4A" }}>
+                        {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                        {formatDateFR(d.date)}
+                        {d.date === today && <span style={{ fontSize: 11, color: "#D9A441", fontWeight: 700 }}>AUJOURD'HUI</span>}
+                      </span>
+                      <span style={{ fontSize: 13, color: "#5B6472" }}>
+                        {fmtMoney(d.summary.montantAttendu)} attendu · {fmtMoney(d.summary.finalise ? d.summary.montantVerseEspeces : 0)} espèces · {fmtMoney(d.summary.totalMobile)} mobile
+                      </span>
+                    </button>
+
+                    {isOpen && (
+                      <div style={{ padding: "4px 4px 18px 23px" }}>
+                        <Table
+                          headers={["Produit", "Remis", "Restant", "Vendu", "Montant attendu"]}
+                          rows={d.lines.map((l) => [
+                            l.productNom, l.quantiteRemise, l.quantiteRestante ?? "—", l.quantiteVendue ?? "—",
+                            l.montantAttendu ? fmtMoney(l.montantAttendu) : "—",
+                          ])}
+                        />
+
+                        {d.summary.mobilePayments.length > 0 && (
+                          <div style={{ marginTop: 12 }}>
+                            <Label>Paiements mobiles reçus</Label>
+                            <Table headers={["Numéro mobile", "Montant"]} rows={d.summary.mobilePayments.map((m) => [m.numero, fmtMoney(m.montant)])} />
                           </div>
                         )}
+
+                        <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10, fontSize: 13, color: "#5B6472" }}>
+                          <span>Espèces versées : <strong style={{ color: "#1B2A4A" }}>{d.summary.finalise ? fmtMoney(d.summary.montantVerseEspeces) : "—"}</strong></span>
+                          {d.summary.finalise ? (
+                            <Badge ok={d.summary.statut === "equilibre"} okText="Équilibré" warnText={`${d.summary.ecart > 0 ? "+" : ""}${fmtMoney(d.summary.ecart)}`} />
+                          ) : (
+                            <span style={{ fontStyle: "italic", color: "#9AA2B1" }}>Versement non finalisé</span>
+                          )}
+                        </div>
                       </div>
-                    );
-                  })
-                )}
-              </div>
+                    )}
+                  </div>
+                );
+              })
             )}
-          </div>
-        );
-      })}
-    </Card>
+          </Card>
+        </>
+      )}
+    </div>
   );
 }
 
