@@ -4360,9 +4360,27 @@ function ProductReportPeriod({ titre, data }) {
   );
 }
 
+// Regroupe les lignes d'une journée par vendeur (une entrée par vendeur,
+// avec la liste de ses produits vendus ce jour-là) — évite de répéter le
+// nom du vendeur sur chaque ligne produit.
+function groupLinesByVendor(lines) {
+  const byVendor = {};
+  const order = [];
+  lines.forEach((l) => {
+    if (!byVendor[l.vendorId]) {
+      byVendor[l.vendorId] = { vendorId: l.vendorId, vendorNom: l.vendorNom, lines: [], totalAttendu: 0 };
+      order.push(l.vendorId);
+    }
+    byVendor[l.vendorId].lines.push(l);
+    byVendor[l.vendorId].totalAttendu += l.montantAttendu || 0;
+  });
+  return order.map((id) => byVendor[id]);
+}
+
 function Historique({ daysList, today }) {
   const [expanded, setExpanded] = useState(null);
   const [cache, setCache] = useState({});
+  const [expandedVendors, setExpandedVendors] = useState({}); // clé "date-vendorId" -> bool
 
   const toggle = async (date) => {
     if (expanded === date) { setExpanded(null); return; }
@@ -4371,6 +4389,10 @@ function Historique({ daysList, today }) {
       const d = await store.getDay(date);
       setCache((c) => ({ ...c, [date]: d }));
     }
+  };
+
+  const toggleVendor = (key) => {
+    setExpandedVendors((v) => ({ ...v, [key]: !v[key] }));
   };
 
   if (daysList.length === 0) {
@@ -4412,14 +4434,39 @@ function Historique({ daysList, today }) {
                 {d.lines.length === 0 ? (
                   <EmptyState text="Aucune activité ce jour-là." />
                 ) : (
-                  <Table
-                    headers={["Vendeur", "Produit", "Remis", "Restant", "Vendu", "Montant attendu"]}
-                    rows={d.lines.map((l) => [
-                      l.vendorNom, l.productNom, l.quantiteRemise,
-                      l.quantiteRestante ?? "—", l.quantiteVendue ?? "—",
-                      l.montantAttendu ? fmtMoney(l.montantAttendu) : "—",
-                    ])}
-                  />
+                  groupLinesByVendor(d.lines).map((v) => {
+                    const vendorKey = `${date}-${v.vendorId}`;
+                    const vendorOpen = !!expandedVendors[vendorKey];
+                    return (
+                      <div key={vendorKey} style={{ borderBottom: "1px solid #F5F6F8" }}>
+                        <button
+                          onClick={() => toggleVendor(vendorKey)}
+                          style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 4px", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}
+                        >
+                          <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, color: "#1B2A4A", fontSize: 13.5 }}>
+                            {vendorOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                            {v.vendorNom}
+                            <span style={{ fontWeight: 400, color: "#9AA2B1", fontSize: 12 }}>
+                              ({v.lines.length} produit{v.lines.length > 1 ? "s" : ""})
+                            </span>
+                          </span>
+                          <span style={{ fontSize: 13, color: "#5B6472" }}>{fmtMoney(v.totalAttendu)}</span>
+                        </button>
+                        {vendorOpen && (
+                          <div style={{ padding: "0 0 10px 19px" }}>
+                            <Table
+                              headers={["Produit", "Remis", "Restant", "Vendu", "Montant attendu"]}
+                              rows={v.lines.map((l) => [
+                                l.productNom, l.quantiteRemise,
+                                l.quantiteRestante ?? "—", l.quantiteVendue ?? "—",
+                                l.montantAttendu ? fmtMoney(l.montantAttendu) : "—",
+                              ])}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
                 )}
               </div>
             )}
