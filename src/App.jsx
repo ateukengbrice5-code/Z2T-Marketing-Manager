@@ -3577,9 +3577,7 @@ function VendorPicker({ vendors, selectedId, onSelect }) {
 
 function Distribution({ products, setProducts, vendors, day, setDay, ensureTodayInList, daysList }) {
   const [vendorId, setVendorId] = useState("");
-  const [productId, setProductId] = useState("");
-  const [qty, setQty] = useState("");
-  const [cart, setCart] = useState([]); // { productId, productNom, qty } — produits en attente d'être validés en une fois
+  const [qtyByProduct, setQtyByProduct] = useState({}); // productId -> quantité saisie (texte)
   const [error, setError] = useState("");
   const [editQty, setEditQty] = useState({}); // lineId -> valeur en cours d'édition
 
@@ -3593,57 +3591,33 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
     ? day.lines.filter((l) => l.vendorId === vendorId && l.quantiteRestante === null)
     : [];
 
-  // Vide le panier si on change de vendeur, pour éviter de mélanger deux remises.
+  // Change de vendeur : on repart d'une liste de quantités vierge, pour
+  // éviter de mélanger la saisie de deux vendeurs différents.
   const selectVendor = (id) => {
     setVendorId(id);
     setError("");
-    setCart([]);
+    setQtyByProduct({});
   };
 
-  // Stock restant pour un produit en tenant compte de ce qui est déjà
-  // placé dans le panier (pas encore validé / déduit du stock réel).
-  const stockRestant = (product) => {
-    const dejaDansPanier = cart.filter((c) => c.productId === product.id).reduce((s, c) => s + c.qty, 0);
-    return product.stock - dejaDansPanier;
-  };
+  const setQtyFor = (productId, value) => setQtyByProduct((s) => ({ ...s, [productId]: value }));
 
-  // Ajoute le produit + quantité choisis à la liste d'attente, sans encore
-  // toucher au stock ni au jour — permet d'accumuler plusieurs produits
-  // avant de valider la remise en une seule fois.
-  const addToCart = () => {
-    setError("");
-    const q = Number(qty);
-    if (!productId || !q || q <= 0) return;
-    const product = products.find((p) => p.id === productId);
-    if (!product) return;
-    const restant = stockRestant(product);
-    if (restant < q) {
-      setError(`Stock insuffisant : il ne reste que ${restant} en stock pour ce produit.`);
-      return;
-    }
-    setCart((c) => {
-      const existing = c.find((x) => x.productId === productId);
-      if (existing) return c.map((x) => (x.productId === productId ? { ...x, qty: x.qty + q } : x));
-      return [...c, { productId, productNom: product.nom, qty: q }];
-    });
-    setProductId("");
-    setQty("");
-  };
-
-  const removeFromCart = (pid) => setCart((c) => c.filter((x) => x.productId !== pid));
-
-  // Valide en une fois tous les produits accumulés dans le panier : une
-  // seule mise à jour de `day` et de `products` pour toute la remise.
+  // Valide en une seule fois toutes les quantités saisies dans la liste :
+  // une seule mise à jour de `day` et de `products` pour toute la remise.
   const validateDistribution = async () => {
     setError("");
-    if (!vendorId || cart.length === 0) return;
+    if (!vendorId) return;
     const vendor = activeVendors.find((v) => v.id === vendorId);
     if (!vendor) return; // vendeur clôturé (ou introuvable) : distribution bloquée
 
-    for (const item of cart) {
-      const product = products.find((p) => p.id === item.productId);
-      if (!product || product.stock < item.qty) {
-        setError(`Stock insuffisant pour ${item.productNom}.`);
+    const items = products
+      .map((p) => ({ product: p, qty: Number(qtyByProduct[p.id]) }))
+      .filter((it) => qtyByProduct[it.product.id] && it.qty > 0);
+
+    if (items.length === 0) return;
+
+    for (const item of items) {
+      if (item.product.stock < item.qty) {
+        setError(`Stock insuffisant pour ${item.product.nom} : il ne reste que ${item.product.stock} en stock.`);
         return;
       }
     }
@@ -3651,26 +3625,25 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
     let nextLines = [...day.lines];
     let nextProducts = [...products];
 
-    cart.forEach((item) => {
-      const product = nextProducts.find((p) => p.id === item.productId);
+    items.forEach(({ product, qty }) => {
       // Si ce vendeur a déjà une ligne en attente pour ce même produit, on
       // ajoute la quantité à la ligne existante au lieu d'en créer une deuxième.
       const existingLine = nextLines.find(
-        (l) => l.vendorId === vendorId && l.productId === item.productId && l.quantiteRestante === null
+        (l) => l.vendorId === vendorId && l.productId === product.id && l.quantiteRestante === null
       );
       nextLines = existingLine
-        ? nextLines.map((l) => (l.id === existingLine.id ? { ...l, quantiteRemise: l.quantiteRemise + item.qty } : l))
+        ? nextLines.map((l) => (l.id === existingLine.id ? { ...l, quantiteRemise: l.quantiteRemise + qty } : l))
         : [...nextLines, {
-            id: uid(), vendorId, vendorNom: vendor.nom, productId: item.productId, productNom: item.productNom,
-            prix: product.prix, quantiteRemise: item.qty, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
+            id: uid(), vendorId, vendorNom: vendor.nom, productId: product.id, productNom: product.nom,
+            prix: product.prix, quantiteRemise: qty, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
           }];
-      nextProducts = nextProducts.map((p) => (p.id === item.productId ? { ...p, stock: p.stock - item.qty } : p));
+      nextProducts = nextProducts.map((p) => (p.id === product.id ? { ...p, stock: p.stock - qty } : p));
     });
 
     await setDay({ ...day, lines: nextLines });
     await setProducts(nextProducts);
     await ensureTodayInList(daysList);
-    setCart([]);
+    setQtyByProduct({});
   };
 
   const saveEditedQty = async (line) => {
@@ -3707,6 +3680,8 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
     setEditQty((s) => { const n = { ...s }; delete n[line.id]; return n; });
   };
 
+  const nbSaisis = Object.values(qtyByProduct).filter((v) => Number(v) > 0).length;
+
   return (
     <div>
       <Card title="Vendeurs actifs">
@@ -3720,49 +3695,36 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
         )}
       </Card>
 
-      <Card title="Remettre des produits à un vendeur">
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <div style={{ flex: "1 1 220px" }}>
-            <Label>Vendeur sélectionné</Label>
-            <div style={{ padding: "9px 12px", borderRadius: 8, border: "1px solid #D8DCE3", fontSize: 13.5, color: selectedVendor ? "#1B2A4A" : "#9AA2B1", fontWeight: selectedVendor ? 600 : 400 }}>
-              {selectedVendor ? selectedVendor.nom : "Choisis un vendeur ci-dessus"}
-            </div>
-          </div>
-          <div style={{ flex: "1 1 180px" }}>
-            <Label>Produit</Label>
-            <Select value={productId} onChange={(e) => setProductId(e.target.value)} disabled={!selectedVendor}>
-              <option value="">Choisir…</option>
-              {products.map((p) => <option key={p.id} value={p.id}>{p.nom} — {stockRestant(p)} en stock</option>)}
-            </Select>
-          </div>
-          <div style={{ flex: "1 1 100px" }}>
-            <Label>Quantité</Label>
-            <TextInput type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="20" disabled={!selectedVendor} />
-          </div>
-          <Button variant="ghost" onClick={addToCart} disabled={!selectedVendor}><Plus size={15} /> Ajouter à la liste</Button>
-        </div>
-        {error && (
-          <div style={{ marginTop: 10, fontSize: 12.5, color: "#C1554A" }}>{error}</div>
-        )}
-
-        {cart.length > 0 && (
-          <div style={{ marginTop: 16 }}>
-            <Table
-              headers={["Produit", "Quantité", ""]}
-              rows={cart.map((item) => [
-                item.productNom,
-                item.qty,
-                <button key="del" onClick={() => removeFromCart(item.productId)} title="Retirer de la liste" style={iconBtnStyle}><Trash2 size={15} /></button>,
-              ])}
-            />
-            <div style={{ marginTop: 12, display: "flex", justifyContent: "flex-end" }}>
-              <Button onClick={validateDistribution}>
-                <Truck size={15} /> Valider la remise ({cart.length} produit{cart.length > 1 ? "s" : ""})
-              </Button>
-            </div>
-          </div>
-        )}
-      </Card>
+      {selectedVendor && (
+        <Card title={`Remettre des produits à ${selectedVendor.nom}`}>
+          {products.length === 0 ? (
+            <EmptyState text="Aucun produit enregistré — ajoute d'abord des produits dans l'onglet Produits." />
+          ) : (
+            <>
+              <Table
+                headers={["Produit", "Stock disponible", "Quantité à remettre"]}
+                rows={products.map((p) => [
+                  p.nom,
+                  p.stock,
+                  <TextInput
+                    key="q" type="number" style={{ width: 100 }} placeholder="0"
+                    value={qtyByProduct[p.id] ?? ""}
+                    onChange={(e) => setQtyFor(p.id, e.target.value)}
+                  />,
+                ])}
+              />
+              {error && (
+                <div style={{ marginTop: 10, fontSize: 12.5, color: "#C1554A" }}>{error}</div>
+              )}
+              <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
+                <Button onClick={validateDistribution} disabled={nbSaisis === 0}>
+                  <Truck size={15} /> Valider la remise{nbSaisis > 0 ? ` (${nbSaisis} produit${nbSaisis > 1 ? "s" : ""})` : ""}
+                </Button>
+              </div>
+            </>
+          )}
+        </Card>
+      )}
 
       {selectedVendor && pendingForSelectedVendor.length > 0 && (
         <Card title={`Produits déjà remis à ${selectedVendor.nom} (en attente de retour)`}>
