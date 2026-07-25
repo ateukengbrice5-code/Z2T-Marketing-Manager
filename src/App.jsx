@@ -4384,13 +4384,33 @@ function Rapports({ vendors, products, daysList, today }) {
     }
   };
 
+  const rapportPrintRef = useRef(null);
+  const produitPrintRef = useRef(null);
+
+  // Imprime uniquement la section ciblée : on marque l'élément juste avant
+  // d'appeler window.print() (synchrone, dans le même clic), pour éviter
+  // tout problème de timing avec le rendu React.
+  const printSection = (ref) => {
+    if (!ref.current) return;
+    document.body.classList.add("printing-section");
+    ref.current.setAttribute("data-print-active", "true");
+    window.print();
+    const cleanup = () => {
+      ref.current?.removeAttribute("data-print-active");
+      document.body.classList.remove("printing-section");
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+  };
+
   return (
     <div>
       <style>{`
         @media print {
-          body * { visibility: hidden; }
-          #rapport-print-area, #rapport-print-area * { visibility: visible; }
-          #rapport-print-area { position: absolute; top: 0; left: 0; width: 100%; margin: 0; padding: 0; }
+          body.printing-section * { visibility: hidden; }
+          body.printing-section [data-print-active="true"],
+          body.printing-section [data-print-active="true"] * { visibility: visible; }
+          body.printing-section [data-print-active="true"] { position: absolute; top: 0; left: 0; width: 100%; margin: 0; padding: 0; }
           .no-print { display: none !important; }
         }
       `}</style>
@@ -4412,7 +4432,7 @@ function Rapports({ vendors, products, daysList, today }) {
               {loading ? "Génération…" : "Générer"}
             </Button>
             {report && (
-              <Button variant="gold" onClick={() => window.print()}>
+              <Button variant="gold" onClick={() => printSection(rapportPrintRef)}>
                 <Printer size={15} /> Imprimer / Enregistrer en PDF
               </Button>
             )}
@@ -4424,7 +4444,7 @@ function Rapports({ vendors, products, daysList, today }) {
       </Card>
 
       {report && (
-        <div id="rapport-print-area">
+        <div ref={rapportPrintRef}>
           <Card>
             <div style={{ textAlign: "center", marginBottom: 6 }}>
               <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 21, fontWeight: 700, color: "#1B2A4A", textTransform: "capitalize" }}>
@@ -4517,6 +4537,11 @@ function Rapports({ vendors, products, daysList, today }) {
             <Button variant="primary" onClick={genererRapportProduits} disabled={produitLoading}>
               {produitLoading ? "Génération…" : "Générer"}
             </Button>
+            {produitReport && (
+              <Button variant="gold" onClick={() => printSection(produitPrintRef)}>
+                <Printer size={15} /> Imprimer / Enregistrer en PDF
+              </Button>
+            )}
           </div>
         </div>
         {produitError && (
@@ -4524,7 +4549,12 @@ function Rapports({ vendors, products, daysList, today }) {
         )}
 
         {produitReport && (
-          <div style={{ marginTop: 20 }}>
+          <div ref={produitPrintRef} style={{ marginTop: 20 }}>
+            <div style={{ textAlign: "center", marginBottom: 14 }}>
+              <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 19, fontWeight: 700, color: "#1B2A4A" }}>
+                Rapport détaillé par produit
+              </div>
+            </div>
             <ProductReportPeriod
               titre={periodLabelFR(produitPeriodType, produitReport.range, produitMonth)}
               data={produitReport}
