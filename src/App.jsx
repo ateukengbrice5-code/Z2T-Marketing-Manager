@@ -130,6 +130,56 @@ function inRange(dateIso, range) {
   return dateIso >= range[0] && dateIso <= range[1];
 }
 
+function getPreviousQuarterRange(iso) {
+  const d = new Date(iso + "T00:00:00");
+  const y = d.getFullYear();
+  const qStartMonth = Math.floor(d.getMonth() / 3) * 3;
+  const firstOfThisQuarter = new Date(y, qStartMonth, 1);
+  const lastOfPrevQuarter = new Date(firstOfThisQuarter.getTime() - 86400000);
+  const prevQStartMonth = Math.floor(lastOfPrevQuarter.getMonth() / 3) * 3;
+  const firstOfPrevQuarter = new Date(lastOfPrevQuarter.getFullYear(), prevQStartMonth, 1);
+  return [isoFromDate(firstOfPrevQuarter), isoFromDate(lastOfPrevQuarter)];
+}
+
+// Décale un mois au format "AAAA-MM" de `delta` mois (peut être négatif).
+function shiftMonthValue(monthValue, delta) {
+  let [y, m] = monthValue.split("-").map(Number);
+  let total = y * 12 + (m - 1) + delta;
+  y = Math.floor(total / 12);
+  m = (total % 12) + 1;
+  return `${y}-${String(m).padStart(2, "0")}`;
+}
+
+// Plage de la période précédente, de même durée que la période choisie
+// (utilisée pour comparer l'évolution du chiffre d'affaires d'un vendeur).
+function previousRangeForPeriod(type, today, monthValue) {
+  if (type === "semaine") return getPreviousWeekRange(today);
+  if (type === "mois") return monthRangeFromInput(shiftMonthValue(monthValue, -1));
+  if (type === "trimestre") return getPreviousQuarterRange(today);
+  return getPreviousYearRange(today);
+}
+
+// Renvoie [périodeActuelle, périodeN-1, périodeN-2, ...] jusqu'à n périodes
+// en arrière, en reculant pas à pas — utilisé pour repérer un vendeur resté
+// "moins rentable" plusieurs périodes de suite.
+function periodsBack(type, today, monthValue, n) {
+  const ranges = [rangeForPeriod(type, today, monthValue)];
+  if (type === "mois") {
+    for (let i = 1; i <= n; i++) ranges.push(monthRangeFromInput(shiftMonthValue(monthValue, -i)));
+    return ranges;
+  }
+  let anchor = today;
+  for (let i = 1; i <= n; i++) {
+    let prevRange;
+    if (type === "semaine") prevRange = getPreviousWeekRange(anchor);
+    else if (type === "trimestre") prevRange = getPreviousQuarterRange(anchor);
+    else prevRange = getPreviousYearRange(anchor);
+    ranges.push(prevRange);
+    anchor = prevRange[1];
+  }
+  return ranges;
+}
+
 // Somme, pour UN vendeur, le chiffre d'affaires / vendu / distribué sur une période
 function sumVendorOverRange(days, vendorId, range) {
   let ca = 0, vendu = 0, distribue = 0;
@@ -706,6 +756,103 @@ function aggregateVendorRanking(days, range, vendors) {
     });
   });
   return Object.values(totals).sort((a, b) => b.ca - a.ca);
+}
+
+// Rapport vendeurs complet sur une période : chiffre d'affaires, quantité
+// vendue, espèces/mobile encaissés et jours actifs pour chaque vendeur —
+// avec repérage du vendeur le plus et le moins rentable (parmi ceux ayant
+// eu de l'activité sur la période, pour ne pas pénaliser un vendeur inactif).
+// Calcule aussi, pour chaque vendeur : son produit fétiche (le plus vendu),
+// sa fiabilité de caisse (part des jours versés sans écart) et sa régularité
+// (coefficient de variation de son CA journalier — plus c'est bas, plus le
+// vendeur est constant d'un jour à l'autre).
+function aggregateVendorFullReport(days, range, vendors) {
+  const rows = vendors.map((v) => {
+    let ca = 0, vendu = 0, especes = 0, mobile = 0, joursActifs = 0;
+    let joursFinalises = 0, joursAvecEcart = 0, ecartTotal = 0;
+    const caParJourMap = {};
+    const parProduit = {}; // productId -> { nom, vendu, ca }
+
+    days.forEach((day) => {
+      if (!day || !inRange(day.date, range)) return;
+      const lines = day.lines.filter((l) => l.vendorId === v.id);
+      if (lines.length > 0) joursActifs += 1;
+
+      let caJour = 0;
+      lines.forEach((l) => {
+        if (l.quantiteVendue != null) {
+          ca += l.montantAttendu || 0;
+          vendu += l.quantiteVendue || 0;
+          caJour += l.montantAttendu || 0;
+          if (!parProduit[l.productId]) parProduit[l.productId] = { nom: l.productNom, vendu: 0, ca: 0 };
+          parProduit[l.productId].vendu += l.quantiteVendue || 0;
+          parProduit[l.productId].ca += l.montantAttendu || 0;
+        }
+      });
+      if (caJour > 0) caParJourMap[day.date] = caJour;
+
+      const summary = computeVersementSummary(day, v.id);
+      mobile += summary.totalMobile;
+      if (summary.finalise) {
+        especes += summary.montantVerseEspeces;
+        joursFinalises += 1;
+        if (summary.ecart !== 0) { joursAvecEcart += 1; ecartTotal += summary.ecart; }
+      }
+    });
+
+    const caParJour = joursActifs > 0 ? Math.round(ca / joursActifs) : 0;
+    const produitFetiche = Object.values(parProduit).sort((a, b) => b.vendu - a.vendu)[0] || null;
+
+    const valeursCA = Object.values(caParJourMap);
+    let regulariteCV = null;
+    if (valeursCA.length > 1) {
+      const moyenne = valeursCA.reduce((s, x) => s + x, 0) / valeursCA.length;
+      const variance = valeursCA.reduce((s, x) => s + Math.pow(x - moyenne, 2), 0) / valeursCA.length;
+      regulariteCV = moyenne > 0 ? Math.sqrt(variance) / moyenne : null;
+    }
+
+    return {
+      vendorId: v.id, nom: v.nom, ca, vendu, especes, mobile, joursActifs, caParJour,
+      produitFetiche,
+      joursFinalises, joursAvecEcart, ecartTotal,
+      tauxEcart: joursFinalises > 0 ? joursAvecEcart / joursFinalises : null,
+      regulariteCV,
+    };
+  }).sort((a, b) => b.ca - a.ca);
+
+  const actifs = rows.filter((r) => r.joursActifs > 0);
+  const plusRentable = actifs[0] || null;
+  const moinsRentable = actifs.length > 1 ? actifs[actifs.length - 1] : null;
+  return { rows, plusRentable, moinsRentable };
+}
+
+// Badge ▲/▼ comparant le CA d'un vendeur à la période précédente.
+function EvolutionBadge({ evolution }) {
+  if (!evolution) return <span style={{ color: "#B7BDC9" }}>—</span>;
+  if (evolution.type === "nouveau") return <span style={{ color: "#4A7FC7", fontWeight: 700, fontSize: 12.5 }}>🆕 Nouveau</span>;
+  const { value } = evolution;
+  if (value > 0) return <span style={{ color: "#3F8361", fontWeight: 700 }}>▲ +{value}%</span>;
+  if (value < 0) return <span style={{ color: "#C1554A", fontWeight: 700 }}>▼ {value}%</span>;
+  return <span style={{ color: "#5B6472", fontWeight: 600 }}>= 0%</span>;
+}
+
+// Traduit le coefficient de variation du CA journalier en étiquette lisible :
+// plus c'est bas, plus le vendeur vend un montant similaire d'un jour à l'autre.
+function regulariteLabel(cv) {
+  if (cv == null) return "—";
+  const pct = Math.round(cv * 100);
+  if (cv <= 0.15) return `Très régulier (${pct}%)`;
+  if (cv <= 0.35) return `Régulier (${pct}%)`;
+  return `Irrégulier (${pct}%)`;
+}
+
+// Part des journées versées sans écart de caisse, avec un code couleur.
+function FiabiliteCell({ r }) {
+  if (r.joursFinalises === 0) return <span style={{ color: "#B7BDC9" }}>—</span>;
+  const ok = r.joursFinalises - r.joursAvecEcart;
+  const ratio = ok / r.joursFinalises;
+  const color = ratio === 1 ? "#3F8361" : ratio >= 0.5 ? "#D9A441" : "#C1554A";
+  return <span style={{ color, fontWeight: 600 }}>{ok}/{r.joursFinalises} j. sans écart</span>;
 }
 
 // Série jour par jour du chiffre d'affaires global sur une période — utilisé
@@ -4326,6 +4473,12 @@ function Rapports({ vendors, products, daysList, today }) {
   const [produitReport, setProduitReport] = useState(null);
   const [produitError, setProduitError] = useState("");
 
+  const [vendorPeriodType, setVendorPeriodType] = useState("mois");
+  const [vendorMonth, setVendorMonth] = useState(today.slice(0, 7));
+  const [vendorLoading, setVendorLoading] = useState(false);
+  const [vendorReport, setVendorReport] = useState(null);
+  const [vendorError, setVendorError] = useState("");
+
   // Rapport détaillé par produit — sur la période choisie (semaine / mois /
   // trimestre / année).
   const genererRapportProduits = async () => {
@@ -4343,6 +4496,60 @@ function Rapports({ vendors, products, daysList, today }) {
       );
     } finally {
       setProduitLoading(false);
+    }
+  };
+
+  // Rapport vendeurs — classement complet sur la période choisie, avec le
+  // plus et le moins rentable mis en avant, l'évolution par rapport à la
+  // période précédente, et une alerte si un vendeur reste "moins rentable"
+  // plusieurs périodes de suite.
+  const genererRapportVendeurs = async () => {
+    setVendorLoading(true);
+    setVendorError("");
+    try {
+      const range = rangeForPeriod(vendorPeriodType, today, vendorMonth);
+      const prevRange = previousRangeForPeriod(vendorPeriodType, today, vendorMonth);
+
+      const dates = daysList.filter((d) => inRange(d, range));
+      const datesPrec = daysList.filter((d) => inRange(d, prevRange));
+      const [loaded, loadedPrec] = await Promise.all([
+        store.getDaysInRange(dates),
+        store.getDaysInRange(datesPrec),
+      ]);
+
+      const base = aggregateVendorFullReport(loaded, range, vendors);
+      const basePrec = aggregateVendorFullReport(loadedPrec, prevRange, vendors);
+      const precParVendeur = Object.fromEntries(basePrec.rows.map((r) => [r.vendorId, r]));
+
+      const rows = base.rows.map((r) => {
+        const prec = precParVendeur[r.vendorId];
+        let evolution = null;
+        if (prec && prec.ca > 0) evolution = { type: "pct", value: Math.round(((r.ca - prec.ca) / prec.ca) * 100) };
+        else if (r.ca > 0) evolution = { type: "nouveau" };
+        return { ...r, evolution };
+      });
+
+      // Un même vendeur reste-t-il "le moins rentable" depuis plusieurs
+      // périodes de suite ? On regarde jusqu'à 6 périodes en arrière.
+      let streakMoinsRentable = 0;
+      if (base.moinsRentable) {
+        const cible = base.moinsRentable.vendorId;
+        const plages = periodsBack(vendorPeriodType, today, vendorMonth, 6);
+        for (const plage of plages) {
+          const datesPlage = daysList.filter((d) => inRange(d, plage));
+          const joursPlage = await store.getDaysInRange(datesPlage);
+          const rapportPlage = aggregateVendorFullReport(joursPlage, plage, vendors);
+          if (rapportPlage.moinsRentable && rapportPlage.moinsRentable.vendorId === cible) streakMoinsRentable += 1;
+          else break;
+        }
+      }
+
+      setVendorReport({ range, rows, plusRentable: base.plusRentable, moinsRentable: base.moinsRentable, streakMoinsRentable });
+    } catch (err) {
+      console.error("Erreur génération rapport vendeurs :", err);
+      setVendorError("Impossible de générer le rapport (" + (err?.message || "erreur inconnue") + "). Réessaie.");
+    } finally {
+      setVendorLoading(false);
     }
   };
 
@@ -4386,6 +4593,7 @@ function Rapports({ vendors, products, daysList, today }) {
 
   const rapportPrintRef = useRef(null);
   const produitPrintRef = useRef(null);
+  const vendorPrintRef = useRef(null);
 
   // Imprime uniquement la section ciblée : on marque l'élément juste avant
   // d'appeler window.print() (synchrone, dans le même clic), pour éviter
@@ -4559,6 +4767,98 @@ function Rapports({ vendors, products, daysList, today }) {
               titre={periodLabelFR(produitPeriodType, produitReport.range, produitMonth)}
               data={produitReport}
             />
+          </div>
+        )}
+      </Card>
+
+      <Card title="Rapport vendeurs">
+        <div style={{ fontSize: 12.5, color: "#8A93A3", marginBottom: 12 }}>
+          Classement des vendeurs sur la période choisie, avec le plus et le moins rentable mis en avant.
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div>
+            <Label>Période</Label>
+            <PeriodSelector value={vendorPeriodType} onChange={setVendorPeriodType} />
+          </div>
+          <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+            {vendorPeriodType === "mois" && (
+              <div style={{ flex: "1 1 180px" }}>
+                <Label>Mois</Label>
+                <TextInput type="month" value={vendorMonth} onChange={(e) => setVendorMonth(e.target.value)} />
+              </div>
+            )}
+            <Button variant="primary" onClick={genererRapportVendeurs} disabled={vendorLoading}>
+              {vendorLoading ? "Génération…" : "Générer"}
+            </Button>
+            {vendorReport && (
+              <Button variant="gold" onClick={() => printSection(vendorPrintRef)}>
+                <Printer size={15} /> Imprimer / Enregistrer en PDF
+              </Button>
+            )}
+          </div>
+        </div>
+        {vendorError && (
+          <div style={{ marginTop: 10, fontSize: 12.5, color: "#C1554A" }}>{vendorError}</div>
+        )}
+
+        {vendorReport && (
+          <div ref={vendorPrintRef} style={{ marginTop: 20 }}>
+            <div style={{ textAlign: "center", marginBottom: 14 }}>
+              <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 19, fontWeight: 700, color: "#1B2A4A" }}>
+                Rapport vendeurs — {periodLabelFR(vendorPeriodType, vendorReport.range, vendorMonth)}
+              </div>
+            </div>
+
+            {vendorReport.rows.length === 0 ? (
+              <EmptyState text="Aucun vendeur pour le moment." />
+            ) : (
+              <>
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+                  {vendorReport.plusRentable && (
+                    <div style={{ flex: "1 1 260px", padding: 16, borderRadius: 12, background: "#F3F9F4", border: "1px solid #CFE9D4" }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "#3F8361", letterSpacing: 0.4 }}>🏆 VENDEUR LE PLUS RENTABLE</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: "#1B2A4A", marginTop: 4 }}>{vendorReport.plusRentable.nom}</div>
+                      <div style={{ fontSize: 13, color: "#5B6472", marginTop: 2 }}>
+                        {fmtMoney(vendorReport.plusRentable.ca)} · {vendorReport.plusRentable.vendu} vendu(s) sur {vendorReport.plusRentable.joursActifs} jour(s)
+                      </div>
+                      <div style={{ marginTop: 6 }}>
+                        <EvolutionBadge evolution={vendorReport.rows.find((r) => r.vendorId === vendorReport.plusRentable.vendorId)?.evolution} />
+                        <span style={{ fontSize: 11.5, color: "#8A93A3", marginLeft: 6 }}>vs période précédente</span>
+                      </div>
+                    </div>
+                  )}
+                  {vendorReport.moinsRentable && (
+                    <div style={{ flex: "1 1 260px", padding: 16, borderRadius: 12, background: "#FBF3F2", border: "1px solid #F0D3CF" }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "#C1554A", letterSpacing: 0.4 }}>⚠️ VENDEUR LE MOINS RENTABLE</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: "#1B2A4A", marginTop: 4 }}>{vendorReport.moinsRentable.nom}</div>
+                      <div style={{ fontSize: 13, color: "#5B6472", marginTop: 2 }}>
+                        {fmtMoney(vendorReport.moinsRentable.ca)} · {vendorReport.moinsRentable.vendu} vendu(s) sur {vendorReport.moinsRentable.joursActifs} jour(s)
+                      </div>
+                      <div style={{ marginTop: 6 }}>
+                        <EvolutionBadge evolution={vendorReport.rows.find((r) => r.vendorId === vendorReport.moinsRentable.vendorId)?.evolution} />
+                        <span style={{ fontSize: 11.5, color: "#8A93A3", marginLeft: 6 }}>vs période précédente</span>
+                      </div>
+                      {vendorReport.streakMoinsRentable >= 2 && (
+                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #F0D3CF", fontSize: 12.5, color: "#C1554A", fontWeight: 600 }}>
+                          🔁 Moins rentable depuis {vendorReport.streakMoinsRentable} périodes consécutives — une discussion avec lui pourrait aider à comprendre pourquoi.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <Table
+                  headers={["Vendeur", "Chiffre d'affaires", "Évolution", "Vendu", "Espèces", "Mobile", "Jours actifs", "CA / jour actif", "Fiabilité caisse", "Régularité", "Produit fétiche"]}
+                  rows={vendorReport.rows.map((r) => [
+                    r.nom, fmtMoney(r.ca), <EvolutionBadge key="ev" evolution={r.evolution} />, r.vendu, fmtMoney(r.especes), fmtMoney(r.mobile), r.joursActifs,
+                    r.joursActifs > 0 ? fmtMoney(r.caParJour) : "—",
+                    <FiabiliteCell key="fia" r={r} />,
+                    regulariteLabel(r.regulariteCV),
+                    r.produitFetiche ? `${r.produitFetiche.nom} (${r.produitFetiche.vendu})` : "—",
+                  ])}
+                />
+              </>
+            )}
           </div>
         )}
       </Card>
