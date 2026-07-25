@@ -3748,13 +3748,36 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
         {day.lines.length === 0 ? (
           <EmptyState text="Aucune distribution enregistrée aujourd'hui." />
         ) : (
-          <Table
-            headers={["Vendeur", "Produit", "Qté remise", "Statut"]}
-            rows={day.lines.map((l) => [
-              l.vendorNom, l.productNom, l.quantiteRemise,
-              <Badge key="b" ok={l.quantiteRestante !== null} okText="Retour fait" warnText="En cours" />,
-            ])}
-          />
+          (() => {
+            // Regroupe les lignes par vendeur + produit : plusieurs remises
+            // successives au même vendeur pour le même produit dans la
+            // journée (ex. un retour entre-temps, puis une nouvelle remise)
+            // n'affichent qu'une seule ligne, avec la quantité cumulée.
+            const groups = [];
+            const index = new Map();
+            day.lines.forEach((l) => {
+              const key = `${l.vendorId}::${l.productId}`;
+              if (!index.has(key)) {
+                index.set(key, groups.length);
+                groups.push({
+                  vendorNom: l.vendorNom, productNom: l.productNom,
+                  quantiteRemise: 0, toutRetourne: true,
+                });
+              }
+              const g = groups[index.get(key)];
+              g.quantiteRemise += l.quantiteRemise;
+              if (l.quantiteRestante === null) g.toutRetourne = false;
+            });
+            return (
+              <Table
+                headers={["Vendeur", "Produit", "Qté remise", "Statut"]}
+                rows={groups.map((g, i) => [
+                  g.vendorNom, g.productNom, g.quantiteRemise,
+                  <Badge key="b" ok={g.toutRetourne} okText="Retour fait" warnText="En cours" />,
+                ])}
+              />
+            );
+          })()
         )}
       </Card>
     </div>
