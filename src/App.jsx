@@ -118,6 +118,14 @@ function getCurrentYearRange(iso) {
   return [`${iso.slice(0, 4)}-01-01`, iso];
 }
 
+function getCurrentQuarterRange(iso) {
+  const d = new Date(iso + "T00:00:00");
+  const y = d.getFullYear();
+  const qStartMonth = Math.floor(d.getMonth() / 3) * 3; // 0, 3, 6, 9
+  const first = new Date(y, qStartMonth, 1);
+  return [isoFromDate(first), iso];
+}
+
 function inRange(dateIso, range) {
   return dateIso >= range[0] && dateIso <= range[1];
 }
@@ -4257,60 +4265,123 @@ function monthLabelFR(monthValue) {
   return `${months[m - 1]} ${y}`;
 }
 
+// Sélecteur à 4 options (Semaine / Mois / Trimestre / Année), utilisé par
+// les deux cartes de l'onglet Rapports.
+function PeriodSelector({ value, onChange }) {
+  const options = [
+    { key: "semaine", label: "Semaine" },
+    { key: "mois", label: "Mois" },
+    { key: "trimestre", label: "Trimestre" },
+    { key: "annee", label: "Année" },
+  ];
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {options.map((o) => (
+        <button
+          key={o.key}
+          onClick={() => onChange(o.key)}
+          style={{
+            padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer",
+            border: value === o.key ? "2px solid #D9A441" : "1px solid #D8DCE3",
+            background: value === o.key ? "#FFF8EC" : "#fff", color: "#1B2A4A",
+          }}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Calcule la plage de dates correspondant au type de période choisi.
+// "mois" reste piloté par un sélecteur AAAA-MM (pour choisir n'importe quel
+// mois) ; les trois autres se basent toujours sur la période en cours.
+function rangeForPeriod(type, today, monthValue) {
+  if (type === "semaine") return getCurrentWeekRange(today);
+  if (type === "mois") return monthRangeFromInput(monthValue);
+  if (type === "trimestre") return getCurrentQuarterRange(today);
+  return getCurrentYearRange(today);
+}
+
+function periodLabelFR(type, range, monthValue) {
+  if (type === "mois") return monthLabelFR(monthValue);
+  if (type === "semaine") return `Semaine du ${formatDateFR(range[0])} au ${formatDateFR(range[1])}`;
+  if (type === "trimestre") {
+    const trimestre = Math.floor((parseInt(range[0].slice(5, 7), 10) - 1) / 3) + 1;
+    return `${trimestre}ᵉ trimestre ${range[0].slice(0, 4)}`;
+  }
+  return `Année ${range[0].slice(0, 4)}`;
+}
+
 function Rapports({ vendors, products, daysList, today }) {
+  const [periodType, setPeriodType] = useState("mois");
   const [month, setMonth] = useState(today.slice(0, 7));
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState(null);
+  const [reportError, setReportError] = useState("");
 
+  const [produitPeriodType, setProduitPeriodType] = useState("mois");
+  const [produitMonth, setProduitMonth] = useState(today.slice(0, 7));
   const [produitLoading, setProduitLoading] = useState(false);
   const [produitReport, setProduitReport] = useState(null);
+  const [produitError, setProduitError] = useState("");
 
-  // Rapport détaillé par produit — semaine / mois / année en cours, calculé
-  // en une seule fois à partir des jours réellement enregistrés sur l'année.
+  // Rapport détaillé par produit — sur la période choisie (semaine / mois /
+  // trimestre / année).
   const genererRapportProduits = async () => {
     setProduitLoading(true);
-    const weekRange = getCurrentWeekRange(today);
-    const monthRange = getCurrentMonthRange(today);
-    const yearRange = getCurrentYearRange(today);
-    const dates = daysList.filter((d) => inRange(d, yearRange));
-    const loaded = await store.getDaysInRange(dates);
-    setProduitReport({
-      semaine: aggregateProductReport(loaded, weekRange, products),
-      mois: aggregateProductReport(loaded, monthRange, products),
-      annee: aggregateProductReport(loaded, yearRange, products),
-    });
-    setProduitLoading(false);
+    setProduitError("");
+    try {
+      const range = rangeForPeriod(produitPeriodType, today, produitMonth);
+      const dates = daysList.filter((d) => inRange(d, range));
+      const loaded = await store.getDaysInRange(dates);
+      setProduitReport({ range, ...aggregateProductReport(loaded, range, products) });
+    } catch (err) {
+      console.error("Erreur génération rapport produits :", err);
+      setProduitError(
+        "Impossible de générer le rapport (" + (err?.message || "erreur inconnue") + "). Réessaie, et si ça persiste, réduis la période ou vérifie ta connexion."
+      );
+    } finally {
+      setProduitLoading(false);
+    }
   };
 
   const generer = async () => {
     setLoading(true);
-    const range = monthRangeFromInput(month);
-    const dates = daysList.filter((d) => inRange(d, range));
-    const loaded = await store.getDaysInRange(dates);
-    const productsById = Object.fromEntries(products.map((p) => [p.id, p]));
+    setReportError("");
+    try {
+      const range = rangeForPeriod(periodType, today, month);
+      const dates = daysList.filter((d) => inRange(d, range));
+      const loaded = await store.getDaysInRange(dates);
+      const productsById = Object.fromEntries(products.map((p) => [p.id, p]));
 
-    let totalCa = 0, totalVendu = 0, totalEspeces = 0, totalMobile = 0, totalDepenses = 0;
-    loaded.forEach((day) => {
-      day.lines.forEach((l) => {
-        if (l.quantiteVendue != null) { totalCa += l.montantAttendu || 0; totalVendu += l.quantiteVendue || 0; }
+      let totalCa = 0, totalVendu = 0, totalEspeces = 0, totalMobile = 0, totalDepenses = 0;
+      loaded.forEach((day) => {
+        day.lines.forEach((l) => {
+          if (l.quantiteVendue != null) { totalCa += l.montantAttendu || 0; totalVendu += l.quantiteVendue || 0; }
+        });
+        totalDepenses += (day.expenses || []).reduce((s, e) => s + (Number(e.montant) || 0), 0);
+        vendors.forEach((v) => {
+          const summary = computeVersementSummary(day, v.id);
+          totalMobile += summary.totalMobile;
+          if (summary.finalise) totalEspeces += summary.montantVerseEspeces;
+        });
       });
-      totalDepenses += (day.expenses || []).reduce((s, e) => s + (Number(e.montant) || 0), 0);
-      vendors.forEach((v) => {
-        const summary = computeVersementSummary(day, v.id);
-        totalMobile += summary.totalMobile;
-        if (summary.finalise) totalEspeces += summary.montantVerseEspeces;
-      });
-    });
 
-    setReport({
-      range,
-      totalCa, totalVendu, totalEspeces, totalMobile, totalDepenses,
-      ranking: aggregateVendorRanking(loaded, range, vendors),
-      byCategory: aggregateRangeByCategory(loaded, range, productsById),
-      dailySeries: buildDailyTotalSeries(loaded, range),
-      joursActifs: loaded.filter((d) => d.lines.length > 0).length,
-    });
-    setLoading(false);
+      setReport({
+        range,
+        totalCa, totalVendu, totalEspeces, totalMobile, totalDepenses,
+        ranking: aggregateVendorRanking(loaded, range, vendors),
+        byCategory: aggregateRangeByCategory(loaded, range, productsById),
+        dailySeries: buildDailyTotalSeries(loaded, range),
+        joursActifs: loaded.filter((d) => d.lines.length > 0).length,
+      });
+    } catch (err) {
+      console.error("Erreur génération rapport mensuel :", err);
+      setReportError("Impossible de générer le rapport (" + (err?.message || "erreur inconnue") + "). Réessaie.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -4324,21 +4395,32 @@ function Rapports({ vendors, products, daysList, today }) {
         }
       `}</style>
 
-      <Card title="Générer un rapport mensuel">
-        <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
-          <div style={{ flex: "1 1 180px" }}>
-            <Label>Mois</Label>
-            <TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+      <Card title="Générer un rapport">
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div>
+            <Label>Période</Label>
+            <PeriodSelector value={periodType} onChange={setPeriodType} />
           </div>
-          <Button variant="primary" onClick={generer} disabled={loading}>
-            {loading ? "Génération…" : "Générer"}
-          </Button>
-          {report && (
-            <Button variant="gold" onClick={() => window.print()}>
-              <Printer size={15} /> Imprimer / Enregistrer en PDF
+          <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+            {periodType === "mois" && (
+              <div style={{ flex: "1 1 180px" }}>
+                <Label>Mois</Label>
+                <TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+              </div>
+            )}
+            <Button variant="primary" onClick={generer} disabled={loading}>
+              {loading ? "Génération…" : "Générer"}
             </Button>
-          )}
+            {report && (
+              <Button variant="gold" onClick={() => window.print()}>
+                <Printer size={15} /> Imprimer / Enregistrer en PDF
+              </Button>
+            )}
+          </div>
         </div>
+        {reportError && (
+          <div style={{ marginTop: 10, fontSize: 12.5, color: "#C1554A" }}>{reportError}</div>
+        )}
       </Card>
 
       {report && (
@@ -4346,7 +4428,7 @@ function Rapports({ vendors, products, daysList, today }) {
           <Card>
             <div style={{ textAlign: "center", marginBottom: 6 }}>
               <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 21, fontWeight: 700, color: "#1B2A4A", textTransform: "capitalize" }}>
-                Rapport mensuel — {monthLabelFR(month)}
+                Rapport — {periodLabelFR(periodType, report.range, month)}
               </div>
               <div style={{ fontSize: 12, color: "#8A93A3" }}>{report.joursActifs} jour(s) d'activité sur la période</div>
             </div>
@@ -4415,24 +4497,38 @@ function Rapports({ vendors, products, daysList, today }) {
         </div>
       )}
 
-      <Card
-        title="Rapport détaillé par produit"
-        right={
-          <Button variant="primary" onClick={genererRapportProduits} disabled={produitLoading}>
-            {produitLoading ? "Génération…" : "Générer"}
-          </Button>
-        }
-      >
-        <div style={{ fontSize: 12.5, color: "#8A93A3", marginBottom: produitReport ? 16 : 0 }}>
+      <Card title="Rapport détaillé par produit">
+        <div style={{ fontSize: 12.5, color: "#8A93A3", marginBottom: 12 }}>
           Stock, quantité remise (sortie), quantité invendue retournée (entrée), quantité vendue et
-          chiffre d'affaires pour chaque produit — sur la semaine, le mois et l'année en cours.
+          chiffre d'affaires pour chaque produit, sur la période choisie.
         </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div>
+            <Label>Période</Label>
+            <PeriodSelector value={produitPeriodType} onChange={setProduitPeriodType} />
+          </div>
+          <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+            {produitPeriodType === "mois" && (
+              <div style={{ flex: "1 1 180px" }}>
+                <Label>Mois</Label>
+                <TextInput type="month" value={produitMonth} onChange={(e) => setProduitMonth(e.target.value)} />
+              </div>
+            )}
+            <Button variant="primary" onClick={genererRapportProduits} disabled={produitLoading}>
+              {produitLoading ? "Génération…" : "Générer"}
+            </Button>
+          </div>
+        </div>
+        {produitError && (
+          <div style={{ marginTop: 10, fontSize: 12.5, color: "#C1554A" }}>{produitError}</div>
+        )}
 
         {produitReport && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 20, marginTop: 4 }}>
-            <ProductReportPeriod titre="Cette semaine" data={produitReport.semaine} />
-            <ProductReportPeriod titre="Ce mois-ci" data={produitReport.mois} />
-            <ProductReportPeriod titre="Cette année" data={produitReport.annee} />
+          <div style={{ marginTop: 20 }}>
+            <ProductReportPeriod
+              titre={periodLabelFR(produitPeriodType, produitReport.range, produitMonth)}
+              data={produitReport}
+            />
           </div>
         )}
       </Card>
