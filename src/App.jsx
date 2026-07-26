@@ -3842,16 +3842,23 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
   const [error, setError] = useState("");
   const [editQty, setEditQty] = useState({}); // lineId -> valeur en cours d'édition
   const [filterStatutJour, setFilterStatutJour] = useState("tous"); // "tous" | "encours" — filtre du tableau "Distributions du jour"
+  const [searchProduct, setSearchProduct] = useState(""); // filtre produit dans le tableau de remise
 
   // Un vendeur au contrat clôturé ne doit plus recevoir de nouvelle
   // distribution, même saisie manuellement par l'administrateur.
   const activeVendors = vendors.filter((v) => v.contractStatut !== "cloture");
   const selectedVendor = activeVendors.find((v) => v.id === vendorId);
 
-  // Produits déjà en main du vendeur sélectionné, pas encore retournés.
+  // Produits déjà en main du vendeur sélectionné, pas encore retournés —
+  // indexé par produit pour fusionner facilement avec le tableau de remise.
   const pendingForSelectedVendor = vendorId
     ? day.lines.filter((l) => l.vendorId === vendorId && l.quantiteRestante === null)
     : [];
+  const pendingByProduct = Object.fromEntries(pendingForSelectedVendor.map((l) => [l.productId, l]));
+
+  const produitsAffiches = searchProduct.trim()
+    ? products.filter((p) => p.nom.toLowerCase().includes(searchProduct.trim().toLowerCase()))
+    : products;
 
   // Change de vendeur : on repart d'une liste de quantités vierge, pour
   // éviter de mélanger la saisie de deux vendeurs différents.
@@ -3862,6 +3869,12 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
   };
 
   const setQtyFor = (productId, value) => setQtyByProduct((s) => ({ ...s, [productId]: value }));
+
+  // Boutons de quantités rapides : ajoutent à ce qui est déjà saisi plutôt
+  // que de l'écraser, pour pouvoir cumuler (ex. +10 puis +5 = 15).
+  const bumpQty = (productId, amount) => {
+    setQtyByProduct((s) => ({ ...s, [productId]: String((Number(s[productId]) || 0) + amount) }));
+  };
 
   // Valide en une seule fois toutes les quantités saisies dans la liste :
   // une seule mise à jour de `day` et de `products` pour toute la remise.
@@ -3943,38 +3956,78 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
   };
 
   const nbSaisis = Object.values(qtyByProduct).filter((v) => Number(v) > 0).length;
+  const QUICK_QTYS = [5, 10, 20];
 
   return (
     <div>
-      <Card title="Vendeurs actifs">
-        <VendorPicker vendors={activeVendors} selectedId={vendorId} onSelect={selectVendor} />
-        {activeVendors.length === 0 && (
-          <div style={{ fontSize: 12.5, color: "#C1554A" }}>
-            {vendors.length === 0
-              ? "Ajoute d'abord un vendeur dans l'onglet Vendeurs & comptes."
-              : "Tous les vendeurs sont au contrat clôturé — aucune distribution n'est possible."}
-          </div>
-        )}
-      </Card>
+      <div style={{ position: "sticky", top: 78, zIndex: 15, background: "#F7F8FA", paddingBottom: 2 }}>
+        <Card title="Vendeurs actifs">
+          <VendorPicker vendors={activeVendors} selectedId={vendorId} onSelect={selectVendor} />
+          {activeVendors.length === 0 && (
+            <div style={{ fontSize: 12.5, color: "#C1554A" }}>
+              {vendors.length === 0
+                ? "Ajoute d'abord un vendeur dans l'onglet Vendeurs & comptes."
+                : "Tous les vendeurs sont au contrat clôturé — aucune distribution n'est possible."}
+            </div>
+          )}
+        </Card>
+      </div>
 
       {selectedVendor && (
-        <Card title={`Remettre des produits à ${selectedVendor.nom}`}>
+        <Card title={`${selectedVendor.nom} — remise et suivi des produits`}>
           {products.length === 0 ? (
             <EmptyState text="Aucun produit enregistré — ajoute d'abord des produits dans l'onglet Produits." />
           ) : (
             <>
+              {products.length > 6 && (
+                <div style={{ marginBottom: 12, maxWidth: 260 }}>
+                  <TextInput placeholder="Rechercher un produit…" value={searchProduct} onChange={(e) => setSearchProduct(e.target.value)} />
+                </div>
+              )}
               <Table
-                headers={["Produit", "Stock disponible", "Quantité à remettre"]}
-                rows={products.map((p) => [
-                  p.nom,
-                  p.stock,
-                  <TextInput
-                    key="q" type="number" style={{ width: 100 }} placeholder="0"
-                    value={qtyByProduct[p.id] ?? ""}
-                    onChange={(e) => setQtyFor(p.id, e.target.value)}
-                  />,
-                ])}
+                headers={["Produit", "Stock système", "Déjà remis aujourd'hui", "Ajouter"]}
+                rows={produitsAffiches.map((p) => {
+                  const pending = pendingByProduct[p.id];
+                  return [
+                    p.nom,
+                    p.stock,
+                    pending ? (
+                      <div key="dr" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <TextInput
+                          type="number" style={{ width: 80 }}
+                          value={editQty[pending.id] ?? pending.quantiteRemise}
+                          onChange={(e) => setEditQty((s) => ({ ...s, [pending.id]: e.target.value }))}
+                        />
+                        <Button variant="ghost" onClick={() => saveEditedQty(pending)}>OK</Button>
+                        <button onClick={() => cancelDistribution(pending)} title="Annuler cette distribution" style={iconBtnStyle}><Trash2 size={15} /></button>
+                      </div>
+                    ) : (
+                      <span key="dr" style={{ color: "#B7BECB" }}>—</span>
+                    ),
+                    <div key="add" style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <TextInput
+                        type="number" style={{ width: 80 }} placeholder="0"
+                        value={qtyByProduct[p.id] ?? ""}
+                        onChange={(e) => setQtyFor(p.id, e.target.value)}
+                      />
+                      {QUICK_QTYS.map((q) => (
+                        <button
+                          key={q} onClick={() => bumpQty(p.id, q)}
+                          style={{
+                            padding: "4px 8px", borderRadius: 6, fontSize: 11.5, fontWeight: 700, cursor: "pointer",
+                            border: "1px solid #D8DCE3", background: "#fff", color: "#5B6472",
+                          }}
+                        >
+                          +{q}
+                        </button>
+                      ))}
+                    </div>,
+                  ];
+                })}
               />
+              {produitsAffiches.length === 0 && (
+                <EmptyState text="Aucun produit ne correspond à cette recherche." />
+              )}
               {error && (
                 <div style={{ marginTop: 10, fontSize: 12.5, color: "#C1554A" }}>{error}</div>
               )}
@@ -3985,24 +4038,6 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
               </div>
             </>
           )}
-        </Card>
-      )}
-
-      {selectedVendor && pendingForSelectedVendor.length > 0 && (
-        <Card title={`Produits déjà remis à ${selectedVendor.nom} (en attente de retour)`}>
-          <Table
-            headers={["Produit", "Quantité remise", "", ""]}
-            rows={pendingForSelectedVendor.map((l) => [
-              l.productNom,
-              <TextInput
-                key="q" type="number" style={{ width: 90 }}
-                value={editQty[l.id] ?? l.quantiteRemise}
-                onChange={(e) => setEditQty((s) => ({ ...s, [l.id]: e.target.value }))}
-              />,
-              <Button key="save" variant="ghost" onClick={() => saveEditedQty(l)}>Enregistrer</Button>,
-              <button key="del" onClick={() => cancelDistribution(l)} title="Annuler cette distribution" style={iconBtnStyle}><Trash2 size={15} /></button>,
-            ])}
-          />
         </Card>
       )}
 
