@@ -334,6 +334,15 @@ function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
 
+// Règle commune de robustesse des mots de passe pour tous les comptes
+// (admin, gestionnaire, vendeur, messagerie) — l'application manipule de
+// l'argent (retraits, versements), un simple minimum de 6 caractères sans
+// autre contrainte est insuffisant.
+const PASSWORD_HELP_TEXT = "Le mot de passe doit contenir au moins 8 caractères, dont au moins une lettre et un chiffre.";
+function isStrongPassword(pw) {
+  return typeof pw === "string" && pw.length >= 8 && /[A-Za-z]/.test(pw) && /[0-9]/.test(pw);
+}
+
 function emptyDay(date) {
   return { date, lines: [], versements: {}, expenses: [] };
 }
@@ -637,8 +646,8 @@ function SetupScreen({ onCreated }) {
       setError("Les deux mots de passe ne correspondent pas.");
       return;
     }
-    if (pass1.length < 6) {
-      setError("Le mot de passe doit contenir au moins 6 caractères.");
+    if (!isStrongPassword(pass1)) {
+      setError(PASSWORD_HELP_TEXT);
       return;
     }
     setBusy(true);
@@ -732,7 +741,7 @@ function ClaimInviteScreen({ token, onClaimed }) {
 
   const submit = async () => {
     if (!username.trim() || !password) { setError("Choisis un nom d'utilisateur et un mot de passe."); return; }
-    if (password.length < 6) { setError("Le mot de passe doit contenir au moins 6 caractères."); return; }
+    if (!isStrongPassword(password)) { setError(PASSWORD_HELP_TEXT); return; }
     setBusy(true);
     setError("");
     try {
@@ -772,7 +781,7 @@ function ClaimInviteScreen({ token, onClaimed }) {
         <TextInput value={username} onChange={(e) => setUsername(e.target.value)} onKeyDown={onKeyDown} />
       </div>
       <div style={{ marginBottom: 10 }}>
-        <Label>Mot de passe (6 caractères minimum)</Label>
+        <Label>Mot de passe (8 caractères minimum, avec lettres et chiffres)</Label>
         <TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={onKeyDown} />
       </div>
       {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
@@ -1158,6 +1167,7 @@ export default function App() {
 }
 
 function AppRoot() {
+  const { showToast } = useToast();
   const [loading, setLoading] = useState(true);
   const [hasAccount, setHasAccount] = useState(null); // null = pas encore vérifié
   const [currentUser, setCurrentUser] = useState(null);
@@ -1177,6 +1187,7 @@ function AppRoot() {
   const [objectives, setObjectives] = useState({ minimal: 0, maximal: 0, extraordinaire: 0 });
   const [unseenAchievements, setUnseenAchievements] = useState([]);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const syncFailCounts = useRef({});
 
   // Force un nouveau rendu toutes les minutes pour détecter le changement de jour à 00h
   useEffect(() => {
@@ -1212,8 +1223,21 @@ function AppRoot() {
         else if (action.type === "createNotification") await store.createNotification(action.payload);
         else if (action.type === "markNotificationRead") await store.markNotificationRead(action.payload.id);
         offline.dequeue(action.id);
+        delete syncFailCounts.current[action.id];
       } catch (e) {
         console.error("Échec de synchronisation, nouvelle tentative plus tard", action, e);
+        const count = (syncFailCounts.current[action.id] || 0) + 1;
+        syncFailCounts.current[action.id] = count;
+        // Après plusieurs échecs consécutifs de la même action, on ne se
+        // contente plus d'un console.error invisible : on prévient
+        // explicitement l'utilisateur que la synchro reste bloquée.
+        if (count === 3) {
+          showToast(
+            `Une action en attente (${action.description || action.type}) n'arrive pas à se synchroniser. Vérifie ta connexion ; si le problème persiste, contacte le support.`,
+            "warning",
+            10000
+          );
+        }
         break; // on garde l'ordre : on retentera celle-ci (et les suivantes) au prochain passage
       }
     }
@@ -2700,6 +2724,7 @@ function Inventaire({ products, currentUser }) {
 // ---------------------------------------------------------------------------
 
 function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
+  const { showToast } = useToast();
   const [nom, setNom] = useState("");
   const [prenom, setPrenom] = useState("");
   const [numeroCni, setNumeroCni] = useState("");
@@ -2737,18 +2762,43 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
   const generateInvite = async (vendorId) => {
     setInviteBusy(vendorId);
     try {
-      const { url } = await store.createInviteLink({ vendorId, role: "vendor", createdBy: currentUser?.username });
-      setInviteUrls((m) => ({ ...m, [vendorId]: url }));
-      const v = vendors.find((vv) => vv.id === vendorId);
-      store.logActivity(currentUser, "create_invite_link", `Lien d'invitation généré${v ? ` pour ${v.nom}` : ""}.`);
+      // On réutilise un lien déjà actif s'il en existe un, plutôt que d'en
+      // créer un nouveau à chaque clic — sinon plusieurs liens valides
+      // s'accumulent pour le même vendeur, tous utilisables en parallèle.
+      const existing = await store.getInviteLinkForVendor(vendorId);
+      if (existing) {
+        setInviteUrls((m) => ({ ...m, [vendorId]: existing }));
+        showToast("Un lien d'invitation est déjà actif pour ce vendeur — il a été réutilisé plutôt que d'en créer un nouveau.", "info");
+      } else {
+        const created = await store.createInviteLink({ vendorId, role: "vendor", createdBy: currentUser?.username });
+        setInviteUrls((m) => ({ ...m, [vendorId]: created }));
+        const v = vendors.find((vv) => vv.id === vendorId);
+        store.logActivity(currentUser, "create_invite_link", `Lien d'invitation généré${v ? ` pour ${v.nom}` : ""}.`);
+      }
     } catch (e) {
       setError(e.message || "Erreur lors de la création du lien.");
     }
     setInviteBusy(null);
   };
 
+  const revokeInvite = async (vendorId) => {
+    const invite = inviteUrls[vendorId];
+    if (!invite) return;
+    const v = vendors.find((vv) => vv.id === vendorId);
+    const ok = window.confirm(`Révoquer ce lien d'invitation${v ? ` pour ${v.nom}` : ""} ?\n\nIl ne pourra plus être utilisé pour créer un compte.`);
+    if (!ok) return;
+    try {
+      await store.revokeInviteLink(invite.id);
+      setInviteUrls((m) => { const n = { ...m }; delete n[vendorId]; return n; });
+      store.logActivity(currentUser, "revoke_invite_link", `Lien d'invitation révoqué${v ? ` pour ${v.nom}` : ""}.`);
+    } catch (e) {
+      setError(e.message || "Erreur lors de la révocation du lien.");
+    }
+  };
+
   const copyInvite = (url) => {
     navigator.clipboard?.writeText(url);
+    showToast("Lien d'invitation copié.", "success", 2500);
   };
 
   const reloadAccounts = async () => {
@@ -2767,7 +2817,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
 
   const addMessenger = async () => {
     if (!msgUsername.trim() || !msgPassword) { setMsgError("Indique un nom d'utilisateur et un mot de passe."); return; }
-    if (msgPassword.length < 6) { setMsgError("Le mot de passe doit contenir au moins 6 caractères."); return; }
+    if (!isStrongPassword(msgPassword)) { setMsgError(PASSWORD_HELP_TEXT); return; }
     setMsgError("");
     setMsgBusy(true);
     try {
@@ -2796,7 +2846,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
   const add = async () => {
     if (!nom.trim()) { setError("Indique un nom de vendeur."); return; }
     if (username.trim() && !password) { setError("Indique un mot de passe pour ce compte."); return; }
-    if (password && password.length < 6) { setError("Le mot de passe doit contenir au moins 6 caractères."); return; }
+    if (password && !isStrongPassword(password)) { setError(PASSWORD_HELP_TEXT); return; }
     setError("");
     setBusy(true);
     try {
@@ -2880,7 +2930,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
 
   const addAdmin = async () => {
     if (!adminName.trim() || !adminPassword) { setAdminError("Remplis tous les champs."); return; }
-    if (adminPassword.length < 6) { setAdminError("Le mot de passe doit contenir au moins 6 caractères."); return; }
+    if (!isStrongPassword(adminPassword)) { setAdminError(PASSWORD_HELP_TEXT); return; }
     setAdminError("");
     setAdminBusy(true);
     try {
@@ -3024,9 +3074,14 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
                     <MessageSquare size={15} />
                   </button>
                 ) : invite ? (
-                  <button key="copy" onClick={() => copyInvite(invite)} title="Copier le lien d'invitation" style={{ ...iconBtnStyle, color: "#3F9C6D" }}>
-                    <Link2 size={15} />
-                  </button>
+                  <div key="invite-actions" style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    <button onClick={() => copyInvite(invite.url)} title={`Copier le lien d'invitation (valide jusqu'au ${invite.expiresAt ? formatDateFR(isoFromDate(new Date(invite.expiresAt))) : "—"})`} style={{ ...iconBtnStyle, color: "#3F9C6D" }}>
+                      <Link2 size={15} />
+                    </button>
+                    <button onClick={() => revokeInvite(v.id)} title="Révoquer ce lien d'invitation" style={{ ...iconBtnStyle, color: "#C1554A" }}>
+                      <X size={15} />
+                    </button>
+                  </div>
                 ) : (
                   <button key="invite" onClick={() => generateInvite(v.id)} disabled={inviteBusy === v.id} title="Générer un lien d'invitation pour ce vendeur" style={{ ...iconBtnStyle, color: "#C79A3A" }}>
                     <Send size={15} />
@@ -3040,6 +3095,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
         {Object.keys(inviteUrls).length > 0 && (
           <div style={{ marginTop: 14, fontSize: 12, color: "#8A93A3" }}>
             Clique l'icône <Link2 size={11} style={{ verticalAlign: "middle" }} /> pour copier le lien d'un vendeur et le lui envoyer (WhatsApp, SMS…) : il choisira lui-même son nom d'utilisateur et son mot de passe.
+            Le lien expire 7 jours après sa création — l'icône <X size={11} style={{ verticalAlign: "middle" }} /> permet de le révoquer avant terme si besoin.
           </div>
         )}
       </Card>
@@ -4592,10 +4648,22 @@ function Messagerie({ currentUser, vendors = [] }) {
 
   const pickFile = () => fileInputRef.current?.click();
 
+  const MAX_ATTACHMENT_SIZE = 15 * 1024 * 1024; // 15 Mo
+  const BLOCKED_ATTACHMENT_EXTENSIONS = [".exe", ".bat", ".cmd", ".msi", ".sh", ".apk", ".com", ".scr"];
+
   const onFileChosen = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file || !conversationId) return;
+    if (file.size > MAX_ATTACHMENT_SIZE) {
+      showToast(`Ce fichier est trop volumineux (${(file.size / (1024 * 1024)).toFixed(1)} Mo). La taille maximale autorisée est de 15 Mo.`, "error");
+      return;
+    }
+    const lowerName = file.name.toLowerCase();
+    if (BLOCKED_ATTACHMENT_EXTENSIONS.some((ext) => lowerName.endsWith(ext))) {
+      showToast("Ce type de fichier n'est pas autorisé en pièce jointe.", "error");
+      return;
+    }
     setUploading(true);
     try {
       const { url, type } = await store.uploadDMAttachment(conversationId, file);
@@ -5603,6 +5671,7 @@ const EVENT_LABELS = {
   upload_vendor_photo: "Photo vendeur",
   convert_to_messenger: "Converti en messagerie",
   create_invite_link: "Lien d'invitation généré",
+  revoke_invite_link: "Lien d'invitation révoqué",
   add_messenger: "Compte messagerie créé",
   delete_messenger: "Compte messagerie supprimé",
   add_manager: "Gestionnaire ajouté",
@@ -5640,7 +5709,7 @@ const EVENT_LABELS = {
 function eventBadgeColor(eventType) {
   if (eventType === "login") return "#3F8361";
   if (eventType === "logout") return "#8A93A3";
-  if (eventType.startsWith("delete")) return "#C1554A";
+  if (eventType.startsWith("delete") || eventType.startsWith("revoke")) return "#C1554A";
   return "#1B2A4A";
 }
 

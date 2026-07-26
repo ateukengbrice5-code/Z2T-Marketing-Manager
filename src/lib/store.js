@@ -157,10 +157,9 @@ export async function getSecondaryAdmins() {
 // Journal d'activité (comptes administrateurs secondaires uniquement)
 // -----------------------------------------------------------------------------
 
-// N'enregistre rien pour l'admin principal — enregistre en revanche les
-// actions des vendeurs, gestionnaires et admins secondaires. Passe par une
-// fonction Edge pour capturer l'adresse IP et l'appareil côté serveur
-// (impossible depuis le navigateur).
+// N'enregistre rien pour l'admin principal — voir App.jsx, appelé seulement
+// quand currentUser est un admin secondaire. Passe par une fonction Edge pour
+// capturer l'adresse IP et l'appareil côté serveur (impossible depuis le navigateur).
 export async function logActivity(currentUser, eventType, description, metadata) {
   if (!currentUser || currentUser.isPrimary) return;
   try {
@@ -658,12 +657,12 @@ function randomToken() {
 export async function createInviteLink({ vendorId, role = "vendor", createdBy, expiresInDays = 7 }) {
   const token = randomToken();
   const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString();
-  const { error } = await supabase.from("invite_links").insert({
+  const { data, error } = await supabase.from("invite_links").insert({
     token, role, vendor_id: role === "vendor" ? vendorId : null,
     created_by: createdBy || null, expires_at: expiresAt,
-  });
+  }).select("id, expires_at").single();
   if (error) throw error;
-  return { token, url: `${window.location.origin}${window.location.pathname}?invite=${token}` };
+  return { id: data.id, token, expiresAt: data.expires_at, url: `${window.location.origin}${window.location.pathname}?invite=${token}` };
 }
 
 export async function getInviteLinkForVendor(vendorId) {
@@ -673,7 +672,7 @@ export async function getInviteLinkForVendor(vendorId) {
   if (error) throw error;
   if (!data) return null;
   if (data.expires_at && new Date(data.expires_at) < new Date()) return null;
-  return { token: data.token, url: `${window.location.origin}${window.location.pathname}?invite=${data.token}` };
+  return { id: data.id, token: data.token, expiresAt: data.expires_at, url: `${window.location.origin}${window.location.pathname}?invite=${data.token}` };
 }
 
 export async function revokeInviteLink(id) {
