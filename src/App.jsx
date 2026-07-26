@@ -1347,6 +1347,7 @@ function AppRoot() {
   const persistObjectives = async (next) => {
     setObjectives(next);
     await store.setSalesObjectives(next, currentUser?.username);
+    store.logActivity(currentUser, "set_sales_objectives", `Objectifs de vente modifiés : minimal ${next.minimal}, maximal ${next.maximal}, extraordinaire ${next.extraordinaire}.`);
   };
 
   // Ces fonctions gardent la même signature que dans la version précédente
@@ -1370,11 +1371,19 @@ function AppRoot() {
     }
     try {
       for (const p of next) {
-        if (!prevById[p.id]) await store.addProduct({ nom: p.nom, prix: p.prix, stock: p.stock, categorie: p.categorie });
-        else if (prevById[p.id].stock !== p.stock) await store.updateProductStock(p.id, p.stock);
+        if (!prevById[p.id]) {
+          await store.addProduct({ nom: p.nom, prix: p.prix, stock: p.stock, categorie: p.categorie });
+          store.logActivity(currentUser, "add_product", `Produit ajouté : ${p.nom} (stock initial ${p.stock}, prix ${p.prix} FCFA).`);
+        } else if (prevById[p.id].stock !== p.stock) {
+          await store.updateProductStock(p.id, p.stock);
+          store.logActivity(currentUser, "update_product_stock", `Stock de ${p.nom} modifié : ${prevById[p.id].stock} → ${p.stock}.`);
+        }
       }
       for (const p of products) {
-        if (!next.find((x) => x.id === p.id)) await store.deleteProduct(p.id);
+        if (!next.find((x) => x.id === p.id)) {
+          await store.deleteProduct(p.id);
+          store.logActivity(currentUser, "delete_product", `Produit supprimé : ${p.nom}.`);
+        }
       }
       const fresh = await store.getProducts();
       setProducts(fresh);
@@ -1414,10 +1423,12 @@ function AppRoot() {
         const payload = { vendorId: w.vendorId, vendorNom: w.vendorNom, montant: w.montant, methode: w.methode, numeroMobile: w.numeroMobile, date: w.date };
         if (isNewOffline) offline.enqueue({ type: "createWithdrawal", payload });
         else { try { await store.createWithdrawal(payload); } catch { offline.enqueue({ type: "createWithdrawal", payload }); } }
+        store.logActivity(currentUser, "withdrawal_requested", `Demande de retrait de ${w.montant} FCFA (${w.methode}) pour ${w.vendorNom}.`);
       } else if (prevById[w.id].statut !== w.statut) {
         const payload = { id: w.id, statut: w.statut, extra: { approvedBy: w.approvedBy, refusalReason: w.refusalReason } };
         if (isNewOffline) offline.enqueue({ type: "updateWithdrawalStatus", payload });
         else { try { await store.updateWithdrawalStatus(w.id, w.statut, payload.extra); } catch { offline.enqueue({ type: "updateWithdrawalStatus", payload }); } }
+        store.logActivity(currentUser, "withdrawal_status", `Retrait de ${w.montant} FCFA pour ${w.vendorNom} : ${w.statut}${w.refusalReason ? ` (motif : ${w.refusalReason})` : ""}.`);
       }
     }
     setQueueCount(offline.queueLength());
@@ -1687,13 +1698,13 @@ function AppRoot() {
         {tab === "dashboard" && !canManage && (
           <VendorDashboard vendor={activeVendor} daysList={daysList} today={today} day={day} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} objectives={objectives} />
         )}
-        {tab === "produits" && isAdmin && <Produits products={products} setProducts={persistProducts} reloadProducts={reloadProducts} />}
+        {tab === "produits" && isAdmin && <Produits products={products} setProducts={persistProducts} reloadProducts={reloadProducts} currentUser={currentUser} />}
         {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} currentUser={currentUser} />}
         {tab === "vendeurs" && canManage && (
           <Vendeurs vendors={vendors} reloadVendors={reloadVendors} isAdmin={isAdmin} currentUser={currentUser} daysList={daysList} />
         )}
         {tab === "distribution" && isAdmin && (
-          <Distribution products={products} setProducts={persistProducts} vendors={vendors} day={day} setDay={persistDay} ensureTodayInList={ensureTodayInList} daysList={daysList} />
+          <Distribution products={products} setProducts={persistProducts} vendors={vendors} day={day} setDay={persistDay} ensureTodayInList={ensureTodayInList} daysList={daysList} currentUser={currentUser} />
         )}
         {tab === "retour" && (
           <RetourDuSoir
@@ -1704,6 +1715,7 @@ function AppRoot() {
             day={day}
             setDay={persistDay}
             activeVendor={activeVendor}
+            currentUser={currentUser}
           />
         )}
         {tab === "presence" && !canManage && (
@@ -2317,7 +2329,7 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
 // Produits
 // ---------------------------------------------------------------------------
 
-function Produits({ products, setProducts, reloadProducts }) {
+function Produits({ products, setProducts, reloadProducts, currentUser }) {
   const [nom, setNom] = useState("");
   const [prix, setPrix] = useState("");
   const [stock, setStock] = useState("");
@@ -2339,6 +2351,8 @@ function Produits({ products, setProducts, reloadProducts }) {
     const value = catEdits[id];
     if (value === undefined) return;
     await store.updateProductCategorie(id, value);
+    const p = products.find((pp) => pp.id === id);
+    store.logActivity(currentUser, "update_product_category", `Catégorie de ${p ? p.nom : id} changée : ${value}.`);
     setCatEdits((c) => { const n = { ...c }; delete n[id]; return n; });
     if (reloadProducts) await reloadProducts();
   };
@@ -2702,6 +2716,8 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
     try {
       const { url } = await store.createInviteLink({ vendorId, role: "vendor", createdBy: currentUser?.username });
       setInviteUrls((m) => ({ ...m, [vendorId]: url }));
+      const v = vendors.find((vv) => vv.id === vendorId);
+      store.logActivity(currentUser, "create_invite_link", `Lien d'invitation généré${v ? ` pour ${v.nom}` : ""}.`);
     } catch (e) {
       setError(e.message || "Erreur lors de la création du lien.");
     }
@@ -2734,6 +2750,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
     try {
       await store.createAccount({ username: msgUsername.trim(), password: msgPassword, role: "messenger" });
       await reloadAccounts();
+      store.logActivity(currentUser, "add_messenger", `Compte messagerie créé : ${msgUsername.trim()}.`);
       setMsgUsername(""); setMsgPassword("");
     } catch (e) {
       setMsgError(e.message || "Erreur lors de la création.");
@@ -2741,10 +2758,11 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
     setMsgBusy(false);
   };
 
-  const removeMessenger = async (id) => {
+  const removeMessenger = async (id, name) => {
     try {
       await store.deleteAccount(id);
       await reloadAccounts();
+      store.logActivity(currentUser, "delete_messenger", `Compte messagerie supprimé : ${name}.`);
     } catch (e) {
       setMsgError(e.message || "Erreur lors de la suppression.");
     }
@@ -2768,6 +2786,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
       if (photoFile) {
         try {
           await store.uploadVendorPhoto(vendor.id, photoFile);
+          store.logActivity(currentUser, "upload_vendor_photo", `Photo ajoutée pour ${nom.trim()}.`);
         } catch (photoErr) {
           setError(`Vendeur créé, mais la photo n'a pas pu être envoyée : ${photoErr.message || photoErr}`);
         }
@@ -2836,6 +2855,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
     try {
       await store.createAccount({ username: adminName.trim(), password: adminPassword, role: "admin" });
       await reloadAccounts();
+      store.logActivity(currentUser, "add_secondary_admin", `Compte administrateur secondaire créé : ${adminName.trim()}.`);
       setAdminName(""); setAdminPassword("");
     } catch (e) {
       setAdminError(e.message || "Erreur lors de la création.");
@@ -2843,10 +2863,11 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
     setAdminBusy(false);
   };
 
-  const removeAdmin = async (id) => {
+  const removeAdmin = async (id, name) => {
     try {
       await store.deleteAccount(id);
       await reloadAccounts();
+      store.logActivity(currentUser, "delete_secondary_admin", `Compte administrateur secondaire supprimé : ${name}.`);
     } catch (e) {
       setAdminError(e.message || "Erreur lors de la suppression.");
     }
@@ -3041,7 +3062,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
                 headers={["Nom d'utilisateur", ""]}
                 rows={messengers.map((m) => [
                   m.username,
-                  <button key="del" onClick={() => removeMessenger(m.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
+                  <button key="del" onClick={() => removeMessenger(m.id, m.username)} style={iconBtnStyle}><Trash2 size={15} /></button>,
                 ])}
               />
             </div>
@@ -3075,7 +3096,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
                 headers={["Nom d'utilisateur", ""]}
                 rows={secondaryAdmins.map((a) => [
                   a.username,
-                  <button key="del" onClick={() => removeAdmin(a.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
+                  <button key="del" onClick={() => removeAdmin(a.id, a.username)} style={iconBtnStyle}><Trash2 size={15} /></button>,
                 ])}
               />
             </div>
@@ -3316,6 +3337,7 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
     try {
       const url = await store.uploadVendorPhoto(vendor.id, file);
       setPhotoUrl(url);
+      store.logActivity(currentUser, "upload_vendor_photo", `Photo mise à jour pour ${vendor.nom}.`);
     } catch (err) {
       setError(err.message || "Erreur lors de l'envoi de la photo.");
     }
@@ -3377,6 +3399,7 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
     setError("");
     try {
       await store.resolveContestation(id, { adminResponse: resolveMsg, resolvedBy: currentUser?.id });
+      store.logActivity(currentUser, "resolve_contestation", `Contestation de présence de ${vendor.nom} résolue.`);
       setActiveResolveId(null);
       setResolveMsg("");
       await load();
@@ -3649,6 +3672,7 @@ function MaPresence({ vendor, daysList, today, currentUser }) {
     setError("");
     try {
       await store.createAttendanceContestation({ vendorId: vendor.id, date, message: contestMsg.trim() });
+      store.logActivity(currentUser, "create_contestation", `${vendor.nom} a signalé un problème pour le ${fmtDateFr(date)}.`);
       setContestDate(null);
       setContestMsg("");
       await load();
@@ -3836,7 +3860,7 @@ function VendorPicker({ vendors, selectedId, onSelect }) {
   );
 }
 
-function Distribution({ products, setProducts, vendors, day, setDay, ensureTodayInList, daysList }) {
+function Distribution({ products, setProducts, vendors, day, setDay, ensureTodayInList, daysList, currentUser }) {
   const [vendorId, setVendorId] = useState("");
   const [qtyByProduct, setQtyByProduct] = useState({}); // productId -> quantité saisie (texte)
   const [error, setError] = useState("");
@@ -3918,6 +3942,11 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
     await setDay({ ...day, lines: nextLines });
     await setProducts(nextProducts);
     await ensureTodayInList(daysList);
+    store.logActivity(
+      currentUser,
+      "distribute",
+      `Distribution à ${vendor.nom} : ${items.map((it) => `${it.qty} ${it.product.nom}`).join(", ")}.`
+    );
     setQtyByProduct({});
   };
 
@@ -3941,6 +3970,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
     if (product) {
       await setProducts(products.map((p) => (p.id === line.productId ? { ...p, stock: p.stock - diff } : p)));
     }
+    store.logActivity(currentUser, "edit_distribution", `Distribution de ${line.productNom} à ${line.vendorNom} modifiée : ${line.quantiteRemise} → ${newQty}.`);
     setEditQty((s) => { const n = { ...s }; delete n[line.id]; return n; });
   };
 
@@ -3952,6 +3982,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
     if (product) {
       await setProducts(products.map((p) => (p.id === line.productId ? { ...p, stock: p.stock + line.quantiteRemise } : p)));
     }
+    store.logActivity(currentUser, "cancel_distribution", `Distribution annulée : ${line.quantiteRemise} ${line.productNom} repris à ${line.vendorNom}.`);
     setEditQty((s) => { const n = { ...s }; delete n[line.id]; return n; });
   };
 
@@ -4153,7 +4184,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
 // Retour du soir — tous les produits d'un vendeur d'un coup, + versement
 // ---------------------------------------------------------------------------
 
-function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, activeVendor }) {
+function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, activeVendor, currentUser }) {
   // Un vendeur au contrat clôturé ne doit plus pouvoir faire l'objet d'un
   // retour du soir saisi manuellement par l'administrateur (voir Distribution).
   const activeVendors = isAdmin ? vendors.filter((v) => v.contractStatut !== "cloture") : vendors;
@@ -4204,6 +4235,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
     if (!isAdmin) return;
     let changed = false;
     const stockIncrements = {};
+    const details = [];
     const nextLines = day.lines.map((l) => {
       if (l.vendorId !== vendor.id || l.quantiteRestante !== null) return l;
       const val = pendingInputs[l.id];
@@ -4213,6 +4245,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
       changed = true;
       const vendue = Math.max(0, l.quantiteRemise - restante);
       if (restante > 0) stockIncrements[l.productId] = (stockIncrements[l.productId] || 0) + restante;
+      details.push(`${l.productNom} : ${vendue} vendu(s), ${restante} retourné(s)`);
       return { ...l, quantiteRestante: restante, quantiteVendue: vendue, montantAttendu: vendue * l.prix };
     });
     if (!changed) return;
@@ -4221,6 +4254,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
       const nextProducts = products.map((p) => (stockIncrements[p.id] ? { ...p, stock: p.stock + stockIncrements[p.id] } : p));
       await setProducts(nextProducts);
     }
+    store.logActivity(currentUser, "retour_du_soir", `Retour du soir de ${vendor.nom} validé — ${details.join(" ; ")}.`);
     setPendingInputs({});
   };
 
@@ -4232,6 +4266,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
     const current = versements[vendor.id] || { mobilePayments: [], montantVerseEspeces: null };
     versements[vendor.id] = { ...current, mobilePayments: [...(current.mobilePayments || []), { id: uid(), numero: mobileNumero.trim(), montant }] };
     await setDay({ ...day, versements });
+    store.logActivity(currentUser, "add_mobile_payment", `Paiement mobile de ${montant} FCFA (${mobileNumero.trim()}) ajouté pour ${vendor.nom}.`);
     setMobileNumero(""); setMobileMontant("");
   };
 
@@ -4239,8 +4274,10 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
     if (!isAdmin) return;
     const versements = { ...(day.versements || {}) };
     const current = versements[vendor.id] || { mobilePayments: [], montantVerseEspeces: null };
+    const removed = (current.mobilePayments || []).find((m) => m.id === id);
     versements[vendor.id] = { ...current, mobilePayments: (current.mobilePayments || []).filter((m) => m.id !== id) };
     await setDay({ ...day, versements });
+    if (removed) store.logActivity(currentUser, "remove_mobile_payment", `Paiement mobile de ${removed.montant} FCFA (${removed.numero}) supprimé pour ${vendor.nom}.`);
   };
 
   const enregistrerVersement = async () => {
@@ -4251,6 +4288,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
     const current = versements[vendor.id] || { mobilePayments: [], montantVerseEspeces: null };
     versements[vendor.id] = { ...current, montantVerseEspeces: montant };
     await setDay({ ...day, versements });
+    store.logActivity(currentUser, "enregistrer_versement", `Versement en espèces de ${montant} FCFA enregistré pour ${vendor.nom}.`);
   };
 
   return (
@@ -4475,6 +4513,7 @@ function Messagerie({ currentUser, vendors = [] }) {
     if (!content || !conversationId) return;
     setText("");
     await store.sendDMMessage({ conversationId, senderId: currentUser.id, senderUsername: currentUser.username, content });
+    store.logActivity(currentUser, "send_message", `Message envoyé à ${selectedUser?.username || "un utilisateur"}.`);
     await refreshThread();
   };
 
@@ -4495,6 +4534,7 @@ function Messagerie({ currentUser, vendors = [] }) {
         conversationId, senderId: currentUser.id, senderUsername: currentUser.username,
         content: `📎 ${file.name}`, attachmentUrl: url, attachmentType: type,
       });
+      store.logActivity(currentUser, "send_attachment", `Pièce jointe envoyée à ${selectedUser?.username || "un utilisateur"} (${file.name}).`);
       await refreshThread();
     } catch (err) {
       showToast("Erreur lors de l'envoi de la pièce jointe : " + (err.message || err), "error");
@@ -4507,11 +4547,13 @@ function Messagerie({ currentUser, vendors = [] }) {
   const saveEdit = async () => {
     if (!editText.trim()) return;
     await store.editDMMessage(editingId, editText.trim());
+    store.logActivity(currentUser, "edit_message", `Message modifié dans la conversation avec ${selectedUser?.username || "un utilisateur"}.`);
     setEditingId(null); setEditText("");
     await refreshThread();
   };
   const removeMessage = async (id) => {
     await store.deleteDMMessage(id);
+    store.logActivity(currentUser, "delete_message", `Message supprimé dans la conversation avec ${selectedUser?.username || "un utilisateur"}.`);
     await refreshThread();
   };
 
@@ -4687,11 +4729,14 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
     if (!label.trim() || !m) return;
     const next = { ...day, expenses: [...(day.expenses || []), { id: uid(), label: label.trim(), montant: m }] };
     await setDay(next);
+    store.logActivity(currentUser, "add_expense", `Dépense ajoutée : ${label.trim()} (${m} FCFA).`);
     setLabel(""); setMontant("");
   };
 
   const removeExpense = async (id) => {
+    const removed = (day.expenses || []).find((e) => e.id === id);
     await setDay({ ...day, expenses: (day.expenses || []).filter((e) => e.id !== id) });
+    if (removed) store.logActivity(currentUser, "remove_expense", `Dépense supprimée : ${removed.label} (${removed.montant} FCFA).`);
   };
 
   const pendingWithdrawals = (withdrawals || []).filter((w) => w.statut === "en_attente");
