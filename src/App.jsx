@@ -1,13 +1,93 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, useContext } from "react";
 import {
   LayoutDashboard, Package, Boxes, Users, Truck, MoonStar, Wallet, History,
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown,
   Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye,
-  MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, Menu, UserCircle,
+  MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, Menu, UserCircle, ClipboardList,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Cell } from "recharts";
 import * as store from "./lib/store.js";
 import * as offline from "./lib/offline.js";
+
+// ---------------------------------------------------------------------------
+// Notifications (toasts) — remplace les popups natifs alert()/window.alert,
+// qui s'affichent de façon incohérente selon les navigateurs et s'affichent
+// mal (ou pas du tout) dans certains contextes mobile/webview. Ce système
+// affiche une petite bannière en haut de l'écran, avec la même apparence
+// partout (web comme mobile), qui se referme seule après quelques secondes
+// ou d'un clic.
+// ---------------------------------------------------------------------------
+
+const ToastContext = React.createContext(null);
+
+function useToast() {
+  const ctx = useContext(ToastContext);
+  if (!ctx) throw new Error("useToast doit être utilisé à l'intérieur de ToastProvider.");
+  return ctx;
+}
+
+const TOAST_STYLES = {
+  success: { bg: "#F0FAF4", border: "#3F9C6D", color: "#1B2A4A", Icon: CheckCircle2, iconColor: "#3F9C6D" },
+  error: { bg: "#FDF1EF", border: "#C1554A", color: "#1B2A4A", Icon: AlertTriangle, iconColor: "#C1554A" },
+  warning: { bg: "#FFF8EC", border: "#D9A441", color: "#1B2A4A", Icon: AlertTriangle, iconColor: "#C79A3A" },
+  info: { bg: "#EEF1F8", border: "#1B2A4A", color: "#1B2A4A", Icon: Bell, iconColor: "#1B2A4A" },
+};
+
+function ToastProvider({ children }) {
+  const [toasts, setToasts] = useState([]);
+
+  const dismissToast = useCallback((id) => {
+    setToasts((t) => t.filter((x) => x.id !== id));
+  }, []);
+
+  const showToast = useCallback((message, type = "info", durationMs = 5000) => {
+    const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setToasts((t) => [...t, { id, message, type }]);
+    if (durationMs > 0) {
+      setTimeout(() => dismissToast(id), durationMs);
+    }
+  }, [dismissToast]);
+
+  return (
+    <ToastContext.Provider value={{ showToast }}>
+      {children}
+      <div
+        style={{
+          position: "fixed", top: "max(16px, env(safe-area-inset-top))", left: "50%", transform: "translateX(-50%)",
+          zIndex: 400, display: "flex", flexDirection: "column", gap: 8, width: "min(420px, calc(100vw - 24px))",
+          pointerEvents: "none",
+        }}
+      >
+        {toasts.map((t) => {
+          const s = TOAST_STYLES[t.type] || TOAST_STYLES.info;
+          const Icon = s.Icon;
+          return (
+            <div
+              key={t.id}
+              style={{
+                pointerEvents: "auto", display: "flex", alignItems: "flex-start", gap: 10,
+                background: s.bg, border: `1px solid ${s.border}`, borderRadius: 10, padding: "12px 14px",
+                boxShadow: "0 8px 24px rgba(27,42,74,0.16)", animation: "z2t-toast-in 0.2s ease-out",
+              }}
+            >
+              <Icon size={18} style={{ color: s.iconColor, flexShrink: 0, marginTop: 1 }} />
+              <div style={{ flex: 1, fontSize: 13.5, color: s.color, lineHeight: 1.4 }}>{t.message}</div>
+              <button
+                onClick={() => dismissToast(t.id)}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#8A93A3", padding: 2, flexShrink: 0 }}
+              >
+                <X size={15} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <style>{`
+        @keyframes z2t-toast-in { 0% { transform: translateY(-12px); opacity: 0; } 100% { transform: translateY(0); opacity: 1; } }
+      `}</style>
+    </ToastContext.Provider>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -1070,6 +1150,14 @@ function AdminAchievementBell({ achievements, pointageNotifications, onMarkSeen,
 // ---------------------------------------------------------------------------
 
 export default function App() {
+  return (
+    <ToastProvider>
+      <AppRoot />
+    </ToastProvider>
+  );
+}
+
+function AppRoot() {
   const [loading, setLoading] = useState(true);
   const [hasAccount, setHasAccount] = useState(null); // null = pas encore vérifié
   const [currentUser, setCurrentUser] = useState(null);
@@ -1600,7 +1688,7 @@ export default function App() {
           <VendorDashboard vendor={activeVendor} daysList={daysList} today={today} day={day} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} objectives={objectives} />
         )}
         {tab === "produits" && isAdmin && <Produits products={products} setProducts={persistProducts} reloadProducts={reloadProducts} />}
-        {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} />}
+        {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} currentUser={currentUser} />}
         {tab === "vendeurs" && canManage && (
           <Vendeurs vendors={vendors} reloadVendors={reloadVendors} isAdmin={isAdmin} currentUser={currentUser} daysList={daysList} />
         )}
@@ -2313,7 +2401,7 @@ function Produits({ products, setProducts, reloadProducts }) {
 // Stock
 // ---------------------------------------------------------------------------
 
-function Stock({ products, setProducts }) {
+function Stock({ products, setProducts, currentUser }) {
   const [adjust, setAdjust] = useState({});
 
   const reappro = async (id) => {
@@ -2393,7 +2481,180 @@ function Stock({ products, setProducts }) {
           ])}
         />
       </Card>
+
+      <Inventaire products={products} currentUser={currentUser} />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inventaire physique hebdomadaire (recommandé chaque samedi) — compare le
+// stock système à un comptage réel, et n'enregistre que l'écart : on ne
+// touche jamais au stock système ici, l'ajustement reste une action
+// manuelle séparée (via "Réapprovisionner" ci-dessus si besoin).
+// ---------------------------------------------------------------------------
+
+function prochainSamedi(todayIso) {
+  const d = new Date(todayIso + "T00:00:00");
+  const diff = (6 - d.getDay() + 7) % 7; // 0 si aujourd'hui est déjà samedi
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+
+function Inventaire({ products, currentUser }) {
+  const { showToast } = useToast();
+  const today = todayISO();
+  const estSamedi = new Date(today + "T00:00:00").getDay() === 6;
+
+  const [qtyPhysique, setQtyPhysique] = useState({}); // productId -> valeur saisie (texte)
+  const [historique, setHistorique] = useState(null);
+  const [selectedDate, setSelectedDate] = useState(null); // date dépliée dans l'historique
+  const [saving, setSaving] = useState(false);
+
+  const reloadHistorique = async () => setHistorique(await store.getInventaires());
+  useEffect(() => { reloadHistorique(); }, []);
+
+  const physiqueDe = (p) => (qtyPhysique[p.id] !== undefined ? qtyPhysique[p.id] : String(p.stock));
+  const ecartDe = (p) => Number(physiqueDe(p)) - Number(p.stock);
+
+  const nbEcarts = products.filter((p) => ecartDe(p) !== 0).length;
+
+  const enregistrer = async () => {
+    setSaving(true);
+    const lignes = products.map((p) => ({
+      productId: p.id, productNom: p.nom,
+      stockSysteme: Number(p.stock), stockPhysique: Number(physiqueDe(p)), ecart: ecartDe(p),
+    }));
+    try {
+      await store.saveInventaire({ date: today, lignes, createdBy: currentUser?.username });
+      await store.logActivity(currentUser, "inventaire", `Inventaire du ${fmtDateFr(today)} enregistré (${lignes.filter((l) => l.ecart !== 0).length} écart(s)).`);
+      showToast(`Inventaire du ${fmtDateFr(today)} enregistré.`, "success");
+      setQtyPhysique({});
+      await reloadHistorique();
+    } catch (err) {
+      showToast("Erreur lors de l'enregistrement de l'inventaire : " + (err.message || err), "error");
+    }
+    setSaving(false);
+  };
+
+  // Impression / export PDF de l'inventaire du jour, sur le même principe
+  // que les rapports : on marque la zone imprimable juste avant window.print()
+  // pour éviter tout problème de timing avec le rendu React.
+  const printRef = useRef(null);
+  const printInventaire = () => {
+    if (!printRef.current) return;
+    document.body.classList.add("printing-section");
+    printRef.current.setAttribute("data-print-active", "true");
+    window.print();
+    const cleanup = () => {
+      printRef.current?.removeAttribute("data-print-active");
+      document.body.classList.remove("printing-section");
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+  };
+
+  return (
+    <>
+      <style>{`
+        @media print {
+          body.printing-section * { visibility: hidden; }
+          body.printing-section [data-print-active="true"],
+          body.printing-section [data-print-active="true"] * { visibility: visible; }
+          body.printing-section [data-print-active="true"] { position: absolute; top: 0; left: 0; width: 100%; margin: 0; padding: 0; }
+          .no-print { display: none !important; }
+          body.printing-section [data-print-active="true"] .print-value { display: inline !important; }
+        }
+      `}</style>
+
+      <div ref={printRef}>
+        <Card
+          title={`Inventaire physique — ${fmtDateFr(today)}`}
+          right={
+            <span className="no-print" style={{ fontSize: 12.5, color: estSamedi ? "#3F9C6D" : "#8A93A3", fontWeight: estSamedi ? 700 : 400 }}>
+              {estSamedi ? "C'est aujourd'hui le jour de l'inventaire hebdomadaire" : `Prochain inventaire recommandé : ${fmtDateFr(prochainSamedi(today))}`}
+            </span>
+          }
+        >
+          <div className="no-print" style={{ marginBottom: 12, fontSize: 12.5, color: "#8A93A3" }}>
+            Compare le stock système au comptage réel des produits. Le stock système n'est pas modifié — seul l'écart est enregistré, pour vérification.
+          </div>
+          <Table
+            headers={["Produit", "Stock système", "Stock physique compté", "Écart"]}
+            rows={products.map((p) => {
+              const ecart = ecartDe(p);
+              return [
+                p.nom, p.stock,
+                <React.Fragment key="q">
+                  <TextInput
+                    type="number" style={{ width: 90 }} className="no-print"
+                    value={physiqueDe(p)}
+                    onChange={(e) => setQtyPhysique((s) => ({ ...s, [p.id]: e.target.value }))}
+                  />
+                  <span className="print-value" style={{ display: "none" }}>{physiqueDe(p)}</span>
+                </React.Fragment>,
+                <span key="e" style={{ fontWeight: 700, color: ecart === 0 ? "#8A93A3" : ecart > 0 ? "#3F9C6D" : "#C1554A" }}>
+                  {ecart > 0 ? `+${ecart}` : ecart}
+                </span>,
+              ];
+            })}
+          />
+          <div className="no-print" style={{ marginTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+            <div style={{ fontSize: 12.5, color: nbEcarts > 0 ? "#C1554A" : "#8A93A3" }}>
+              {nbEcarts > 0 ? `${nbEcarts} produit${nbEcarts > 1 ? "s" : ""} avec écart` : "Aucun écart pour l'instant"}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Button variant="gold" onClick={printInventaire}>
+                <Printer size={15} /> Imprimer / Enregistrer en PDF
+              </Button>
+              <Button onClick={enregistrer} disabled={saving}>
+                <ClipboardList size={15} /> Enregistrer l'inventaire du {fmtDateFr(today)}
+              </Button>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      <Card title="Historique des inventaires">
+        {historique === null ? (
+          <EmptyState text="Chargement…" />
+        ) : historique.length === 0 ? (
+          <EmptyState text="Aucun inventaire enregistré pour l'instant." />
+        ) : (
+          <Table
+            headers={["Date", "Produits comptés", "Écarts", ""]}
+            rows={historique.flatMap((inv) => {
+              const nbEc = inv.lignes.filter((l) => l.ecart !== 0).length;
+              const rows = [[
+                fmtDateFr(inv.date), inv.lignes.length,
+                <Badge key="b" ok={nbEc === 0} okText="Aucun écart" warnText={`${nbEc} écart(s)`} />,
+                <button
+                  key="t" onClick={() => setSelectedDate(selectedDate === inv.date ? null : inv.date)}
+                  style={{ background: "none", border: "none", color: "#1B2A4A", fontWeight: 700, cursor: "pointer", fontSize: 12.5 }}
+                >
+                  {selectedDate === inv.date ? "Masquer" : "Détail"}
+                </button>,
+              ]];
+              if (selectedDate === inv.date) {
+                rows.push([
+                  <Table
+                    key="detail"
+                    headers={["Produit", "Stock système", "Stock physique", "Écart"]}
+                    rows={inv.lignes.map((l) => [
+                      l.productNom, l.stockSysteme, l.stockPhysique,
+                      <span key="e" style={{ fontWeight: 700, color: l.ecart === 0 ? "#8A93A3" : l.ecart > 0 ? "#3F9C6D" : "#C1554A" }}>
+                        {l.ecart > 0 ? `+${l.ecart}` : l.ecart}
+                      </span>,
+                    ])}
+                  />,
+                ]);
+              }
+              return rows;
+            })}
+          />
+        )}
+      </Card>
+    </>
   );
 }
 
@@ -3580,6 +3841,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
   const [qtyByProduct, setQtyByProduct] = useState({}); // productId -> quantité saisie (texte)
   const [error, setError] = useState("");
   const [editQty, setEditQty] = useState({}); // lineId -> valeur en cours d'édition
+  const [filterStatutJour, setFilterStatutJour] = useState("tous"); // "tous" | "encours" — filtre du tableau "Distributions du jour"
 
   // Un vendeur au contrat clôturé ne doit plus recevoir de nouvelle
   // distribution, même saisie manuellement par l'administrateur.
@@ -3761,21 +4023,89 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
                 index.set(key, groups.length);
                 groups.push({
                   vendorNom: l.vendorNom, productNom: l.productNom,
-                  quantiteRemise: 0, toutRetourne: true,
+                  quantiteRemise: 0, toutRetourne: true, lignes: [],
                 });
               }
               const g = groups[index.get(key)];
               g.quantiteRemise += l.quantiteRemise;
+              g.lignes.push(l);
               if (l.quantiteRestante === null) g.toutRetourne = false;
             });
+
+            // Modifiable uniquement quand il n'existe qu'une seule remise
+            // pour ce couple vendeur/produit aujourd'hui et qu'elle est
+            // encore en cours — sinon (plusieurs remises mélangées à des
+            // retours) l'édition resterait ambiguë, mieux vaut passer par
+            // la sélection du vendeur dans ce cas.
+            groups.forEach((g) => {
+              g.ligneModifiable = g.lignes.length === 1 && g.lignes[0].quantiteRestante === null ? g.lignes[0] : null;
+            });
+
+            const visibleGroups = filterStatutJour === "encours" ? groups.filter((g) => !g.toutRetourne) : groups;
+            const total = visibleGroups.reduce((s, g) => s + g.quantiteRemise, 0);
+            const nbEnCours = groups.filter((g) => !g.toutRetourne).length;
+
             return (
-              <Table
-                headers={["Vendeur", "Produit", "Qté remise", "Statut"]}
-                rows={groups.map((g, i) => [
-                  g.vendorNom, g.productNom, g.quantiteRemise,
-                  <Badge key="b" ok={g.toutRetourne} okText="Retour fait" warnText="En cours" />,
-                ])}
-              />
+              <>
+                <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                  <button
+                    onClick={() => setFilterStatutJour("tous")}
+                    style={{
+                      padding: "6px 12px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+                      border: filterStatutJour === "tous" ? "2px solid #1B2A4A" : "1px solid #D8DCE3",
+                      background: filterStatutJour === "tous" ? "#1B2A4A" : "#fff",
+                      color: filterStatutJour === "tous" ? "#fff" : "#1B2A4A",
+                    }}
+                  >
+                    Tous ({groups.length})
+                  </button>
+                  <button
+                    onClick={() => setFilterStatutJour("encours")}
+                    style={{
+                      padding: "6px 12px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+                      border: filterStatutJour === "encours" ? "2px solid #C1893D" : "1px solid #D8DCE3",
+                      background: filterStatutJour === "encours" ? "#FFF8EC" : "#fff", color: "#C1893D",
+                    }}
+                  >
+                    En cours ({nbEnCours})
+                  </button>
+                </div>
+
+                {visibleGroups.length === 0 ? (
+                  <EmptyState text="Rien à afficher pour ce filtre." />
+                ) : (
+                  <>
+                    <Table
+                      headers={["Vendeur", "Produit", "Qté remise", "Statut", ""]}
+                      rows={visibleGroups.map((g, i) => [
+                        g.vendorNom, g.productNom,
+                        g.ligneModifiable ? (
+                          <TextInput
+                            key="q" type="number" style={{ width: 90 }}
+                            value={editQty[g.ligneModifiable.id] ?? g.quantiteRemise}
+                            onChange={(e) => setEditQty((s) => ({ ...s, [g.ligneModifiable.id]: e.target.value }))}
+                          />
+                        ) : g.quantiteRemise,
+                        <button
+                          key="b" onClick={() => setFilterStatutJour(g.toutRetourne ? "tous" : "encours")}
+                          title="Cliquer pour filtrer sur ce statut" style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}
+                        >
+                          <Badge ok={g.toutRetourne} okText="Retour fait" warnText="En cours" />
+                        </button>,
+                        g.ligneModifiable ? (
+                          <div key="actions" style={{ display: "flex", gap: 6 }}>
+                            <Button variant="ghost" onClick={() => saveEditedQty(g.ligneModifiable)}>Enregistrer</Button>
+                            <button onClick={() => cancelDistribution(g.ligneModifiable)} title="Annuler cette distribution" style={iconBtnStyle}><Trash2 size={15} /></button>
+                          </div>
+                        ) : "—",
+                      ])}
+                    />
+                    <div style={{ marginTop: 10, textAlign: "right", fontSize: 13, fontWeight: 700, color: "#1B2A4A" }}>
+                      Total : {total} produit{total > 1 ? "s" : ""}
+                    </div>
+                  </>
+                )}
+              </>
             );
           })()
         )}
@@ -4050,6 +4380,7 @@ function timeShort(iso) {
 const ROLE_GROUP_LABEL = { admin: "Administrateurs", manager: "Gestionnaires", vendor: "Vendeurs", messenger: "Agents messagerie" };
 
 function Messagerie({ currentUser, vendors = [] }) {
+  const { showToast } = useToast();
   const [users, setUsers] = useState(null);
   const [selectedUserId, setSelectedUserId] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -4131,7 +4462,7 @@ function Messagerie({ currentUser, vendors = [] }) {
       });
       await refreshThread();
     } catch (err) {
-      alert("Erreur lors de l'envoi de la pièce jointe : " + (err.message || err));
+      showToast("Erreur lors de l'envoi de la pièce jointe : " + (err.message || err), "error");
     }
     setUploading(false);
   };

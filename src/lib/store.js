@@ -743,3 +743,35 @@ export async function markAchievementSeen(id) {
   const { error } = await supabase.from("objective_achievements").update({ seen_by_admin: true }).eq("id", id);
   if (error) throw error;
 }
+
+// -----------------------------------------------------------------------------
+// Inventaires physiques (comptage hebdomadaire, en principe chaque samedi) —
+// une ligne par date, sur le même modèle que days/getDay/setDay : on compare
+// le stock système au moment du comptage à la quantité réellement comptée,
+// sans jamais toucher au stock système (l'écart est juste enregistré pour
+// vérification, l'ajustement éventuel du stock reste une action manuelle
+// séparée dans l'onglet Stock).
+// -----------------------------------------------------------------------------
+
+export async function getInventaires() {
+  const { data, error } = await supabase.from("inventaires").select("*").order("date", { ascending: false });
+  if (error) throw error;
+  return (data || []).map((r) => ({
+    date: r.date, lignes: r.data?.lignes || [], createdBy: r.data?.createdBy || null, updatedAt: r.updated_at,
+  }));
+}
+
+export async function getInventaireForDate(date) {
+  const { data, error } = await supabase.from("inventaires").select("*").eq("date", date).maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return { date, lignes: data.data?.lignes || [], createdBy: data.data?.createdBy || null, updatedAt: data.updated_at };
+}
+
+// lignes : [{ productId, productNom, stockSysteme, stockPhysique, ecart }]
+export async function saveInventaire({ date, lignes, createdBy }) {
+  const { error } = await supabase.from("inventaires").upsert({
+    date, data: { lignes, createdBy: createdBy || null }, updated_at: new Date().toISOString(),
+  });
+  if (error) throw error;
+}
