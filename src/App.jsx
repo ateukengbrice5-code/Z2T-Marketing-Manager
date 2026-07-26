@@ -2330,6 +2330,7 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
 // ---------------------------------------------------------------------------
 
 function Produits({ products, setProducts, reloadProducts, currentUser }) {
+  const { showToast } = useToast();
   const [nom, setNom] = useState("");
   const [prix, setPrix] = useState("");
   const [stock, setStock] = useState("");
@@ -2340,12 +2341,28 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
 
   const add = async () => {
     if (!nom.trim() || !prix) return;
-    const next = [...products, { id: uid(), nom: nom.trim(), prix: Number(prix), stock: Number(stock) || 0, categorie: categorie.trim() || "Général" }];
+    const prixNum = Number(prix);
+    const stockNum = stock === "" ? 0 : Number(stock);
+    if (Number.isNaN(prixNum) || prixNum <= 0) {
+      showToast("Le prix unitaire doit être un nombre positif.", "error");
+      return;
+    }
+    if (Number.isNaN(stockNum) || stockNum < 0) {
+      showToast("Le stock initial ne peut pas être négatif.", "error");
+      return;
+    }
+    const next = [...products, { id: uid(), nom: nom.trim(), prix: prixNum, stock: stockNum, categorie: categorie.trim() || "Général" }];
     await setProducts(next);
     setNom(""); setPrix(""); setStock(""); setCategorie("");
   };
 
-  const remove = async (id) => { await setProducts(products.filter((p) => p.id !== id)); };
+  const remove = async (id) => {
+    const p = products.find((pp) => pp.id === id);
+    const ok = window.confirm(`Supprimer définitivement le produit "${p ? p.nom : ""}" ?\n\nCette action est irréversible.`);
+    if (!ok) return;
+    await setProducts(products.filter((pp) => pp.id !== id));
+    if (p) store.logActivity(currentUser, "delete_product", `Produit supprimé : ${p.nom}.`);
+  };
 
   const saveCategorie = async (id) => {
     const value = catEdits[id];
@@ -2416,11 +2433,17 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
 // ---------------------------------------------------------------------------
 
 function Stock({ products, setProducts, currentUser }) {
+  const { showToast } = useToast();
   const [adjust, setAdjust] = useState({});
 
   const reappro = async (id) => {
-    const qty = Number(adjust[id]);
-    if (!qty) return;
+    const raw = adjust[id];
+    const qty = Number(raw);
+    if (!raw || Number.isNaN(qty)) return;
+    if (qty <= 0) {
+      showToast("La quantité réapprovisionnée doit être un nombre positif. Pour corriger un stock à la baisse, utilise l'onglet Produits.", "error");
+      return;
+    }
     const next = products.map((p) => (p.id === id ? { ...p, stock: Number(p.stock) + qty } : p));
     await setProducts(next);
     setAdjust((a) => ({ ...a, [id]: "" }));
@@ -2759,6 +2782,8 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
   };
 
   const removeMessenger = async (id, name) => {
+    const ok = window.confirm(`Supprimer définitivement le compte messagerie de ${name} ?\n\nCette action est irréversible.`);
+    if (!ok) return;
     try {
       await store.deleteAccount(id);
       await reloadAccounts();
@@ -2806,6 +2831,10 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
   };
 
   const remove = async (id, nomVendeur) => {
+    const ok = window.confirm(
+      `Supprimer définitivement le vendeur ${nomVendeur} ?\n\nSon compte de connexion (s'il existe) sera aussi supprimé. Cette action est irréversible.`
+    );
+    if (!ok) return;
     const linkedAccount = vendorAccounts.find((u) => u.vendorId === id);
     try {
       if (linkedAccount) await store.deleteAccount(linkedAccount.id);
@@ -2838,6 +2867,8 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
   // La création de comptes gestionnaire n'est plus proposée dans l'interface ;
   // cette fonction ne fait plus que permettre de retirer un compte existant.
   const removeManager = async (id, name) => {
+    const ok = window.confirm(`Supprimer définitivement le compte gestionnaire de ${name} ?\n\nCette action est irréversible.`);
+    if (!ok) return;
     try {
       await store.deleteAccount(id);
       await reloadAccounts();
@@ -2864,6 +2895,8 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
   };
 
   const removeAdmin = async (id, name) => {
+    const ok = window.confirm(`Supprimer définitivement le compte administrateur secondaire de ${name} ?\n\nCette action est irréversible.`);
+    if (!ok) return;
     try {
       await store.deleteAccount(id);
       await reloadAccounts();
@@ -3976,6 +4009,8 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
 
   const cancelDistribution = async (line) => {
     setError("");
+    const ok = window.confirm(`Annuler cette distribution de ${line.quantiteRemise} ${line.productNom} à ${line.vendorNom} ?\n\nLe stock sera recrédité et cette action est irréversible.`);
+    if (!ok) return;
     const nextLines = day.lines.filter((l) => l.id !== line.id);
     await setDay({ ...day, lines: nextLines });
     const product = products.find((p) => p.id === line.productId);
@@ -4185,6 +4220,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
 // ---------------------------------------------------------------------------
 
 function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, activeVendor, currentUser }) {
+  const { showToast } = useToast();
   // Un vendeur au contrat clôturé ne doit plus pouvoir faire l'objet d'un
   // retour du soir saisi manuellement par l'administrateur (voir Distribution).
   const activeVendors = isAdmin ? vendors.filter((v) => v.contractStatut !== "cloture") : vendors;
@@ -4236,18 +4272,33 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
     let changed = false;
     const stockIncrements = {};
     const details = [];
+    const invalides = [];
     const nextLines = day.lines.map((l) => {
       if (l.vendorId !== vendor.id || l.quantiteRestante !== null) return l;
       const val = pendingInputs[l.id];
       if (val === undefined || val === "") return l;
       const restante = Number(val);
       if (Number.isNaN(restante)) return l;
+      // Garde-fou : impossible de retourner plus que ce qui a été remis le
+      // matin, ni un nombre négatif — sinon le stock serait réalimenté avec
+      // des quantités fictives (voir bug rapporté sur le retour du soir).
+      if (restante < 0 || restante > l.quantiteRemise) {
+        invalides.push(`${l.productNom} (saisi ${restante}, remis ${l.quantiteRemise})`);
+        return l;
+      }
       changed = true;
       const vendue = Math.max(0, l.quantiteRemise - restante);
       if (restante > 0) stockIncrements[l.productId] = (stockIncrements[l.productId] || 0) + restante;
       details.push(`${l.productNom} : ${vendue} vendu(s), ${restante} retourné(s)`);
       return { ...l, quantiteRestante: restante, quantiteVendue: vendue, montantAttendu: vendue * l.prix };
     });
+    if (invalides.length > 0) {
+      showToast(
+        `Quantité restante invalide pour : ${invalides.join(" ; ")}. La quantité retournée ne peut pas dépasser la quantité remise le matin, ni être négative.`,
+        "error",
+        8000
+      );
+    }
     if (!changed) return;
     await setDay({ ...day, lines: nextLines });
     if (Object.keys(stockIncrements).length > 0) {
@@ -4255,13 +4306,23 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
       await setProducts(nextProducts);
     }
     store.logActivity(currentUser, "retour_du_soir", `Retour du soir de ${vendor.nom} validé — ${details.join(" ; ")}.`);
-    setPendingInputs({});
+    setPendingInputs((s) => {
+      const next = { ...s };
+      for (const l of pending) {
+        if (!invalides.some((txt) => txt.startsWith(l.productNom))) delete next[l.id];
+      }
+      return next;
+    });
   };
 
   const addMobilePayment = async () => {
     if (!isAdmin) return;
     const montant = Number(mobileMontant);
-    if (!mobileNumero.trim() || !montant) return;
+    if (!mobileNumero.trim() || mobileMontant === "" || Number.isNaN(montant)) return;
+    if (montant <= 0) {
+      showToast("Le montant d'un paiement mobile doit être un nombre positif.", "error");
+      return;
+    }
     const versements = { ...(day.versements || {}) };
     const current = versements[vendor.id] || { mobilePayments: [], montantVerseEspeces: null };
     versements[vendor.id] = { ...current, mobilePayments: [...(current.mobilePayments || []), { id: uid(), numero: mobileNumero.trim(), montant }] };
@@ -4275,6 +4336,10 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
     const versements = { ...(day.versements || {}) };
     const current = versements[vendor.id] || { mobilePayments: [], montantVerseEspeces: null };
     const removed = (current.mobilePayments || []).find((m) => m.id === id);
+    if (removed) {
+      const ok = window.confirm(`Supprimer le paiement mobile de ${removed.montant} FCFA (${removed.numero}) ?`);
+      if (!ok) return;
+    }
     versements[vendor.id] = { ...current, mobilePayments: (current.mobilePayments || []).filter((m) => m.id !== id) };
     await setDay({ ...day, versements });
     if (removed) store.logActivity(currentUser, "remove_mobile_payment", `Paiement mobile de ${removed.montant} FCFA (${removed.numero}) supprimé pour ${vendor.nom}.`);
@@ -4284,6 +4349,10 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
     if (!isAdmin) return;
     const montant = Number(montantVerseInput);
     if (Number.isNaN(montant) || montantVerseInput === "") return;
+    if (montant < 0) {
+      showToast("Le montant versé en espèces ne peut pas être négatif.", "error");
+      return;
+    }
     const versements = { ...(day.versements || {}) };
     const current = versements[vendor.id] || { mobilePayments: [], montantVerseEspeces: null };
     versements[vendor.id] = { ...current, montantVerseEspeces: montant };
@@ -4320,7 +4389,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
               headers={["Produit", "Remis le matin", "Restant ce soir"]}
               rows={pending.map((l) => [
                 l.productNom, l.quantiteRemise,
-                <TextInput key="i" type="number" style={{ width: 100 }} placeholder="Qté" value={pendingInputs[l.id] || ""} onChange={(e) => setPendingInputs((s) => ({ ...s, [l.id]: e.target.value }))} />,
+                <TextInput key="i" type="number" min={0} max={l.quantiteRemise} style={{ width: 100 }} placeholder="Qté" value={pendingInputs[l.id] || ""} onChange={(e) => setPendingInputs((s) => ({ ...s, [l.id]: e.target.value }))} />,
               ])}
             />
             <Button variant="gold" onClick={validerTout} style={{ marginTop: 14 }}>Valider tous les retours saisis</Button>
@@ -4702,6 +4771,7 @@ function Messagerie({ currentUser, vendors = [] }) {
 }
 
 function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notifications, setNotifications, daysList, today, currentUser }) {
+  const { showToast } = useToast();
   const [label, setLabel] = useState("");
   const [montant, setMontant] = useState("");
   const [allDays, setAllDays] = useState(null);
@@ -4726,7 +4796,11 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
 
   const addExpense = async () => {
     const m = Number(montant);
-    if (!label.trim() || !m) return;
+    if (!label.trim() || montant === "" || Number.isNaN(m)) return;
+    if (m <= 0) {
+      showToast("Le montant d'une dépense doit être un nombre positif.", "error");
+      return;
+    }
     const next = { ...day, expenses: [...(day.expenses || []), { id: uid(), label: label.trim(), montant: m }] };
     await setDay(next);
     store.logActivity(currentUser, "add_expense", `Dépense ajoutée : ${label.trim()} (${m} FCFA).`);
@@ -4735,6 +4809,10 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
 
   const removeExpense = async (id) => {
     const removed = (day.expenses || []).find((e) => e.id === id);
+    if (removed) {
+      const ok = window.confirm(`Supprimer la dépense "${removed.label}" (${removed.montant} FCFA) ?`);
+      if (!ok) return;
+    }
     await setDay({ ...day, expenses: (day.expenses || []).filter((e) => e.id !== id) });
     if (removed) store.logActivity(currentUser, "remove_expense", `Dépense supprimée : ${removed.label} (${removed.montant} FCFA).`);
   };
@@ -5615,7 +5693,10 @@ function JournalActivite() {
   const usernames = Array.from(new Set(entries.map((e) => e.username)));
   const filtered = entries.filter((e) => {
     if (filterUser && e.username !== filterUser) return false;
-    if (range && !inRange(String(e.createdAt).slice(0, 10), range)) return false;
+    // isoFromDate() convertit vers la date calendaire locale : on évite ainsi
+    // qu'un événement proche de minuit (heure locale) tombe dans le mauvais
+    // jour à cause du décalage avec l'horodatage UTC stocké en base.
+    if (range && !inRange(isoFromDate(new Date(e.createdAt)), range)) return false;
     return true;
   });
 
