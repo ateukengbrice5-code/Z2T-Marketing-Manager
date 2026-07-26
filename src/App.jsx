@@ -5512,18 +5512,51 @@ function Historique({ vendors, daysList, today, currentUser, reloadVendors }) {
 }
 
 // ---------------------------------------------------------------------------
-// Journal d'activité — connexions et actions des admins secondaires
+// Journal d'activité — connexions et actions de tous les comptes
 // (visible uniquement par l'administrateur principal)
 // ---------------------------------------------------------------------------
 
 const EVENT_LABELS = {
   login: "Connexion",
   logout: "Déconnexion",
+  claim_invite: "Compte créé via invitation",
   add_vendor: "Vendeur ajouté",
   delete_vendor: "Vendeur supprimé",
+  upload_vendor_photo: "Photo vendeur",
+  convert_to_messenger: "Converti en messagerie",
+  create_invite_link: "Lien d'invitation généré",
+  add_messenger: "Compte messagerie créé",
+  delete_messenger: "Compte messagerie supprimé",
   add_manager: "Gestionnaire ajouté",
   delete_manager: "Gestionnaire supprimé",
-  convert_to_messenger: "Converti en messagerie",
+  add_secondary_admin: "Admin secondaire créé",
+  delete_secondary_admin: "Admin secondaire supprimé",
+  add_product: "Produit ajouté",
+  update_product_stock: "Stock modifié",
+  update_product_category: "Catégorie modifiée",
+  delete_product: "Produit supprimé",
+  distribute: "Distribution",
+  edit_distribution: "Distribution modifiée",
+  cancel_distribution: "Distribution annulée",
+  retour_du_soir: "Retour du soir validé",
+  add_mobile_payment: "Paiement mobile ajouté",
+  remove_mobile_payment: "Paiement mobile supprimé",
+  enregistrer_versement: "Versement espèces",
+  add_expense: "Dépense ajoutée",
+  remove_expense: "Dépense supprimée",
+  withdrawal_requested: "Retrait demandé",
+  withdrawal_status: "Retrait : décision",
+  set_attendance: "Pointage",
+  set_attendance_bulk: "Pointage (groupé)",
+  set_contract_statut: "Statut de contrat modifié",
+  salary_paid: "Salaire versé",
+  create_contestation: "Contestation envoyée",
+  resolve_contestation: "Contestation résolue",
+  set_sales_objectives: "Objectifs de vente modifiés",
+  send_message: "Message envoyé",
+  send_attachment: "Pièce jointe envoyée",
+  edit_message: "Message modifié",
+  delete_message: "Message supprimé",
 };
 
 function eventBadgeColor(eventType) {
@@ -5588,7 +5621,7 @@ function JournalActivite() {
 
   return (
     <Card
-      title="Journal d'activité des administrateurs secondaires"
+      title="Journal d'activité"
       right={
         usernames.length > 1 && (
           <Select value={filterUser} onChange={(e) => setFilterUser(e.target.value)} style={{ width: 200 }}>
