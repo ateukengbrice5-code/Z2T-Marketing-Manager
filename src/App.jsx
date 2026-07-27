@@ -5013,11 +5013,24 @@ function renderMobileDeposits(summary, vendorNom) {
   );
 }
 
+// Types d'événements du journal d'activité considérés comme faisant partie
+// du "compte de caisse" d'une journée — sert à retrouver automatiquement
+// quel(s) admin(s) ont fait les comptes ce jour-là.
+const CAISSE_COUNT_EVENT_TYPES = new Set([
+  "enregistrer_versement",
+  "add_mobile_payment",
+  "remove_mobile_payment",
+  "add_expense",
+  "remove_expense",
+  "withdrawal_status",
+]);
+
 function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notifications, setNotifications, daysList, today, currentUser }) {
   const { showToast } = useToast();
   const [label, setLabel] = useState("");
   const [montant, setMontant] = useState("");
   const [allDays, setAllDays] = useState(null);
+  const [caisseAdmins, setCaisseAdmins] = useState([]);
 
   useEffect(() => {
     (async () => {
@@ -5025,6 +5038,18 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
       setAllDays(loaded);
     })();
   }, [daysList]);
+
+  useEffect(() => {
+    (async () => {
+      const entries = await store.getActivityLog();
+      const names = Array.from(new Set(
+        entries
+          .filter((e) => CAISSE_COUNT_EVENT_TYPES.has(e.eventType) && isoFromDate(new Date(e.createdAt)) === today)
+          .map((e) => e.username)
+      ));
+      setCaisseAdmins(names);
+    })();
+  }, [today, day, withdrawals]);
 
   const summaries = vendors.map((v) => ({ vendor: v, summary: computeVersementSummary(day, v.id) })).filter((s) => s.summary.lines.length > 0);
 
@@ -5180,7 +5205,10 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
 
         <div style={{ display: "flex", gap: 30, flexWrap: "wrap", marginTop: 30, paddingTop: 16, borderTop: "1px solid #F0F1F4" }}>
           <div style={{ flex: "1 1 200px" }}>
-            <div style={{ fontSize: 11, color: "#8A93A3", marginBottom: 24 }}>Compté par (nom) :</div>
+            <div style={{ fontSize: 11, color: "#8A93A3", marginBottom: 4 }}>Compté par :</div>
+            <div style={{ fontSize: 13.5, fontWeight: 700, color: "#1B2A4A", marginBottom: 20 }}>
+              {caisseAdmins.length > 0 ? caisseAdmins.join(", ") : "—"}
+            </div>
             <div style={{ borderTop: "1px solid #1B2A4A", paddingTop: 4, fontSize: 11, color: "#8A93A3" }}>Signature</div>
           </div>
           <div style={{ flex: "1 1 200px" }}>
