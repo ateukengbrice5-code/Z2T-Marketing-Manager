@@ -2770,7 +2770,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
         setInviteUrls((m) => ({ ...m, [vendorId]: existing }));
         showToast("Un lien d'invitation est déjà actif pour ce vendeur — il a été réutilisé plutôt que d'en créer un nouveau.", "info");
       } else {
-        const created = await store.createInviteLink({ vendorId, role: "vendor", createdBy: currentUser?.username });
+        const created = await store.createInviteLink({ vendorId, role: "vendor" });
         setInviteUrls((m) => ({ ...m, [vendorId]: created }));
         const v = vendors.find((vv) => vv.id === vendorId);
         store.logActivity(currentUser, "create_invite_link", `Lien d'invitation généré${v ? ` pour ${v.nom}` : ""}.`);
@@ -2799,6 +2799,53 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
   const copyInvite = (url) => {
     navigator.clipboard?.writeText(url);
     showToast("Lien d'invitation copié.", "success", 2500);
+  };
+
+  // Messagerie et admin secondaire n'ont pas d'entité préexistante (contrairement
+  // au vendeur) : on gère donc une liste de liens en attente par rôle, plutôt
+  // qu'un lien par cible.
+  const [genericInvites, setGenericInvites] = useState({ messenger: [], admin: [] });
+  const [genericInviteBusy, setGenericInviteBusy] = useState(null);
+
+  const loadGenericInvites = async (role) => {
+    try {
+      const list = await store.listPendingInvites(role);
+      setGenericInvites((m) => ({ ...m, [role]: list }));
+    } catch (e) {
+      // silencieux : ce n'est qu'un rafraîchissement d'affichage
+    }
+  };
+
+  useEffect(() => {
+    if (isAdmin) loadGenericInvites("messenger");
+    if (currentUser?.isPrimary) loadGenericInvites("admin");
+  }, [isAdmin, currentUser?.isPrimary]);
+
+  const generateGenericInvite = async (role) => {
+    setGenericInviteBusy(role);
+    try {
+      const created = await store.createInviteLink({ role });
+      await loadGenericInvites(role);
+      const label = role === "messenger" ? "messagerie" : "administrateur secondaire";
+      store.logActivity(currentUser, "create_invite_link", `Lien d'invitation généré (compte ${label}).`);
+      showToast("Lien d'invitation généré — pense à le copier avant de quitter cet onglet.", "success");
+    } catch (e) {
+      setError(e.message || "Erreur lors de la création du lien.");
+    }
+    setGenericInviteBusy(null);
+  };
+
+  const revokeGenericInvite = async (role, inviteId) => {
+    const ok = window.confirm("Révoquer ce lien d'invitation ?\n\nIl ne pourra plus être utilisé pour créer un compte.");
+    if (!ok) return;
+    try {
+      await store.revokeInviteLink(inviteId);
+      await loadGenericInvites(role);
+      const label = role === "messenger" ? "messagerie" : "administrateur secondaire";
+      store.logActivity(currentUser, "revoke_invite_link", `Lien d'invitation révoqué (compte ${label}).`);
+    } catch (e) {
+      setError(e.message || "Erreur lors de la révocation du lien.");
+    }
   };
 
   const reloadAccounts = async () => {
@@ -3142,8 +3189,28 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
               <TextInput type="password" value={msgPassword} onChange={(e) => setMsgPassword(e.target.value)} />
             </div>
             <Button onClick={addMessenger} disabled={msgBusy}><Plus size={15} /> {msgBusy ? "Création…" : "Créer le compte"}</Button>
+            <Button variant="gold" onClick={() => generateGenericInvite("messenger")} disabled={genericInviteBusy === "messenger"}>
+              <Send size={15} /> {genericInviteBusy === "messenger" ? "Génération…" : "Générer un lien d'invitation"}
+            </Button>
           </div>
           {msgError && <div style={{ color: "#C1554A", fontSize: 12.5, marginTop: 10 }}>{msgError}</div>}
+
+          {genericInvites.messenger.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 12, color: "#8A93A3", marginBottom: 8 }}>Liens d'invitation en attente (7 jours de validité) :</div>
+              <Table
+                headers={["Créé le", "Expire le", ""]}
+                rows={genericInvites.messenger.map((inv) => [
+                  inv.createdAt ? formatDateFR(isoFromDate(new Date(inv.createdAt))) : "—",
+                  inv.expiresAt ? formatDateFR(isoFromDate(new Date(inv.expiresAt))) : "—",
+                  <div key="actions" style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => copyInvite(inv.url)} title="Copier le lien" style={{ ...iconBtnStyle, color: "#3F9C6D" }}><Link2 size={15} /></button>
+                    <button onClick={() => revokeGenericInvite("messenger", inv.id)} title="Révoquer ce lien" style={{ ...iconBtnStyle, color: "#C1554A" }}><X size={15} /></button>
+                  </div>,
+                ])}
+              />
+            </div>
+          )}
 
           {messengers.length > 0 && (
             <div style={{ marginTop: 16 }}>
@@ -3176,8 +3243,28 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
               <TextInput type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} />
             </div>
             <Button onClick={addAdmin} disabled={adminBusy}><Plus size={15} /> {adminBusy ? "Création…" : "Créer le compte"}</Button>
+            <Button variant="gold" onClick={() => generateGenericInvite("admin")} disabled={genericInviteBusy === "admin"}>
+              <Send size={15} /> {genericInviteBusy === "admin" ? "Génération…" : "Générer un lien d'invitation"}
+            </Button>
           </div>
           {adminError && <div style={{ color: "#C1554A", fontSize: 12.5, marginTop: 10 }}>{adminError}</div>}
+
+          {genericInvites.admin.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 12, color: "#8A93A3", marginBottom: 8 }}>Liens d'invitation en attente (7 jours de validité) :</div>
+              <Table
+                headers={["Créé le", "Expire le", ""]}
+                rows={genericInvites.admin.map((inv) => [
+                  inv.createdAt ? formatDateFR(isoFromDate(new Date(inv.createdAt))) : "—",
+                  inv.expiresAt ? formatDateFR(isoFromDate(new Date(inv.expiresAt))) : "—",
+                  <div key="actions" style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => copyInvite(inv.url)} title="Copier le lien" style={{ ...iconBtnStyle, color: "#3F9C6D" }}><Link2 size={15} /></button>
+                    <button onClick={() => revokeGenericInvite("admin", inv.id)} title="Révoquer ce lien" style={{ ...iconBtnStyle, color: "#C1554A" }}><X size={15} /></button>
+                  </div>,
+                ])}
+              />
+            </div>
+          )}
 
           {secondaryAdmins.length > 0 && (
             <div style={{ marginTop: 16 }}>

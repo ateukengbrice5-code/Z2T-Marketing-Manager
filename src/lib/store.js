@@ -648,36 +648,52 @@ export async function getTodaysBirthdays() {
 // passe à sa place.
 // -----------------------------------------------------------------------------
 
-function randomToken() {
-  const bytes = new Uint8Array(24);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+async function callManageUser(body) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  const { data, error } = await supabase.functions.invoke("manage-user", {
+    body, headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (error) throw new Error(await readFunctionError(error));
+  if (data?.error) throw new Error(data.error);
+  return data;
 }
 
-export async function createInviteLink({ vendorId, role = "vendor", createdBy, expiresInDays = 7 }) {
-  const token = randomToken();
-  const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString();
-  const { data, error } = await supabase.from("invite_links").insert({
-    token, role, vendor_id: role === "vendor" ? vendorId : null,
-    created_by: createdBy || null, expires_at: expiresAt,
-  }).select("id, expires_at").single();
-  if (error) throw error;
-  return { id: data.id, token, expiresAt: data.expires_at, url: `${window.location.origin}${window.location.pathname}?invite=${token}` };
+function inviteUrlFromToken(token) {
+  return `${window.location.origin}${window.location.pathname}?invite=${token}`;
+}
+
+// Crée (ou réutilise, pour un vendeur) un lien d'invitation. Passe désormais
+// par la fonction Edge manage-user, qui applique les mêmes règles de rôle que
+// la création directe de compte (ex. seul l'admin principal peut inviter un
+// autre admin) — plutôt que de dépendre des règles RLS de la table.
+export async function createInviteLink({ vendorId, role = "vendor", expiresInDays = 7 }) {
+  const data = await callManageUser({ action: "create_invite", role, vendorId: role === "vendor" ? vendorId : undefined, expiresInDays });
+  return { id: data.id, token: data.token, role: data.role, vendorId: data.vendorId, expiresAt: data.expiresAt, url: inviteUrlFromToken(data.token) };
 }
 
 export async function getInviteLinkForVendor(vendorId) {
-  const { data, error } = await supabase
-    .from("invite_links").select("*").eq("vendor_id", vendorId)
-    .is("used_at", null).order("created_at", { ascending: false }).limit(1).maybeSingle();
-  if (error) throw error;
-  if (!data) return null;
-  if (data.expires_at && new Date(data.expires_at) < new Date()) return null;
-  return { id: data.id, token: data.token, expiresAt: data.expires_at, url: `${window.location.origin}${window.location.pathname}?invite=${data.token}` };
+  const { invites } = await callManageUser({ action: "list_invites" });
+  const found = (invites || []).find((inv) => inv.role === "vendor" && inv.vendor_id === vendorId);
+  if (!found) return null;
+  if (found.expires_at && new Date(found.expires_at) < new Date()) return null;
+  return { id: found.id, token: found.token, role: found.role, vendorId: found.vendor_id, expiresAt: found.expires_at, url: inviteUrlFromToken(found.token) };
+}
+
+// Liste les invitations en attente (non utilisées, non expirées côté
+// affichage) pour un rôle donné qui n'a pas d'entité préexistante à cibler
+// (messagerie, gestionnaire, admin) — contrairement au vendeur qui existe
+// déjà avant l'invitation.
+export async function listPendingInvites(role) {
+  const { invites } = await callManageUser({ action: "list_invites" });
+  const now = new Date();
+  return (invites || [])
+    .filter((inv) => inv.role === role && (!inv.expires_at || new Date(inv.expires_at) >= now))
+    .map((inv) => ({ id: inv.id, token: inv.token, role: inv.role, createdAt: inv.created_at, expiresAt: inv.expires_at, url: inviteUrlFromToken(inv.token) }));
 }
 
 export async function revokeInviteLink(id) {
-  const { error } = await supabase.from("invite_links").delete().eq("id", id);
-  if (error) throw error;
+  await callManageUser({ action: "revoke_invite", inviteId: id });
 }
 
 // Appelée depuis l'écran public de création de compte (pas de session requise) :
