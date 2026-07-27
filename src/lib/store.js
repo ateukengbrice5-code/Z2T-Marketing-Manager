@@ -376,6 +376,15 @@ export async function setVendorContractStatut(vendorId, statut) {
   if (error) throw error;
 }
 
+// Corrige la date d'enregistrement d'un vendeur — utile lors de la mise en
+// place de l'application pour des vendeurs qui travaillaient déjà avant
+// (sinon leur premier cycle de salaire serait compté à partir d'aujourd'hui
+// au lieu de leur vraie date de début).
+export async function setVendorRegistrationDate(vendorId, dateEnregistrement) {
+  const { error } = await supabase.from("vendors").update({ date_enregistrement: dateEnregistrement }).eq("id", vendorId);
+  if (error) throw error;
+}
+
 export async function getVendorAccounts() {
   const { data, error } = await supabase.from("profiles").select("*").eq("role", "vendor");
   if (error) throw error;

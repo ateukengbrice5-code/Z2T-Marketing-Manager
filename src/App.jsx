@@ -2892,6 +2892,11 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
 
   const add = async () => {
     if (!nom.trim()) { setError("Indique un nom de vendeur."); return; }
+    if (!prenom.trim()) { setError("Indique un prénom."); return; }
+    if (!numeroCni.trim()) { setError("Indique le numéro/référence de la pièce d'identité."); return; }
+    if (!dateNaissance) { setError("Indique une date de naissance."); return; }
+    if (!telephone.trim()) { setError("Indique un numéro de téléphone."); return; }
+    if (!photoFile) { setError("Ajoute une photo du vendeur."); return; }
     if (username.trim() && !password) { setError("Indique un mot de passe pour ce compte."); return; }
     if (password && !isStrongPassword(password)) { setError(PASSWORD_HELP_TEXT); return; }
     setError("");
@@ -2905,13 +2910,16 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
         dateNaissance: dateNaissance || null,
         telephone: telephone.trim(),
       });
-      if (photoFile) {
-        try {
-          await store.uploadVendorPhoto(vendor.id, photoFile);
-          store.logActivity(currentUser, "upload_vendor_photo", `Photo ajoutée pour ${nom.trim()}.`);
-        } catch (photoErr) {
-          setError(`Vendeur créé, mais la photo n'a pas pu être envoyée : ${photoErr.message || photoErr}`);
-        }
+      try {
+        await store.uploadVendorPhoto(vendor.id, photoFile);
+        store.logActivity(currentUser, "upload_vendor_photo", `Photo ajoutée pour ${nom.trim()}.`);
+      } catch (photoErr) {
+        // La photo est désormais obligatoire : plutôt que de laisser un
+        // vendeur enregistré sans photo, on annule sa création.
+        await store.deleteVendor(vendor.id);
+        setError(`La photo n'a pas pu être envoyée, le vendeur n'a pas été créé : ${photoErr.message || photoErr}`);
+        setBusy(false);
+        return;
       }
       if (username.trim()) {
         await store.createAccount({ username: username.trim(), password, role: "vendor", vendorId: vendor.id });
@@ -3010,41 +3018,40 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
       <Card title="Ajouter un vendeur">
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
           <div style={{ flex: "1 1 180px" }}>
-            <Label>Nom du vendeur</Label>
+            <Label>Nom du vendeur *</Label>
             <TextInput value={nom} onChange={(e) => setNom(e.target.value)} placeholder="Ex. Awa" />
           </div>
-          <Button onClick={add} disabled={busy}><Plus size={15} /> {busy ? "Ajout…" : "Ajouter"}</Button>
+          <div style={{ flex: "1 1 160px" }}>
+            <Label>Prénom *</Label>
+            <TextInput value={prenom} onChange={(e) => setPrenom(e.target.value)} />
+          </div>
         </div>
 
         <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #F0F1F4" }}>
           <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
-            Informations complémentaires (facultatif)
+            Tous les champs ci-dessous sont obligatoires.
           </div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
             <div style={{ flex: "1 1 160px" }}>
-              <Label>Prénom</Label>
-              <TextInput value={prenom} onChange={(e) => setPrenom(e.target.value)} />
-            </div>
-            <div style={{ flex: "1 1 160px" }}>
-              <Label>Nature de la pièce</Label>
+              <Label>Nature de la pièce *</Label>
               <Select value={pieceNature} onChange={(e) => setPieceNature(e.target.value)}>
                 {PIECE_NATURE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </Select>
             </div>
             <div style={{ flex: "1 1 160px" }}>
-              <Label>Numéro / référence de la pièce</Label>
+              <Label>Numéro / référence de la pièce *</Label>
               <TextInput value={numeroCni} onChange={(e) => setNumeroCni(e.target.value)} />
             </div>
             <div style={{ flex: "1 1 160px" }}>
-              <Label>Date de naissance</Label>
+              <Label>Date de naissance *</Label>
               <TextInput type="date" value={dateNaissance} onChange={(e) => setDateNaissance(e.target.value)} />
             </div>
             <div style={{ flex: "1 1 160px" }}>
-              <Label>Téléphone</Label>
+              <Label>Téléphone *</Label>
               <TextInput value={telephone} onChange={(e) => setTelephone(e.target.value)} placeholder="Ex. 6XX XX XX XX" />
             </div>
             <div style={{ flex: "0 0 auto" }}>
-              <Label>Photo</Label>
+              <Label>Photo *</Label>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div style={{
                   width: 40, height: 40, borderRadius: "50%", background: "#EEF0F4", overflow: "hidden",
@@ -3093,6 +3100,9 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
           </div>
         </div>
         {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginTop: 10 }}>{error}</div>}
+        <div style={{ marginTop: 14 }}>
+          <Button onClick={add} disabled={busy}><Plus size={15} /> {busy ? "Ajout…" : "Ajouter"}</Button>
+        </div>
       </Card>
 
       <Card title={`Équipe (${vendors.length})`}>
@@ -3454,6 +3464,7 @@ const CONTRACT_STATUT_LABELS = {
 };
 
 function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) {
+  const { showToast } = useToast();
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [photoUrl, setPhotoUrl] = useState(vendor?.photoUrl || "");
@@ -3472,8 +3483,12 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
   const [activeResolveId, setActiveResolveId] = useState(null);
   const [resolveMsg, setResolveMsg] = useState("");
   const [resolving, setResolving] = useState(false);
+  const [editingRegDate, setEditingRegDate] = useState(false);
+  const [regDateInput, setRegDateInput] = useState(vendor?.dateEnregistrement || "");
+  const [regDateSaving, setRegDateSaving] = useState(false);
   const fileRef = useRef(null);
   const today = todayISO();
+  const isAdmin = currentUser?.role === "admin";
 
   const load = async () => {
     setLoading(true);
@@ -3498,6 +3513,7 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
 
   useEffect(() => { if (vendor) load(); }, [vendor?.id]);
   useEffect(() => { setContractStatut(vendor?.contractStatut || "actif"); }, [vendor?.id, vendor?.contractStatut]);
+  useEffect(() => { setRegDateInput(vendor?.dateEnregistrement || ""); setEditingRegDate(false); }, [vendor?.id, vendor?.dateEnregistrement]);
 
   if (!vendor) return null;
 
@@ -3548,6 +3564,33 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
       setError(err.message || "Erreur lors de la mise à jour du statut de contrat.");
     }
     setContractSaving(false);
+  };
+
+  const saveRegDate = async () => {
+    if (!regDateInput) { setError("Choisis une date."); return; }
+    if (regDateInput > today) { setError("La date d'enregistrement ne peut pas être dans le futur."); return; }
+    // Tant qu'aucun premier cycle de salaire n'a encore été versé, cette date
+    // sert de point de départ au calcul des jours payables — la modifier
+    // change donc potentiellement le montant du premier salaire.
+    const affectsPay = !latestCycle;
+    const ok = window.confirm(
+      affectsPay
+        ? `Corriger la date d'enregistrement de ${vendor.nom} au ${formatDateFR(regDateInput)} ?\n\nAucun salaire n'a encore été versé pour ce vendeur : cette date deviendra le point de départ du calcul des jours payables de son premier cycle.`
+        : `Corriger la date d'enregistrement de ${vendor.nom} au ${formatDateFR(regDateInput)} ?\n\nCeci est purement informatif : un cycle de salaire a déjà été versé, donc les calculs de paie en cours ne sont pas affectés.`
+    );
+    if (!ok) return;
+    setRegDateSaving(true);
+    setError("");
+    try {
+      await store.setVendorRegistrationDate(vendor.id, regDateInput);
+      if (reloadVendors) await reloadVendors();
+      store.logActivity(currentUser, "edit_vendor_registration_date", `Date d'enregistrement de ${vendor.nom} corrigée au ${formatDateFR(regDateInput)}.`);
+      showToast("Date d'enregistrement mise à jour.", "success");
+      setEditingRegDate(false);
+    } catch (err) {
+      setError(err.message || "Erreur lors de la mise à jour de la date.");
+    }
+    setRegDateSaving(false);
   };
 
   const cycleStart = latestCycle ? addDays(latestCycle.cycleEnd, 1) : (vendor.dateEnregistrement || today);
@@ -3634,12 +3677,34 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
             <Label>Date de naissance</Label>
             <div style={{ fontSize: 13.5, color: "#1B2A4A" }}>{fmtDateFr(vendor.dateNaissance)}</div>
           </div>
-          <div style={{ flex: "1 1 140px" }}>
+          <div style={{ flex: "1 1 180px" }}>
             <Label>Date d'enregistrement</Label>
-            <div style={{ fontSize: 13.5, color: "#1B2A4A" }}>
-              {fmtDateFr(vendor.dateEnregistrement)}
-              <span style={{ display: "block", fontSize: 11, color: "#9AA2B1", fontStyle: "italic" }}>sert de repère informatif — n'affecte pas les calculs de bonus</span>
-            </div>
+            {editingRegDate ? (
+              <div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <TextInput type="date" value={regDateInput} max={today} onChange={(e) => setRegDateInput(e.target.value)} style={{ width: 150 }} />
+                  <Button onClick={saveRegDate} disabled={regDateSaving} style={{ padding: "6px 10px" }}>{regDateSaving ? "…" : "OK"}</Button>
+                  <button onClick={() => { setEditingRegDate(false); setRegDateInput(vendor?.dateEnregistrement || ""); }} style={{ ...iconBtnStyle, color: "#8A93A3" }}><X size={15} /></button>
+                </div>
+                <span style={{ display: "block", fontSize: 11, color: "#9AA2B1", fontStyle: "italic", marginTop: 4 }}>
+                  Utile pour un vendeur qui travaillait déjà avant la mise en place de l'application.
+                </span>
+              </div>
+            ) : (
+              <div style={{ fontSize: 13.5, color: "#1B2A4A" }}>
+                {fmtDateFr(vendor.dateEnregistrement)}
+                {isAdmin && (
+                  <button onClick={() => setEditingRegDate(true)} title="Corriger cette date" style={{ ...iconBtnStyle, color: "#5B6472", marginLeft: 6, padding: "2px 4px" }}>
+                    <span style={{ fontSize: 11, textDecoration: "underline", cursor: "pointer" }}>corriger</span>
+                  </button>
+                )}
+                <span style={{ display: "block", fontSize: 11, color: "#9AA2B1", fontStyle: "italic" }}>
+                  {latestCycle
+                    ? "n'affecte plus la paie : un cycle de salaire a déjà été versé"
+                    : "sert de point de départ au calcul du premier cycle de salaire tant qu'aucun salaire n'a été versé"}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -4974,6 +5039,8 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
 
   const pendingWithdrawals = (withdrawals || []).filter((w) => w.statut === "en_attente");
   const historyWithdrawals = (withdrawals || []).filter((w) => w.statut !== "en_attente");
+  const withdrawalsToday = (withdrawals || []).filter((w) => w.date === today);
+  const totalAttendu = summaries.reduce((s, x) => s + x.summary.montantAttendu, 0);
 
   const resolveWithdrawal = async (id, statut) => {
     const w = (withdrawals || []).find((x) => x.id === id);
@@ -4991,8 +5058,116 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
     }
   };
 
+  // Impression / export PDF de la situation de caisse du jour — même
+  // principe que pour les rapports et l'inventaire.
+  const printRef = useRef(null);
+  const printCaisse = () => {
+    if (!printRef.current) return;
+    document.body.classList.add("printing-section");
+    printRef.current.setAttribute("data-print-active", "true");
+    window.print();
+    const cleanup = () => {
+      printRef.current?.removeAttribute("data-print-active");
+      document.body.classList.remove("printing-section");
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+  };
+
   return (
     <div>
+      <style>{`
+        @media print {
+          body.printing-section * { visibility: hidden; }
+          body.printing-section [data-print-active="true"],
+          body.printing-section [data-print-active="true"] * { visibility: visible; }
+          body.printing-section [data-print-active="true"] { display: block !important; position: absolute; top: 0; left: 0; width: 100%; margin: 0; padding: 0; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+
+      <div style={{ marginBottom: 20 }}>
+        <Button variant="gold" onClick={printCaisse}>
+          <Printer size={15} /> Imprimer / Enregistrer en PDF — Situation de caisse du {fmtDateFr(today)}
+        </Button>
+      </div>
+
+      <div ref={printRef} style={{ display: "none" }}>
+        <Card>
+          <div style={{ textAlign: "center", marginBottom: 6 }}>
+            <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 21, fontWeight: 700, color: "#1B2A4A" }}>
+              Situation de caisse — {fmtDateFr(today)}
+            </div>
+            <div style={{ fontSize: 12, color: "#8A93A3" }}>
+              Document généré le {fmtDateFr(today)}{currentUser?.username ? ` par ${currentUser.username}` : ""}
+            </div>
+          </div>
+        </Card>
+
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+          <StatCard label="MONTANT ATTENDU (TOUS VENDEURS)" value={fmtMoney(totalAttendu)} accent="#1B2A4A" />
+          <StatCard label="ESPÈCES NETTES EN CAISSE" value={fmtMoney(especesNettes)} accent="#3F8361" />
+          <StatCard label="PAIEMENT MOBILE" value={fmtMoney(totalMobile)} />
+          <StatCard label="DÉPENSES DU JOUR" value={fmtMoney(totalDepenses)} accent="#C1554A" />
+        </div>
+
+        <Card title="Versements par vendeur">
+          {summaries.length === 0 ? (
+            <EmptyState text="Aucun vendeur avec un retour du soir clôturé pour l'instant." />
+          ) : (
+            <Table
+              headers={["Vendeur", "Montant attendu", "Mobile", "Espèces versées", "Écart"]}
+              rows={summaries.map(({ vendor, summary }) => [
+                vendor.nom,
+                fmtMoney(summary.montantAttendu),
+                fmtMoney(summary.totalMobile),
+                summary.finalise ? fmtMoney(summary.montantVerseEspeces) : "—",
+                summary.finalise ? (summary.ecart === 0 ? "Équilibré" : `${summary.ecart > 0 ? "+" : ""}${fmtMoney(summary.ecart)}`) : "—",
+              ])}
+            />
+          )}
+        </Card>
+
+        <Card title="Dépenses du jour">
+          {(day.expenses || []).length === 0 ? (
+            <EmptyState text="Aucune dépense enregistrée aujourd'hui." />
+          ) : (
+            <Table
+              headers={["Libellé", "Montant"]}
+              rows={(day.expenses || []).map((e) => [e.label, fmtMoney(e.montant)])}
+            />
+          )}
+        </Card>
+
+        <Card title="Retraits du jour">
+          {withdrawalsToday.length === 0 ? (
+            <EmptyState text="Aucun retrait demandé aujourd'hui." />
+          ) : (
+            <Table
+              headers={["Vendeur", "Montant", "Mode de paiement", "Statut", "Traité par"]}
+              rows={withdrawalsToday.map((w) => [
+                w.vendorNom, fmtMoney(w.montant),
+                w.methode === "mobile" ? `Mobile — ${w.numeroMobile}` : "Espèces",
+                w.statut === "en_attente" ? "En attente" : w.statut === "approuve" ? "Approuvé" : "Refusé",
+                w.approvedBy || "—",
+              ])}
+            />
+          )}
+        </Card>
+
+        <div style={{ display: "flex", gap: 30, flexWrap: "wrap", marginTop: 30, paddingTop: 16, borderTop: "1px solid #F0F1F4" }}>
+          <div style={{ flex: "1 1 200px" }}>
+            <div style={{ fontSize: 11, color: "#8A93A3", marginBottom: 24 }}>Compté par (nom) :</div>
+            <div style={{ borderTop: "1px solid #1B2A4A", paddingTop: 4, fontSize: 11, color: "#8A93A3" }}>Signature</div>
+          </div>
+          <div style={{ flex: "1 1 200px" }}>
+            <div style={{ fontSize: 11, color: "#8A93A3", marginBottom: 24 }}>Vérifié par (admin) :</div>
+            <div style={{ borderTop: "1px solid #1B2A4A", paddingTop: 4, fontSize: 11, color: "#8A93A3" }}>Signature</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="no-print">
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
         <StatCard label="TOTAL ESPÈCES (net des dépenses)" value={fmtMoney(especesNettes)} accent="#3F8361" />
         <StatCard label="TOTAL PAIEMENT MOBILE" value={fmtMoney(totalMobile)} accent="#1B2A4A" />
@@ -5080,6 +5255,7 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
           />
         )}
       </Card>
+      </div>
     </div>
   );
 }
@@ -5756,6 +5932,7 @@ const EVENT_LABELS = {
   add_vendor: "Vendeur ajouté",
   delete_vendor: "Vendeur supprimé",
   upload_vendor_photo: "Photo vendeur",
+  edit_vendor_registration_date: "Date d'enregistrement corrigée",
   convert_to_messenger: "Converti en messagerie",
   create_invite_link: "Lien d'invitation généré",
   revoke_invite_link: "Lien d'invitation révoqué",
