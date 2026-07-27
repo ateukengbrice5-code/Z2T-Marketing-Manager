@@ -4990,6 +4990,29 @@ function Messagerie({ currentUser, vendors = [] }) {
   );
 }
 
+// Affiche le détail de tous les dépôts (paiements) mobile d'un vendeur — nom du
+// vendeur, numéro et montant de chacun — plutôt qu'un seul total agrégé qui
+// masquerait les dépôts multiples. S'utilise aussi bien à l'écran que dans la
+// version PDF.
+function renderMobileDeposits(summary, vendorNom) {
+  const payments = summary.mobilePayments || [];
+  if (payments.length === 0) return "—";
+  return (
+    <div>
+      {payments.map((m) => (
+        <div key={m.id} style={{ fontSize: 12.5, whiteSpace: "nowrap" }}>
+          <strong>{vendorNom}</strong> — {m.numero} — {fmtMoney(m.montant)}
+        </div>
+      ))}
+      {payments.length > 1 && (
+        <div style={{ fontSize: 12.5, fontWeight: 700, marginTop: 3, paddingTop: 3, borderTop: "1px solid #E4E7ED" }}>
+          Total : {fmtMoney(summary.totalMobile)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notifications, setNotifications, daysList, today, currentUser }) {
   const { showToast } = useToast();
   const [label, setLabel] = useState("");
@@ -5116,11 +5139,11 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
             <EmptyState text="Aucun vendeur avec un retour du soir clôturé pour l'instant." />
           ) : (
             <Table
-              headers={["Vendeur", "Montant attendu", "Mobile", "Espèces versées", "Écart"]}
+              headers={["Vendeur", "Montant attendu", "Mobile (dépôts)", "Espèces versées", "Écart"]}
               rows={summaries.map(({ vendor, summary }) => [
                 vendor.nom,
                 fmtMoney(summary.montantAttendu),
-                fmtMoney(summary.totalMobile),
+                renderMobileDeposits(summary, vendor.nom),
                 summary.finalise ? fmtMoney(summary.montantVerseEspeces) : "—",
                 summary.finalise ? (summary.ecart === 0 ? "Équilibré" : `${summary.ecart > 0 ? "+" : ""}${fmtMoney(summary.ecart)}`) : "—",
               ])}
@@ -5217,11 +5240,11 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
           <EmptyState text="Aucun vendeur avec un retour du soir clôturé pour l'instant." />
         ) : (
           <Table
-            headers={["Vendeur", "Montant attendu", "Mobile", "Espèces versées", "Écart"]}
+            headers={["Vendeur", "Montant attendu", "Mobile (dépôts)", "Espèces versées", "Écart"]}
             rows={summaries.map(({ vendor, summary }) => [
               vendor.nom,
               fmtMoney(summary.montantAttendu),
-              fmtMoney(summary.totalMobile),
+              renderMobileDeposits(summary, vendor.nom),
               summary.finalise ? fmtMoney(summary.montantVerseEspeces) : "—",
               summary.finalise ? (
                 <Badge key="b" ok={summary.statut === "equilibre"} okText="Équilibré" warnText={`${summary.ecart > 0 ? "+" : ""}${fmtMoney(summary.ecart)}`} />
