@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Package, Boxes, Users, Truck, MoonStar, Wallet, History,
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown,
   Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye,
-  MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, Menu, UserCircle, ClipboardList,
+  MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, Menu, UserCircle, ClipboardList, Newspaper,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Cell } from "recharts";
 import * as store from "./lib/store.js";
@@ -95,6 +95,7 @@ function ToastProvider({ children }) {
 
 const NAV_ADMIN = [
   { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
+  { id: "actualites", label: "Actualités", icon: Newspaper },
   { id: "produits", label: "Produits", icon: Package },
   { id: "stock", label: "Stock", icon: Boxes },
   { id: "vendeurs", label: "Vendeurs & comptes", icon: Users },
@@ -108,6 +109,7 @@ const NAV_ADMIN = [
 
 const NAV_VENDOR = [
   { id: "dashboard", label: "Mon tableau de bord", icon: LayoutDashboard },
+  { id: "actualites", label: "Actualités", icon: Newspaper },
   { id: "retour", label: "Mon retour du soir", icon: MoonStar },
   { id: "presence", label: "Ma présence", icon: CheckCircle2 },
   { id: "messagerie", label: "Messages", icon: MessageSquare },
@@ -115,6 +117,7 @@ const NAV_VENDOR = [
 
 const NAV_MANAGER = [
   { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
+  { id: "actualites", label: "Actualités", icon: Newspaper },
   { id: "caisse", label: "Finances", icon: Wallet },
   { id: "stock", label: "Stock", icon: Boxes },
   { id: "vendeurs", label: "Personnel", icon: Users },
@@ -343,6 +346,14 @@ function isStrongPassword(pw) {
   return typeof pw === "string" && pw.length >= 8 && /[A-Za-z]/.test(pw) && /[0-9]/.test(pw);
 }
 
+// Vérifie un numéro mobile camerounais : 9 chiffres commençant par 6,
+// avec ou sans indicatif (+237 / 237) et espaces/tirets tolérés à la saisie.
+function isValidCameroonPhone(raw) {
+  const cleaned = String(raw || "").replace(/[\s.-]/g, "");
+  const local = cleaned.replace(/^\+?237/, "");
+  return /^6\d{8}$/.test(local);
+}
+
 function emptyDay(date) {
   return { date, lines: [], versements: {}, expenses: [] };
 }
@@ -431,6 +442,19 @@ function TextInput(props) {
         width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #D8DCE3",
         fontSize: 14, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A",
         outline: "none", boxSizing: "border-box", ...props.style,
+      }}
+    />
+  );
+}
+
+function TextArea(props) {
+  return (
+    <textarea
+      {...props}
+      style={{
+        width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #D8DCE3",
+        fontSize: 14, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A",
+        outline: "none", boxSizing: "border-box", resize: "vertical", ...props.style,
       }}
     />
   );
@@ -1722,6 +1746,9 @@ function AppRoot() {
         {tab === "dashboard" && !canManage && (
           <VendorDashboard vendor={activeVendor} daysList={daysList} today={today} day={day} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} objectives={objectives} />
         )}
+        {tab === "actualites" && (
+          <NewsFeed currentUser={currentUser} />
+        )}
         {tab === "produits" && isAdmin && <Produits products={products} setProducts={persistProducts} reloadProducts={reloadProducts} currentUser={currentUser} />}
         {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} currentUser={currentUser} />}
         {tab === "vendeurs" && canManage && (
@@ -2896,6 +2923,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
     if (!numeroCni.trim()) { setError("Indique le numéro/référence de la pièce d'identité."); return; }
     if (!dateNaissance) { setError("Indique une date de naissance."); return; }
     if (!telephone.trim()) { setError("Indique un numéro de téléphone."); return; }
+    if (!isValidCameroonPhone(telephone)) { setError("Le numéro de téléphone doit être un numéro mobile camerounais valide (9 chiffres commençant par 6, ex. 6XX XX XX XX)."); return; }
     if (!photoFile) { setError("Ajoute une photo du vendeur."); return; }
     if (username.trim() && !password) { setError("Indique un mot de passe pour ce compte."); return; }
     if (password && !isStrongPassword(password)) { setError(PASSWORD_HELP_TEXT); return; }
@@ -4990,47 +5018,11 @@ function Messagerie({ currentUser, vendors = [] }) {
   );
 }
 
-// Affiche le détail de tous les dépôts (paiements) mobile d'un vendeur — nom du
-// vendeur, numéro et montant de chacun — plutôt qu'un seul total agrégé qui
-// masquerait les dépôts multiples. S'utilise aussi bien à l'écran que dans la
-// version PDF.
-function renderMobileDeposits(summary, vendorNom) {
-  const payments = summary.mobilePayments || [];
-  if (payments.length === 0) return "—";
-  return (
-    <div>
-      {payments.map((m) => (
-        <div key={m.id} style={{ fontSize: 12.5, whiteSpace: "nowrap" }}>
-          <strong>{vendorNom}</strong> — {m.numero} — {fmtMoney(m.montant)}
-        </div>
-      ))}
-      {payments.length > 1 && (
-        <div style={{ fontSize: 12.5, fontWeight: 700, marginTop: 3, paddingTop: 3, borderTop: "1px solid #E4E7ED" }}>
-          Total : {fmtMoney(summary.totalMobile)}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Types d'événements du journal d'activité considérés comme faisant partie
-// du "compte de caisse" d'une journée — sert à retrouver automatiquement
-// quel(s) admin(s) ont fait les comptes ce jour-là.
-const CAISSE_COUNT_EVENT_TYPES = new Set([
-  "enregistrer_versement",
-  "add_mobile_payment",
-  "remove_mobile_payment",
-  "add_expense",
-  "remove_expense",
-  "withdrawal_status",
-]);
-
 function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notifications, setNotifications, daysList, today, currentUser }) {
   const { showToast } = useToast();
   const [label, setLabel] = useState("");
   const [montant, setMontant] = useState("");
   const [allDays, setAllDays] = useState(null);
-  const [caisseAdmins, setCaisseAdmins] = useState([]);
 
   useEffect(() => {
     (async () => {
@@ -5038,18 +5030,6 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
       setAllDays(loaded);
     })();
   }, [daysList]);
-
-  useEffect(() => {
-    (async () => {
-      const entries = await store.getActivityLog();
-      const names = Array.from(new Set(
-        entries
-          .filter((e) => CAISSE_COUNT_EVENT_TYPES.has(e.eventType) && isoFromDate(new Date(e.createdAt)) === today)
-          .map((e) => e.username)
-      ));
-      setCaisseAdmins(names);
-    })();
-  }, [today, day, withdrawals]);
 
   const summaries = vendors.map((v) => ({ vendor: v, summary: computeVersementSummary(day, v.id) })).filter((s) => s.summary.lines.length > 0);
 
@@ -5164,11 +5144,11 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
             <EmptyState text="Aucun vendeur avec un retour du soir clôturé pour l'instant." />
           ) : (
             <Table
-              headers={["Vendeur", "Montant attendu", "Mobile (dépôts)", "Espèces versées", "Écart"]}
+              headers={["Vendeur", "Montant attendu", "Mobile", "Espèces versées", "Écart"]}
               rows={summaries.map(({ vendor, summary }) => [
                 vendor.nom,
                 fmtMoney(summary.montantAttendu),
-                renderMobileDeposits(summary, vendor.nom),
+                fmtMoney(summary.totalMobile),
                 summary.finalise ? fmtMoney(summary.montantVerseEspeces) : "—",
                 summary.finalise ? (summary.ecart === 0 ? "Équilibré" : `${summary.ecart > 0 ? "+" : ""}${fmtMoney(summary.ecart)}`) : "—",
               ])}
@@ -5205,10 +5185,7 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
 
         <div style={{ display: "flex", gap: 30, flexWrap: "wrap", marginTop: 30, paddingTop: 16, borderTop: "1px solid #F0F1F4" }}>
           <div style={{ flex: "1 1 200px" }}>
-            <div style={{ fontSize: 11, color: "#8A93A3", marginBottom: 4 }}>Compté par :</div>
-            <div style={{ fontSize: 13.5, fontWeight: 700, color: "#1B2A4A", marginBottom: 20 }}>
-              {caisseAdmins.length > 0 ? caisseAdmins.join(", ") : "—"}
-            </div>
+            <div style={{ fontSize: 11, color: "#8A93A3", marginBottom: 24 }}>Compté par (nom) :</div>
             <div style={{ borderTop: "1px solid #1B2A4A", paddingTop: 4, fontSize: 11, color: "#8A93A3" }}>Signature</div>
           </div>
           <div style={{ flex: "1 1 200px" }}>
@@ -5268,11 +5245,11 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
           <EmptyState text="Aucun vendeur avec un retour du soir clôturé pour l'instant." />
         ) : (
           <Table
-            headers={["Vendeur", "Montant attendu", "Mobile (dépôts)", "Espèces versées", "Écart"]}
+            headers={["Vendeur", "Montant attendu", "Mobile", "Espèces versées", "Écart"]}
             rows={summaries.map(({ vendor, summary }) => [
               vendor.nom,
               fmtMoney(summary.montantAttendu),
-              renderMobileDeposits(summary, vendor.nom),
+              fmtMoney(summary.totalMobile),
               summary.finalise ? fmtMoney(summary.montantVerseEspeces) : "—",
               summary.finalise ? (
                 <Badge key="b" ok={summary.statut === "equilibre"} okText="Équilibré" warnText={`${summary.ecart > 0 ? "+" : ""}${fmtMoney(summary.ecart)}`} />
@@ -5831,6 +5808,197 @@ function paymentModeInfo(summary) {
   if (hasEspeces) return { label: "Espèces", color: "#3F8361" };
   if (hasMobile) return { label: "Mobile", color: "#1B2A4A" };
   return { label: "Non finalisé", color: "#9AA2B1" };
+}
+
+// ---------------------------------------------------------------------------
+// Fil d'actualité — paliers de vente atteints, anniversaires du jour et
+// annonces admin/gestionnaire, avec réactions. Visible par toute l'équipe
+// (sauf les comptes messagerie, volontairement limités à la Messagerie).
+// ---------------------------------------------------------------------------
+
+function timeAgoFR(iso) {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "à l'instant";
+  if (mins < 60) return `il y a ${mins} min`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `il y a ${hours} h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `il y a ${days} j`;
+  return fmtDateFr(iso.slice(0, 10));
+}
+
+function NewsFeedReactions({ item, onReact }) {
+  return (
+    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+      {["👍", "❤️"].map((emoji) => {
+        const count = item.reactions?.[emoji] || 0;
+        const mine = item.myReaction === emoji;
+        return (
+          <button
+            key={emoji}
+            onClick={() => onReact(item, emoji)}
+            style={{
+              display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 999,
+              border: `1px solid ${mine ? "#D9A441" : "#E4E7EC"}`, background: mine ? "#FBF3E1" : "#fff",
+              cursor: "pointer", fontSize: 12.5, color: mine ? "#8A6410" : "#5B6472",
+            }}
+          >
+            <span>{emoji}</span>
+            {count > 0 && <span>{count}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function NewsFeedItem({ item, onReact, onDelete }) {
+  let icon, title, body, accent;
+  if (item.type === "achievement") {
+    icon = <Trophy size={18} color={PALIER_COLORS[item.palier]} />;
+    title = `${item.vendorNom} a atteint l'objectif ${PALIER_LABELS[item.palier]?.toLowerCase() || item.palier}`;
+    body = `Chiffre d'affaires du jour : ${fmtMoney(item.montant)}`;
+    accent = PALIER_COLORS[item.palier];
+  } else if (item.type === "birthday") {
+    icon = <Cake size={18} color="#C1554A" />;
+    title = `Joyeux anniversaire ${item.vendorPrenom ? `${item.vendorPrenom} ` : ""}${item.vendorNom} !`;
+    body = item.age ? `${item.age} ans aujourd'hui 🎉` : "Aujourd'hui, c'est son anniversaire 🎉";
+    accent = "#C1554A";
+  } else {
+    icon = <Newspaper size={18} color="#1B2A4A" />;
+    title = item.createdBy ? `Annonce de ${item.createdBy}` : "Annonce";
+    body = item.content;
+    accent = "#1B2A4A";
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 12, padding: "14px 4px", borderBottom: "1px solid #F0F1F4" }}>
+      <div style={{ width: 34, height: 34, borderRadius: "50%", background: `${accent}1A`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        {icon}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: "#1B2A4A" }}>{title}</div>
+          <div style={{ fontSize: 11, color: "#9AA2B1", whiteSpace: "nowrap" }}>{timeAgoFR(item.createdAt)}</div>
+        </div>
+        <div style={{ fontSize: 13, color: "#5B6472", marginTop: 3, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{body}</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <NewsFeedReactions item={item} onReact={onReact} />
+          {item.type === "announcement" && item.canDelete && (
+            <button onClick={() => onDelete(item)} title="Supprimer cette annonce" style={{ ...iconBtnStyle, color: "#C1554A" }}>
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NewsFeed({ currentUser }) {
+  const { showToast } = useToast();
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [composerText, setComposerText] = useState("");
+  const [posting, setPosting] = useState(false);
+
+  const canPost = currentUser?.role === "admin" || currentUser?.role === "manager";
+
+  const load = async () => {
+    try {
+      const data = await store.getNewsFeed();
+      setItems(data);
+      setError("");
+    } catch (e) {
+      setError(e.message || "Erreur lors du chargement du fil d'actualité.");
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleReact = async (item, emoji) => {
+    // Mise à jour optimiste pour une réaction instantanée, puis on
+    // resynchronise avec le serveur (source de vérité pour les compteurs).
+    setItems((prev) => prev.map((it) => {
+      if (it.type !== item.type || it.key !== item.key) return it;
+      const reactions = { ...it.reactions };
+      if (it.myReaction) reactions[it.myReaction] = Math.max(0, (reactions[it.myReaction] || 0) - 1);
+      const nextMine = it.myReaction === emoji ? null : emoji;
+      if (nextMine) reactions[nextMine] = (reactions[nextMine] || 0) + 1;
+      return { ...it, reactions, myReaction: nextMine };
+    }));
+    try {
+      await store.reactToNewsItem(item.type, item.key, emoji);
+    } catch (e) {
+      showToast(e.message || "Erreur lors de l'envoi de la réaction.", "error");
+      load();
+    }
+  };
+
+  const handlePost = async () => {
+    const content = composerText.trim();
+    if (!content) return;
+    setPosting(true);
+    try {
+      await store.postAnnouncement(content);
+      setComposerText("");
+      await load();
+      showToast("Annonce publiée.", "success");
+    } catch (e) {
+      showToast(e.message || "Erreur lors de la publication.", "error");
+    }
+    setPosting(false);
+  };
+
+  const handleDelete = async (item) => {
+    const ok = window.confirm("Supprimer cette annonce ?");
+    if (!ok) return;
+    try {
+      await store.deleteAnnouncement(item.key);
+      await load();
+    } catch (e) {
+      showToast(e.message || "Erreur lors de la suppression.", "error");
+    }
+  };
+
+  return (
+    <div>
+      {canPost && (
+        <Card title="Publier une annonce">
+          <TextArea
+            value={composerText}
+            onChange={(e) => setComposerText(e.target.value)}
+            placeholder="Un message pour toute l'équipe…"
+            rows={3}
+          />
+          <div style={{ marginTop: 10 }}>
+            <Button onClick={handlePost} disabled={posting || !composerText.trim()}>
+              <Send size={15} /> {posting ? "Publication…" : "Publier"}
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      <Card title="Fil d'actualité">
+        {loading ? (
+          <div style={{ fontSize: 13, color: "#8A93A3" }}>Chargement…</div>
+        ) : error ? (
+          <div style={{ fontSize: 13, color: "#C1554A" }}>{error}</div>
+        ) : items.length === 0 ? (
+          <EmptyState text="Rien à afficher pour l'instant — les paliers de vente atteints, anniversaires et annonces apparaîtront ici." />
+        ) : (
+          <div>
+            {items.map((item) => (
+              <NewsFeedItem key={`${item.type}:${item.key}`} item={item} onReact={handleReact} onDelete={handleDelete} />
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
 }
 
 function Historique({ vendors, daysList, today, currentUser, reloadVendors }) {

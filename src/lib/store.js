@@ -800,3 +800,38 @@ export async function saveInventaire({ date, lignes, createdBy }) {
   });
   if (error) throw error;
 }
+
+// -----------------------------------------------------------------------------
+// Fil d'actualité — passe par la fonction Edge news-feed, qui agrège paliers
+// de vente, anniversaires du jour et annonces, et applique les droits (qui
+// peut publier/supprimer une annonce).
+// -----------------------------------------------------------------------------
+
+async function callNewsFeed(body) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  const { data, error } = await supabase.functions.invoke("news-feed", {
+    body, headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (error) throw new Error(await readFunctionError(error));
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+
+export async function getNewsFeed() {
+  const { items } = await callNewsFeed({ action: "list" });
+  return items || [];
+}
+
+export async function postAnnouncement(content) {
+  return callNewsFeed({ action: "post_announcement", content });
+}
+
+export async function deleteAnnouncement(id) {
+  await callNewsFeed({ action: "delete_announcement", id });
+}
+
+export async function reactToNewsItem(itemType, itemKey, emoji) {
+  const { myReaction } = await callNewsFeed({ action: "react", itemType, itemKey, emoji });
+  return myReaction;
+}
