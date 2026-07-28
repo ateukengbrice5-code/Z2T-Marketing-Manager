@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useContext } from "rea
 import {
   LayoutDashboard, Package, Boxes, Users, Truck, MoonStar, Wallet, History,
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown,
-  Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye,
+  Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye, Pencil,
   MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, Menu, UserCircle, ClipboardList, Newspaper,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Cell } from "recharts";
@@ -4466,6 +4466,8 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
   const [mobileNumero, setMobileNumero] = useState("");
   const [mobileMontant, setMobileMontant] = useState("");
   const [montantVerseInput, setMontantVerseInput] = useState("");
+  const [correctionId, setCorrectionId] = useState(null);
+  const [correctionInputs, setCorrectionInputs] = useState({});
 
   const vendor = isAdmin ? activeVendors.find((v) => v.id === selectedVendorId) : activeVendor;
 
@@ -4473,6 +4475,8 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
     setPendingInputs({});
     setMobileNumero("");
     setMobileMontant("");
+    setCorrectionId(null);
+    setCorrectionInputs({});
     if (vendor) {
       const summary = computeVersementSummary(day, vendor.id);
       setMobileOn(summary.mobilePayments.length > 0);
@@ -4549,6 +4553,60 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
       }
       return next;
     });
+  };
+
+  const commencerCorrection = (line) => {
+    if (!isAdmin) return;
+    setCorrectionId(line.id);
+    setCorrectionInputs((s) => ({ ...s, [line.id]: String(line.quantiteRestante) }));
+  };
+
+  const annulerCorrection = (lineId) => {
+    setCorrectionId(null);
+    setCorrectionInputs((s) => {
+      const next = { ...s };
+      delete next[lineId];
+      return next;
+    });
+  };
+
+  const validerCorrection = async (line) => {
+    if (!isAdmin) return;
+    const val = correctionInputs[line.id];
+    if (val === undefined || val === "") return;
+    const restante = Number(val);
+    if (Number.isNaN(restante) || restante < 0 || restante > line.quantiteRemise) {
+      showToast(
+        `Quantité restante invalide (saisi ${val}, remis ${line.quantiteRemise}). La quantité retournée ne peut pas dépasser la quantité remise le matin, ni être négative.`,
+        "error",
+        8000
+      );
+      return;
+    }
+    const ancienneRestante = line.quantiteRestante;
+    if (restante === ancienneRestante) {
+      annulerCorrection(line.id);
+      return;
+    }
+    const vendue = Math.max(0, line.quantiteRemise - restante);
+    const nextLines = day.lines.map((l) =>
+      l.id === line.id ? { ...l, quantiteRestante: restante, quantiteVendue: vendue, montantAttendu: vendue * l.prix } : l
+    );
+    await setDay({ ...day, lines: nextLines });
+    // On ne réajuste le stock que de la différence entre l'ancienne et la
+    // nouvelle quantité retournée, pour ne pas fausser le stock déjà mis à
+    // jour lors de la première validation.
+    const delta = restante - ancienneRestante;
+    if (delta !== 0) {
+      const nextProducts = products.map((p) => (p.id === line.productId ? { ...p, stock: p.stock + delta } : p));
+      await setProducts(nextProducts);
+    }
+    store.logActivity(
+      currentUser,
+      "correction_retour_du_soir",
+      `Correction du retour du soir de ${vendor.nom} pour ${line.productNom} : ${ancienneRestante} → ${restante} retourné(s) (désormais ${vendue} vendu(s)).`
+    );
+    annulerCorrection(line.id);
   };
 
   const addMobilePayment = async () => {
@@ -4641,16 +4699,70 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
       {done.length > 0 && (
         <Card title={`Retours déjà enregistrés pour ${vendor.nom}`}>
           <Table
-            headers={["Produit", "Remis", "Restant", "Vendu", "Montant attendu", "Stock"]}
-            rows={done.map((l) => [
-              l.productNom, l.quantiteRemise, l.quantiteRestante, l.quantiteVendue, fmtMoney(l.montantAttendu),
-              l.quantiteRestante > 0 ? (
-                <span key="s" style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "#3F8361" }}>
-                  <RotateCcw size={12} /> {l.quantiteRestante} retour au stock
-                </span>
-              ) : "—",
-            ])}
+            headers={
+              isAdmin
+                ? ["Produit", "Remis", "Restant", "Vendu", "Montant attendu", "Stock", ""]
+                : ["Produit", "Remis", "Restant", "Vendu", "Montant attendu", "Stock"]
+            }
+            rows={done.map((l) => {
+              const enCorrection = isAdmin && correctionId === l.id;
+              const base = [
+                l.productNom,
+                l.quantiteRemise,
+                enCorrection ? (
+                  <TextInput
+                    key="i"
+                    type="number"
+                    min={0}
+                    max={l.quantiteRemise}
+                    style={{ width: 90 }}
+                    value={correctionInputs[l.id] ?? ""}
+                    onChange={(e) => setCorrectionInputs((s) => ({ ...s, [l.id]: e.target.value }))}
+                  />
+                ) : (
+                  l.quantiteRestante
+                ),
+                l.quantiteVendue,
+                fmtMoney(l.montantAttendu),
+                l.quantiteRestante > 0 ? (
+                  <span key="s" style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "#3F8361" }}>
+                    <RotateCcw size={12} /> {l.quantiteRestante} retour au stock
+                  </span>
+                ) : "—",
+              ];
+              if (isAdmin) {
+                base.push(
+                  enCorrection ? (
+                    <div key="a" style={{ display: "flex", gap: 6 }}>
+                      <Button variant="gold" onClick={() => validerCorrection(l)} style={{ padding: "6px 10px", fontSize: 12 }}>OK</Button>
+                      <Button variant="ghost" onClick={() => annulerCorrection(l.id)} style={{ padding: "6px 10px", fontSize: 12 }}>Annuler</Button>
+                    </div>
+                  ) : (
+                    <button
+                      key="c"
+                      onClick={() => commencerCorrection(l)}
+                      style={{ ...iconBtnStyle, color: "#1B2A4A" }}
+                      title="Corriger ce retour"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                  )
+                );
+              }
+              return base;
+            })}
           />
+          <div
+            style={{
+              marginTop: 14, paddingTop: 14, borderTop: "1px solid #F0F1F4",
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+            }}
+          >
+            <span style={{ fontSize: 13.5, color: "#5B6472" }}>Nombre total de pièces</span>
+            <span style={{ fontSize: 15, fontWeight: 700, color: "#1B2A4A" }}>
+              {done.reduce((n, l) => n + l.quantiteRemise, 0)} remises · {done.reduce((n, l) => n + l.quantiteVendue, 0)} vendues · {done.reduce((n, l) => n + l.quantiteRestante, 0)} retournées
+            </span>
+          </div>
         </Card>
       )}
 
@@ -6169,6 +6281,7 @@ const EVENT_LABELS = {
   edit_distribution: "Distribution modifiée",
   cancel_distribution: "Distribution annulée",
   retour_du_soir: "Retour du soir validé",
+  correction_retour_du_soir: "Correction d'un retour du soir",
   add_mobile_payment: "Paiement mobile ajouté",
   remove_mobile_payment: "Paiement mobile supprimé",
   enregistrer_versement: "Versement espèces",
