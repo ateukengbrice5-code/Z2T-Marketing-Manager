@@ -5425,11 +5425,17 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
   const withdrawalsToday = (withdrawals || []).filter((w) => w.date === today);
   const totalAttendu = summaries.reduce((s, x) => s + x.summary.montantAttendu, 0);
 
-  // Écart de caisse global (encaissé - dépenses - attendu) : n'est affiché
-  // que lorsqu'il y a réellement un écart, juste après la case "montant attendu".
-  const totalEncaisseGlobal = totalEspeces + totalMobile;
-  const ecartCaisse = totalEncaisseGlobal - totalDepenses - totalAttendu;
+  // Écart de caisse global : somme des écarts de versement par vendeur
+  // (espèces versées - espèces attendues), sans tenir compte des dépenses
+  // du jour. N'est affiché que lorsqu'il y a réellement un écart, juste
+  // après la case "montant attendu".
+  const ecartCaisse = summaries.reduce((s, x) => s + (x.summary.finalise ? x.summary.ecart : 0), 0);
   const caisseEquilibree = Math.abs(ecartCaisse) < 1;
+
+  // Noms de celui ou ceux qui ont validé les versements du jour, pour
+  // mention automatique dans le PDF (ligne "Compté par") au lieu d'une
+  // signature manuscrite à remplir.
+  const validateurs = Array.from(new Set(summaries.filter((x) => x.summary.finalise && x.summary.validePar).map((x) => x.summary.validePar)));
 
   const resolveWithdrawal = async (id, statut) => {
     const w = (withdrawals || []).find((x) => x.id === id);
@@ -5557,7 +5563,10 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
 
         <div style={{ display: "flex", gap: 30, flexWrap: "wrap", marginTop: 30, paddingTop: 16, borderTop: "1px solid #F0F1F4" }}>
           <div style={{ flex: "1 1 200px" }}>
-            <div style={{ fontSize: 11, color: "#8A93A3", marginBottom: 24 }}>Compté par (nom) :</div>
+            <div style={{ fontSize: 11, color: "#8A93A3", marginBottom: 6 }}>Compté par (nom) :</div>
+            <div style={{ fontSize: 13, color: "#1B2A4A", fontWeight: 600, marginBottom: 18 }}>
+              {validateurs.length > 0 ? validateurs.join(", ") : "—"}
+            </div>
             <div style={{ borderTop: "1px solid #1B2A4A", paddingTop: 4, fontSize: 11, color: "#8A93A3" }}>Signature</div>
           </div>
           <div style={{ flex: "1 1 200px" }}>
