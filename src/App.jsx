@@ -5520,12 +5520,13 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
 
       <div className="no-print">
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
-        <StatCard label="TOTAL ESPÈCES (net des dépenses)" value={fmtMoney(especesNettes)} accent="#3F8361" />
+        <StatCard label="CHIFFRE D'AFFAIRES DE LA JOURNÉE" value={fmtMoney(totalAttendu)} accent="#D9A441" />
+        <StatCard label="DÉPENSES — AUJOURD'HUI" value={fmtMoney(totalDepenses)} accent="#C1554A" />
         <StatCard label="TOTAL PAIEMENT MOBILE" value={fmtMoney(totalMobile)} accent="#1B2A4A" />
+        <StatCard label="TOTAL ESPÈCES (net des dépenses)" value={fmtMoney(especesNettes)} accent="#3F8361" />
       </div>
 
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
-        <StatCard label="DÉPENSES — AUJOURD'HUI" value={fmtMoney(totalDepenses)} accent="#C1554A" />
         <StatCard label="DÉPENSES — CETTE SEMAINE" value={fmtMoney(depensesSemaine)} accent="#C1554A" />
         <StatCard label="DÉPENSES — CE MOIS" value={fmtMoney(depensesMois)} accent="#C1554A" />
       </div>
