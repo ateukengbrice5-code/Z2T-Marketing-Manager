@@ -1064,6 +1064,14 @@ function buildPresenceCycle(cycleStart, today, attendanceHistory, retourDoneDate
 }
 
 // Calcule le résumé de versement (espèces + mobile) d'un vendeur pour un jour donné
+// Nom complet affiché sur les cartes, fiches et tableaux vendeur — le nom
+// seul (v.nom) ne suffisait pas, le prénom (v.prenom) était saisi mais
+// jamais affiché nulle part dans l'interface.
+function vendorFullName(v) {
+  if (!v) return "";
+  return [v.nom, v.prenom].filter(Boolean).join(" ");
+}
+
 function computeVersementSummary(day, vendorId) {
   const lines = (day?.lines || []).filter((l) => l.vendorId === vendorId && l.quantiteRestante !== null);
   const montantAttendu = lines.reduce((s, l) => s + (l.montantAttendu || 0), 0);
@@ -1077,7 +1085,9 @@ function computeVersementSummary(day, vendorId) {
   return {
     lines, montantAttendu, mobilePayments: versement.mobilePayments || [], totalMobile,
     montantAVerserEspeces, montantVerseEspeces: finalise ? versement.montantVerseEspeces : null,
-    finalise, ecart, statut,
+    finalise, ecart, statut, validePar: finalise ? (versement.validePar || null) : null,
+    heureVersement: finalise ? (versement.heureVersement || null) : null,
+    totalPieces: lines.reduce((s, l) => s + (l.quantiteVendue || 0), 0),
   };
 }
 
@@ -2850,6 +2860,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
 
   const generateGenericInvite = async (role) => {
     setGenericInviteBusy(role);
+    if (role === "admin") setAdminError(""); else setMsgError("");
     try {
       const created = await store.createInviteLink({ role });
       await loadGenericInvites(role);
@@ -2857,7 +2868,12 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
       store.logActivity(currentUser, "create_invite_link", `Lien d'invitation généré (compte ${label}).`);
       showToast("Lien d'invitation généré — pense à le copier avant de quitter cet onglet.", "success");
     } catch (e) {
-      setError(e.message || "Erreur lors de la création du lien.");
+      // L'erreur doit s'afficher près du bouton cliqué (carte messagerie ou
+      // carte admin secondaire) et non dans l'état "error" général, affiché
+      // tout en haut de la page près du formulaire d'ajout de vendeur — sinon
+      // elle passe inaperçue et l'action semble ne rien faire.
+      const msg = e.message || "Erreur lors de la création du lien.";
+      if (role === "admin") setAdminError(msg); else setMsgError(msg);
     }
     setGenericInviteBusy(null);
   };
@@ -2871,7 +2887,8 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
       const label = role === "messenger" ? "messagerie" : "administrateur secondaire";
       store.logActivity(currentUser, "revoke_invite_link", `Lien d'invitation révoqué (compte ${label}).`);
     } catch (e) {
-      setError(e.message || "Erreur lors de la révocation du lien.");
+      const msg = e.message || "Erreur lors de la révocation du lien.";
+      if (role === "admin") setAdminError(msg); else setMsgError(msg);
     }
   };
 
@@ -2920,11 +2937,9 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
   const add = async () => {
     if (!nom.trim()) { setError("Indique un nom de vendeur."); return; }
     if (!prenom.trim()) { setError("Indique un prénom."); return; }
-    if (!numeroCni.trim()) { setError("Indique le numéro/référence de la pièce d'identité."); return; }
     if (!dateNaissance) { setError("Indique une date de naissance."); return; }
     if (!telephone.trim()) { setError("Indique un numéro de téléphone."); return; }
     if (!isValidCameroonPhone(telephone)) { setError("Le numéro de téléphone doit être un numéro mobile camerounais valide (9 chiffres commençant par 6, ex. 6XX XX XX XX)."); return; }
-    if (!photoFile) { setError("Ajoute une photo du vendeur."); return; }
     if (username.trim() && !password) { setError("Indique un mot de passe pour ce compte."); return; }
     if (password && !isStrongPassword(password)) { setError(PASSWORD_HELP_TEXT); return; }
     setError("");
@@ -2938,16 +2953,16 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
         dateNaissance: dateNaissance || null,
         telephone: telephone.trim(),
       });
-      try {
-        await store.uploadVendorPhoto(vendor.id, photoFile);
-        store.logActivity(currentUser, "upload_vendor_photo", `Photo ajoutée pour ${nom.trim()}.`);
-      } catch (photoErr) {
-        // La photo est désormais obligatoire : plutôt que de laisser un
-        // vendeur enregistré sans photo, on annule sa création.
-        await store.deleteVendor(vendor.id);
-        setError(`La photo n'a pas pu être envoyée, le vendeur n'a pas été créé : ${photoErr.message || photoErr}`);
-        setBusy(false);
-        return;
+      // La photo reste recommandée mais n'est plus obligatoire : on ne
+      // l'envoie que si l'admin en a choisi une, sans bloquer la création
+      // du vendeur si l'envoi échoue.
+      if (photoFile) {
+        try {
+          await store.uploadVendorPhoto(vendor.id, photoFile);
+          store.logActivity(currentUser, "upload_vendor_photo", `Photo ajoutée pour ${nom.trim()}.`);
+        } catch (photoErr) {
+          showToast(`Vendeur créé, mais la photo n'a pas pu être envoyée : ${photoErr.message || photoErr}`, "error", 8000);
+        }
       }
       if (username.trim()) {
         await store.createAccount({ username: username.trim(), password, role: "vendor", vendorId: vendor.id });
@@ -3057,17 +3072,17 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
 
         <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #F0F1F4" }}>
           <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
-            Tous les champs ci-dessous sont obligatoires.
+            Champs obligatoires, sauf le numéro de pièce et la photo qui restent facultatifs.
           </div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
             <div style={{ flex: "1 1 160px" }}>
-              <Label>Nature de la pièce *</Label>
+              <Label>Nature de la pièce</Label>
               <Select value={pieceNature} onChange={(e) => setPieceNature(e.target.value)}>
                 {PIECE_NATURE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </Select>
             </div>
             <div style={{ flex: "1 1 160px" }}>
-              <Label>Numéro / référence de la pièce *</Label>
+              <Label>Numéro / référence de la pièce</Label>
               <TextInput value={numeroCni} onChange={(e) => setNumeroCni(e.target.value)} />
             </div>
             <div style={{ flex: "1 1 160px" }}>
@@ -3079,7 +3094,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
               <TextInput value={telephone} onChange={(e) => setTelephone(e.target.value)} placeholder="Ex. 6XX XX XX XX" />
             </div>
             <div style={{ flex: "0 0 auto" }}>
-              <Label>Photo *</Label>
+              <Label>Photo</Label>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div style={{
                   width: 40, height: 40, borderRadius: "50%", background: "#EEF0F4", overflow: "hidden",
@@ -3145,7 +3160,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
               const invite = inviteUrls[v.id];
               const contrat = CONTRACT_STATUT_LABELS[v.contractStatut || "actif"];
               return [
-                v.nom,
+                vendorFullName(v),
                 v.numeroCni ? `${PIECE_NATURE_LABELS[v.pieceNature] || "Pièce"} — ${v.numeroCni}` : "—",
                 v.telephone || "—",
                 u ? u.username : "— aucun —",
@@ -3420,7 +3435,7 @@ function AttendanceBoard({ vendors, currentUser }) {
                 const e = entries[v.id] || { statut: null, notes: "", heure: null };
                 return (
                   <div key={v.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", paddingBottom: 10, borderBottom: "1px solid #F3F4F7" }}>
-                    <div style={{ width: 140, fontWeight: 600, fontSize: 13.5, color: "#1B2A4A" }}>{v.nom}</div>
+                    <div style={{ width: 140, fontWeight: 600, fontSize: 13.5, color: "#1B2A4A" }}>{vendorFullName(v)}</div>
                     <div style={{ display: "flex", gap: 6 }}>
                       {Object.entries(STATUT_LABELS).map(([key, { label, color }]) => (
                         <button
@@ -3514,6 +3529,7 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
   const [editingRegDate, setEditingRegDate] = useState(false);
   const [regDateInput, setRegDateInput] = useState(vendor?.dateEnregistrement || "");
   const [regDateSaving, setRegDateSaving] = useState(false);
+  const [todayDay, setTodayDay] = useState(null);
   const fileRef = useRef(null);
   const today = todayISO();
   const isAdmin = currentUser?.role === "admin";
@@ -3525,14 +3541,16 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
     const t = h.find((a) => a.date === today);
     if (t) { setStatut(t.statut); setNotes(t.notes || ""); setHeurePointage(t.heureArrivee || null); }
     try {
-      const [allDays, cycle, contest] = await Promise.all([
+      const [allDays, cycle, contest, dayToday] = await Promise.all([
         store.getDaysInRange(daysList || []),
         store.getLatestSalaryCycle(vendor.id),
         store.getContestationsForVendor(vendor.id),
+        store.getDay(today),
       ]);
       setAllDaysForCycle(allDays);
       setLatestCycle(cycle);
       setContestations(contest);
+      setTodayDay(dayToday);
     } catch (e) {
       console.error("Chargement des données de salaire/présence impossible", e);
     }
@@ -3548,6 +3566,7 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
   const presentCount = history.filter((a) => a.statut === "present").length;
   const absAutorise = history.filter((a) => a.statut === "absent_autorise").length;
   const absNonAutorise = history.filter((a) => a.statut === "absent_non_autorise").length;
+  const versementToday = todayDay ? computeVersementSummary(todayDay, vendor.id) : null;
 
   const onPickPhoto = async (e) => {
     const file = e.target.files?.[0];
@@ -3673,7 +3692,7 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
               display: "flex", alignItems: "center", justifyContent: "center", border: "3px solid #D9A441",
             }}>
               {photoUrl ? (
-                <img src={photoUrl} alt={vendor.nom} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                <img src={photoUrl} alt={vendorFullName(vendor)} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               ) : (
                 <Users size={32} color="#B7BECB" />
               )}
@@ -3693,7 +3712,7 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
             <input ref={fileRef} type="file" accept="image/*" onChange={onPickPhoto} style={{ display: "none" }} />
           </div>
           <div>
-            <h2 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", fontSize: 21, color: "#1B2A4A" }}>{vendor.nom}</h2>
+            <h2 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", fontSize: 21, color: "#1B2A4A" }}>{vendorFullName(vendor)}</h2>
             <div style={{ fontSize: 12.5, color: "#8A93A3", marginTop: 4 }}>
               {vendor.numeroCni ? `${PIECE_NATURE_LABELS[vendor.pieceNature] || "Pièce"} ${vendor.numeroCni}` : "Pièce d'identité non renseignée"} · {vendor.telephone || "téléphone non renseigné"}
             </div>
@@ -3777,6 +3796,31 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
           <TextInput placeholder="Note (facultatif)" value={notes} onChange={(e) => setNotes(e.target.value)} style={{ marginBottom: 10 }} />
           <Button variant="primary" onClick={saveAttendance} disabled={saving}>{saving ? "Enregistrement…" : "Enregistrer le pointage"}</Button>
           <div style={{ fontSize: 11, color: "#9AA2B1", marginTop: 6 }}>L'heure exacte sera visible par ce vendeur et par tous les admins.</div>
+
+          {versementToday && versementToday.lines.length > 0 && (
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px dashed #E7E9EE" }}>
+              <div style={{ fontSize: 12, color: "#8A93A3", fontWeight: 600, marginBottom: 8 }}>VERSEMENT DU JOUR</div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ flex: "1 1 120px", background: "#F7F8FA", borderRadius: 10, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 11, color: "#8A93A3" }}>Pièces vendues</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#1B2A4A" }}>{versementToday.totalPieces}</div>
+                </div>
+                <div style={{ flex: "1 1 120px", background: "#F7F8FA", borderRadius: 10, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 11, color: "#8A93A3" }}>Espèces versées</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#3F8361" }}>{versementToday.finalise ? fmtMoney(versementToday.montantVerseEspeces) : "—"}</div>
+                </div>
+                <div style={{ flex: "1 1 120px", background: "#F7F8FA", borderRadius: 10, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 11, color: "#8A93A3" }}>Dépôt mobile</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#1B2A4A" }}>{fmtMoney(versementToday.totalMobile)}</div>
+                </div>
+              </div>
+              <div style={{ fontSize: 11.5, color: "#8A93A3", marginTop: 8 }}>
+                {versementToday.finalise
+                  ? <>Versement validé{versementToday.heureVersement ? ` à ${versementToday.heureVersement}` : ""}{versementToday.validePar ? ` par ${versementToday.validePar}` : ""}.</>
+                  : "Versement du soir pas encore finalisé."}
+              </div>
+            </div>
+          )}
         </div>
 
         {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
@@ -4024,13 +4068,13 @@ function VendorMiniHeader({ vendor }) {
         display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: "2px solid #D9A441",
       }}>
         {vendor.photoUrl ? (
-          <img src={vendor.photoUrl} alt={vendor.nom} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          <img src={vendor.photoUrl} alt={vendorFullName(vendor)} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
         ) : (
           <Users size={16} color="#B7BECB" />
         )}
       </div>
       <div>
-        <div style={{ fontSize: 14, fontWeight: 700, color: "#1B2A4A" }}>{vendor.nom}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "#1B2A4A" }}>{vendorFullName(vendor)}</div>
         <div style={{ fontSize: 11, color: "#8A93A3" }}>
           {vendor.numeroCni ? `${PIECE_NATURE_LABELS[vendor.pieceNature] || "Pièce"} ${vendor.numeroCni}` : ""}{vendor.numeroCni && vendor.telephone ? " · " : ""}{vendor.telephone || ""}
         </div>
@@ -4116,12 +4160,12 @@ function VendorPicker({ vendors, selectedId, onSelect }) {
               display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
             }}>
               {v.photoUrl ? (
-                <img src={v.photoUrl} alt={v.nom} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                <img src={v.photoUrl} alt={vendorFullName(v)} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               ) : (
                 <Users size={13} color="#B7BECB" />
               )}
             </span>
-            {v.nom}
+            {vendorFullName(v)}
           </button>
         );
       })}
@@ -4136,6 +4180,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
   const [editQty, setEditQty] = useState({}); // lineId -> valeur en cours d'édition
   const [filterStatutJour, setFilterStatutJour] = useState("tous"); // "tous" | "encours" — filtre du tableau "Distributions du jour"
   const [searchProduct, setSearchProduct] = useState(""); // filtre produit dans le tableau de remise
+  const [visibleCount, setVisibleCount] = useState(8); // pagination de la liste "Distributions du jour", pour éviter une longue liste
 
   // Un vendeur au contrat clôturé ne doit plus recevoir de nouvelle
   // distribution, même saisie manuellement par l'administrateur.
@@ -4276,7 +4321,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
       </div>
 
       {selectedVendor && (
-        <Card title={`${selectedVendor.nom} — remise et suivi des produits`}>
+        <Card title={`${vendorFullName(selectedVendor)} — remise et suivi des produits`}>
           {products.length === 0 ? (
             <EmptyState text="Aucun produit enregistré — ajoute d'abord des produits dans l'onglet Produits." />
           ) : (
@@ -4386,7 +4431,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
               <>
                 <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
                   <button
-                    onClick={() => setFilterStatutJour("tous")}
+                    onClick={() => { setFilterStatutJour("tous"); setVisibleCount(8); }}
                     style={{
                       padding: "6px 12px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
                       border: filterStatutJour === "tous" ? "2px solid #1B2A4A" : "1px solid #D8DCE3",
@@ -4397,7 +4442,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
                     Tous ({groups.length})
                   </button>
                   <button
-                    onClick={() => setFilterStatutJour("encours")}
+                    onClick={() => { setFilterStatutJour("encours"); setVisibleCount(8); }}
                     style={{
                       padding: "6px 12px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
                       border: filterStatutJour === "encours" ? "2px solid #C1893D" : "1px solid #D8DCE3",
@@ -4414,7 +4459,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
                   <>
                     <Table
                       headers={["Vendeur", "Produit", "Qté remise", "Statut", ""]}
-                      rows={visibleGroups.map((g, i) => [
+                      rows={visibleGroups.slice(0, visibleCount).map((g, i) => [
                         g.vendorNom, g.productNom,
                         g.ligneModifiable ? (
                           <TextInput
@@ -4437,8 +4482,19 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
                         ) : "—",
                       ])}
                     />
-                    <div style={{ marginTop: 10, textAlign: "right", fontSize: 13, fontWeight: 700, color: "#1B2A4A" }}>
-                      Total : {total} produit{total > 1 ? "s" : ""}
+                    <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      {visibleGroups.length > visibleCount ? (
+                        <Button variant="ghost" onClick={() => setVisibleCount((n) => n + 8)} style={{ padding: "6px 12px", fontSize: 12.5 }}>
+                          Afficher plus ({visibleGroups.length - visibleCount} restant{visibleGroups.length - visibleCount > 1 ? "s" : ""})
+                        </Button>
+                      ) : visibleGroups.length > 8 ? (
+                        <Button variant="ghost" onClick={() => setVisibleCount(8)} style={{ padding: "6px 12px", fontSize: 12.5 }}>
+                          Réduire la liste
+                        </Button>
+                      ) : <span />}
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#1B2A4A" }}>
+                        Total : {total} produit{total > 1 ? "s" : ""}
+                      </div>
                     </div>
                   </>
                 )}
@@ -4649,7 +4705,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
     }
     const versements = { ...(day.versements || {}) };
     const current = versements[vendor.id] || { mobilePayments: [], montantVerseEspeces: null };
-    versements[vendor.id] = { ...current, montantVerseEspeces: montant };
+    versements[vendor.id] = { ...current, montantVerseEspeces: montant, validePar: currentUser?.username || null, heureVersement: nowHHMM() };
     await setDay({ ...day, versements });
     store.logActivity(currentUser, "enregistrer_versement", `Versement en espèces de ${montant} FCFA enregistré pour ${vendor.nom}.`);
   };
@@ -4669,12 +4725,12 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
             <VendorPicker vendors={activeVendors} selectedId={selectedVendorId} onSelect={setSelectedVendorId} />
           </div>
         ) : (
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#1B2A4A" }}>Vendeur : {vendor.nom}</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#1B2A4A" }}>Vendeur : {vendorFullName(vendor)}</div>
         )}
         {isAdmin && <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #F0F1F4" }}><VendorMiniHeader vendor={vendor} /></div>}
       </Card>
 
-      <Card title={`Produits distribués à ${vendor.nom} aujourd'hui`}>
+      <Card title={`Produits distribués à ${vendorFullName(vendor)} aujourd'hui`}>
         {pending.length === 0 ? (
           <EmptyState text="Aucun retour en attente pour ce vendeur." />
         ) : isAdmin ? (
@@ -4697,7 +4753,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
       </Card>
 
       {done.length > 0 && (
-        <Card title={`Retours déjà enregistrés pour ${vendor.nom}`}>
+        <Card title={`Retours déjà enregistrés pour ${vendorFullName(vendor)}`}>
           <Table
             headers={
               isAdmin
@@ -4722,7 +4778,20 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
                 ) : (
                   l.quantiteRestante
                 ),
-                l.quantiteVendue,
+                l.quantiteVendue > 0 ? (
+                  <span
+                    key="v"
+                    style={{
+                      display: "inline-block", minWidth: 22, textAlign: "center",
+                      fontWeight: 700, fontSize: 12.5, color: "#8A5A00",
+                      background: "#FFE9A8", padding: "3px 9px", borderRadius: 6,
+                    }}
+                  >
+                    {l.quantiteVendue}
+                  </span>
+                ) : (
+                  l.quantiteVendue
+                ),
                 fmtMoney(l.montantAttendu),
                 l.quantiteRestante > 0 ? (
                   <span key="s" style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "#3F8361" }}>
@@ -4760,7 +4829,11 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
           >
             <span style={{ fontSize: 13.5, color: "#5B6472" }}>Nombre total de pièces</span>
             <span style={{ fontSize: 15, fontWeight: 700, color: "#1B2A4A" }}>
-              {done.reduce((n, l) => n + l.quantiteRemise, 0)} remises · {done.reduce((n, l) => n + l.quantiteVendue, 0)} vendues · {done.reduce((n, l) => n + l.quantiteRestante, 0)} retournées
+              {done.reduce((n, l) => n + l.quantiteRemise, 0)} remises ·{" "}
+              <span style={{ color: "#8A5A00", background: "#FFE9A8", padding: "2px 8px", borderRadius: 6 }}>
+                {done.reduce((n, l) => n + l.quantiteVendue, 0)} vendues
+              </span>
+              {" "}· {done.reduce((n, l) => n + l.quantiteRestante, 0)} retournées
             </span>
           </div>
         </Card>
@@ -4846,6 +4919,11 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
                 {summary.statut === "exces" && "Excédent — ce montant sera enregistré comme bonus à verser au vendeur."}
                 {summary.statut === "equilibre" && "Versement équilibré, aucun écart."}
               </div>
+              {summary.validePar && (
+                <div style={{ fontSize: 12, color: "#5B6472", marginTop: 6 }}>
+                  Validé par : <strong>{summary.validePar}</strong>{summary.heureVersement ? ` à ${summary.heureVersement}` : ""}
+                </div>
+              )}
             </div>
           )}
         </Card>
@@ -5256,13 +5334,14 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
             <EmptyState text="Aucun vendeur avec un retour du soir clôturé pour l'instant." />
           ) : (
             <Table
-              headers={["Vendeur", "Montant attendu", "Mobile", "Espèces versées", "Écart"]}
+              headers={["Vendeur", "Montant attendu", "Mobile", "Espèces versées", "Écart", "Validé par"]}
               rows={summaries.map(({ vendor, summary }) => [
-                vendor.nom,
+                vendorFullName(vendor),
                 fmtMoney(summary.montantAttendu),
                 fmtMoney(summary.totalMobile),
                 summary.finalise ? fmtMoney(summary.montantVerseEspeces) : "—",
                 summary.finalise ? (summary.ecart === 0 ? "Équilibré" : `${summary.ecart > 0 ? "+" : ""}${fmtMoney(summary.ecart)}`) : "—",
+                summary.validePar || "—",
               ])}
             />
           )}
@@ -5357,15 +5436,16 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
           <EmptyState text="Aucun vendeur avec un retour du soir clôturé pour l'instant." />
         ) : (
           <Table
-            headers={["Vendeur", "Montant attendu", "Mobile", "Espèces versées", "Écart"]}
+            headers={["Vendeur", "Montant attendu", "Mobile", "Espèces versées", "Écart", "Validé par"]}
             rows={summaries.map(({ vendor, summary }) => [
-              vendor.nom,
+              vendorFullName(vendor),
               fmtMoney(summary.montantAttendu),
               fmtMoney(summary.totalMobile),
               summary.finalise ? fmtMoney(summary.montantVerseEspeces) : "—",
               summary.finalise ? (
                 <Badge key="b" ok={summary.statut === "equilibre"} okText="Équilibré" warnText={`${summary.ecart > 0 ? "+" : ""}${fmtMoney(summary.ecart)}`} />
               ) : "—",
+              summary.validePar || "—",
             ])}
           />
         )}
@@ -6179,7 +6259,7 @@ function Historique({ vendors, daysList, today, currentUser, reloadVendors }) {
             <StatCard label="TOTAL REÇU EN MOBILE" value={fmtMoney(totaux.mobile)} accent="#1B2A4A" />
           </div>
 
-          <Card title={`Historique détaillé — ${vendor.nom}`}>
+          <Card title={`Historique détaillé — ${vendorFullName(vendor)}`}>
             {vendorDays.length === 0 ? (
               <EmptyState text="Aucune activité enregistrée pour ce vendeur." />
             ) : (

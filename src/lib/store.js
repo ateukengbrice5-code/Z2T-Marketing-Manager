@@ -157,11 +157,13 @@ export async function getSecondaryAdmins() {
 // Journal d'activité (comptes administrateurs secondaires uniquement)
 // -----------------------------------------------------------------------------
 
-// N'enregistre rien pour l'admin principal — voir App.jsx, appelé seulement
-// quand currentUser est un admin secondaire. Passe par une fonction Edge pour
-// capturer l'adresse IP et l'appareil côté serveur (impossible depuis le navigateur).
+// Enregistre l'action de tout utilisateur connecté (admin principal compris —
+// avant, l'admin principal était ignoré ici, ce qui faisait disparaître son
+// nom du Journal d'activité, par exemple lors de la validation d'un versement).
+// Passe par une fonction Edge pour capturer l'adresse IP et l'appareil côté
+// serveur (impossible depuis le navigateur).
 export async function logActivity(currentUser, eventType, description, metadata) {
-  if (!currentUser || currentUser.isPrimary) return;
+  if (!currentUser) return;
   try {
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData?.session?.access_token;
