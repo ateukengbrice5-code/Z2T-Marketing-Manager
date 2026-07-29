@@ -4260,6 +4260,18 @@ function DayNavigator({ date, today, onChange }) {
 function Distribution({ products, setProducts, vendors, day: dayProp, setDay: setDayProp, ensureTodayInList, daysList, currentUser, today }) {
   const [viewDate, setViewDate] = useState(today);
   const [pastDay, setPastDay] = useState(null);
+  const prevTodayRef = useRef(today);
+
+  // Si la date du jour change (minuit passé, onglet resté ouvert) alors qu'on
+  // était sur "aujourd'hui", on suit automatiquement le nouveau jour au lieu
+  // de rester bloqué sur l'ancienne date (bug : dépenses/lignes de la veille
+  // qui semblaient "traîner" sur le jour courant).
+  useEffect(() => {
+    if (viewDate === prevTodayRef.current && today !== prevTodayRef.current) {
+      setViewDate(today);
+    }
+    prevTodayRef.current = today;
+  }, [today, viewDate]);
 
   useEffect(() => {
     if (viewDate === today) { setPastDay(null); return; }
@@ -4615,6 +4627,17 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
   const { showToast } = useToast();
   const [viewDate, setViewDate] = useState(today);
   const [pastDay, setPastDay] = useState(null);
+  const prevTodayRef = useRef(today);
+
+  // Idem Distribution/Caisse : si le jour change pendant que l'onglet reste
+  // ouvert, on repasse automatiquement sur "aujourd'hui" au lieu de rester
+  // figé sur la veille.
+  useEffect(() => {
+    if (viewDate === prevTodayRef.current && today !== prevTodayRef.current) {
+      setViewDate(today);
+    }
+    prevTodayRef.current = today;
+  }, [today, viewDate]);
 
   useEffect(() => {
     if (viewDate === today) { setPastDay(null); return; }
@@ -5327,6 +5350,18 @@ function Messagerie({ currentUser, vendors = [] }) {
 function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWithdrawals, notifications, setNotifications, daysList, today, currentUser }) {
   const [viewDate, setViewDate] = useState(today);
   const [pastDay, setPastDay] = useState(null);
+  const prevTodayRef = useRef(today);
+
+  // Corrige le bug : si l'onglet Caisse reste ouvert d'un jour à l'autre,
+  // viewDate restait figé sur la veille et affichait donc les dépenses
+  // d'hier comme si c'était celles d'aujourd'hui. On resynchronise
+  // automatiquement viewDate dès que "today" avance.
+  useEffect(() => {
+    if (viewDate === prevTodayRef.current && today !== prevTodayRef.current) {
+      setViewDate(today);
+    }
+    prevTodayRef.current = today;
+  }, [today, viewDate]);
 
   useEffect(() => {
     if (viewDate === today) { setPastDay(null); return; }
