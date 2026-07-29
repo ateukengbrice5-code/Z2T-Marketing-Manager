@@ -5425,6 +5425,12 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
   const withdrawalsToday = (withdrawals || []).filter((w) => w.date === today);
   const totalAttendu = summaries.reduce((s, x) => s + x.summary.montantAttendu, 0);
 
+  // Écart de caisse global (encaissé - dépenses - attendu) : n'est affiché
+  // que lorsqu'il y a réellement un écart, juste après la case "montant attendu".
+  const totalEncaisseGlobal = totalEspeces + totalMobile;
+  const ecartCaisse = totalEncaisseGlobal - totalDepenses - totalAttendu;
+  const caisseEquilibree = Math.abs(ecartCaisse) < 1;
+
   const resolveWithdrawal = async (id, statut) => {
     const w = (withdrawals || []).find((x) => x.id === id);
     let refusalReason = null;
@@ -5491,6 +5497,14 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
 
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
           <StatCard label="MONTANT ATTENDU (TOUS VENDEURS)" value={fmtMoney(totalAttendu)} accent="#1B2A4A" />
+          {!caisseEquilibree && (
+            <StatCard
+              label="ÉCART DE CAISSE"
+              value={`${ecartCaisse > 0 ? "+" : ""}${fmtMoney(ecartCaisse)}`}
+              accent={ecartCaisse > 0 ? "#3F9C6D" : "#C1554A"}
+              sub={ecartCaisse > 0 ? "Excédent" : "Manquant"}
+            />
+          )}
           <StatCard label="ESPÈCES NETTES EN CAISSE" value={fmtMoney(especesNettes)} accent="#3F8361" />
           <StatCard label="PAIEMENT MOBILE" value={fmtMoney(totalMobile)} />
           <StatCard label="DÉPENSES DU JOUR" value={fmtMoney(totalDepenses)} accent="#C1554A" />
@@ -5556,6 +5570,14 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
       <div className="no-print">
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
         <StatCard label="CHIFFRE D'AFFAIRES DE LA JOURNÉE" value={fmtMoney(totalAttendu)} accent="#D9A441" />
+        {!caisseEquilibree && (
+          <StatCard
+            label="ÉCART DE CAISSE"
+            value={`${ecartCaisse > 0 ? "+" : ""}${fmtMoney(ecartCaisse)}`}
+            accent={ecartCaisse > 0 ? "#3F9C6D" : "#C1554A"}
+            sub={ecartCaisse > 0 ? "Excédent" : "Manquant"}
+          />
+        )}
         <StatCard label="DÉPENSES — AUJOURD'HUI" value={fmtMoney(totalDepenses)} accent="#C1554A" />
         <StatCard label="TOTAL PAIEMENT MOBILE" value={fmtMoney(totalMobile)} accent="#1B2A4A" />
         <StatCard label="TOTAL ESPÈCES (net des dépenses)" value={fmtMoney(especesNettes)} accent="#3F8361" />
