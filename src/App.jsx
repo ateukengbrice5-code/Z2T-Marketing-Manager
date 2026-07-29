@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef, useContext } from "react";
 import {
   LayoutDashboard, Package, Boxes, Users, Truck, MoonStar, Wallet, History,
-  Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown,
-  Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye, Pencil,
+  Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown, ChevronLeft,
+  Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye, Pencil, Sun,
   MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, Menu, UserCircle, ClipboardList, Newspaper,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Cell } from "recharts";
@@ -1221,6 +1221,12 @@ function AppRoot() {
   const [objectives, setObjectives] = useState({ minimal: 0, maximal: 0, extraordinaire: 0 });
   const [unseenAchievements, setUnseenAchievements] = useState([]);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => {
+    try { return localStorage.getItem("z2t_dark_mode") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("z2t_dark_mode", darkMode ? "1" : "0"); } catch { /* stockage indisponible, on ignore */ }
+  }, [darkMode]);
   const syncFailCounts = useRef({});
 
   // Force un nouveau rendu toutes les minutes pour détecter le changement de jour à 00h
@@ -1622,7 +1628,7 @@ function AppRoot() {
   const activeVendor = currentUser.role === "vendor" ? currentVendor : null;
 
   return (
-    <div className="app-shell" style={{ display: "flex", minHeight: "100vh", fontFamily: "Calibri, Arial, sans-serif", background: "#F7F8FA" }}>
+    <div className="app-shell" data-theme={darkMode ? "dark" : "light"} style={{ display: "flex", minHeight: "100vh", fontFamily: "Calibri, Arial, sans-serif", background: "#F7F8FA" }}>
       <style>{`
         .app-sidebar { position: fixed; top: 0; left: 0; height: 100vh; z-index: 100; transition: transform 0.25s ease; overflow-y: auto; }
         .app-main { margin-left: 220px; }
@@ -1635,6 +1641,28 @@ function AppRoot() {
           .mobile-menu-btn { display: inline-flex; }
           .mobile-nav-backdrop.open { display: block; position: fixed; inset: 0; background: rgba(21,32,57,0.5); z-index: 90; }
         }
+
+        /* Mode nuit — l'app est construite avec des couleurs fixes en style
+           inline (pas de variables CSS d'origine), donc on surcharge par
+           dessus avec !important plutôt que de réécrire des centaines de
+           styles. Couvre l'essentiel (fond, cartes, tableaux, champs,
+           textes) ; un recoin très spécifique peut rester en clair. */
+        [data-theme="dark"] { background: #10151F; }
+        [data-theme="dark"] .app-main { background: #10151F; }
+        [data-theme="dark"] .app-header { background: #10151F !important; border-bottom-color: #232B3D !important; }
+        [data-theme="dark"] .app-header h1 { color: #E8EAF0 !important; }
+        [data-theme="dark"] .app-date { color: #8B95AC !important; }
+        [data-theme="dark"] .card { background: #1A2131 !important; border-color: #262E42 !important; }
+        [data-theme="dark"] .card h3 { color: #E8EAF0 !important; }
+        [data-theme="dark"] h1, [data-theme="dark"] h2 { color: #E8EAF0 !important; }
+        [data-theme="dark"] label { color: #B7BECB !important; }
+        [data-theme="dark"] input, [data-theme="dark"] select, [data-theme="dark"] textarea {
+          background: #131A28 !important; border-color: #2A3348 !important; color: #E8EAF0 !important;
+        }
+        [data-theme="dark"] table { color: #D6DAE4 !important; }
+        [data-theme="dark"] th { color: #8B95AC !important; border-bottom-color: #262E42 !important; }
+        [data-theme="dark"] td { border-bottom-color: #212739 !important; }
+        [data-theme="dark"] tr:hover td { background: #1E2536 !important; }
       `}</style>
 
       {/* Fond semi-transparent derrière le menu mobile ouvert */}
@@ -1674,11 +1702,24 @@ function AppRoot() {
         })}
 
         <button
+          className="dark-mode-btn"
+          onClick={() => setDarkMode((v) => !v)}
+          style={{
+            display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left",
+            padding: "10px 12px", marginTop: "auto", borderRadius: 8, border: "none", cursor: "pointer",
+            background: "transparent", color: "#C7CCDA", fontSize: 13.5, fontWeight: 500,
+          }}
+        >
+          {darkMode ? <Sun size={16} /> : <MoonStar size={16} />}
+          {darkMode ? "Mode clair" : "Mode nuit"}
+        </button>
+
+        <button
           className="logout-btn"
           onClick={handleLogout}
           style={{
             display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left",
-            padding: "10px 12px", marginTop: "auto", borderRadius: 8, border: "none", cursor: "pointer",
+            padding: "10px 12px", borderRadius: 8, border: "none", cursor: "pointer",
             background: "transparent", color: "#E28A80", fontSize: 13.5, fontWeight: 600,
           }}
         >
@@ -1765,7 +1806,7 @@ function AppRoot() {
           <Vendeurs vendors={vendors} reloadVendors={reloadVendors} isAdmin={isAdmin} currentUser={currentUser} daysList={daysList} />
         )}
         {tab === "distribution" && isAdmin && (
-          <Distribution products={products} setProducts={persistProducts} vendors={vendors} day={day} setDay={persistDay} ensureTodayInList={ensureTodayInList} daysList={daysList} currentUser={currentUser} />
+          <Distribution products={products} setProducts={persistProducts} vendors={vendors} day={day} setDay={persistDay} ensureTodayInList={ensureTodayInList} daysList={daysList} currentUser={currentUser} today={today} />
         )}
         {tab === "retour" && (
           <RetourDuSoir
@@ -1777,6 +1818,7 @@ function AppRoot() {
             setDay={persistDay}
             activeVendor={activeVendor}
             currentUser={currentUser}
+            today={today}
           />
         )}
         {tab === "presence" && !canManage && (
@@ -4173,7 +4215,64 @@ function VendorPicker({ vendors, selectedId, onSelect }) {
   );
 }
 
-function Distribution({ products, setProducts, vendors, day, setDay, ensureTodayInList, daysList, currentUser }) {
+// Navigateur jour par jour (façon calendrier) — utilisé dans Distribution,
+// Retour du soir et Caisse pour consulter/corriger une journée passée sans
+// jamais pouvoir aller dans le futur.
+function DayNavigator({ date, today, onChange }) {
+  const isToday = date === today;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 18 }}>
+      <button
+        onClick={() => onChange(addDays(date, -1))}
+        title="Jour précédent"
+        style={{ ...iconBtnStyle, border: "1px solid #D8DCE3", borderRadius: 8, padding: "8px 10px", color: "#1B2A4A" }}
+      >
+        <ChevronLeft size={16} />
+      </button>
+      <input
+        type="date"
+        value={date}
+        max={today}
+        onChange={(e) => e.target.value && onChange(e.target.value)}
+        style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid #D8DCE3", fontSize: 13.5, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A" }}
+      />
+      <button
+        onClick={() => !isToday && onChange(addDays(date, 1))}
+        disabled={isToday}
+        title="Jour suivant"
+        style={{ ...iconBtnStyle, border: "1px solid #D8DCE3", borderRadius: 8, padding: "8px 10px", color: isToday ? "#C7CCDA" : "#1B2A4A", cursor: isToday ? "default" : "pointer" }}
+      >
+        <ChevronRight size={16} />
+      </button>
+      {!isToday && (
+        <Button variant="ghost" onClick={() => onChange(today)}>Revenir à aujourd'hui</Button>
+      )}
+      <span style={{ fontSize: 13.5, fontWeight: 700, color: "#1B2A4A", textTransform: "capitalize" }}>{formatDateFR(date)}</span>
+      {!isToday && (
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#D9A441", background: "#FFF8EC", padding: "3px 9px", borderRadius: 999 }}>
+          JOUR PASSÉ — consultation / correction
+        </span>
+      )}
+    </div>
+  );
+}
+
+function Distribution({ products, setProducts, vendors, day: dayProp, setDay: setDayProp, ensureTodayInList, daysList, currentUser, today }) {
+  const [viewDate, setViewDate] = useState(today);
+  const [pastDay, setPastDay] = useState(null);
+
+  useEffect(() => {
+    if (viewDate === today) { setPastDay(null); return; }
+    (async () => setPastDay(await store.getDay(viewDate)))();
+  }, [viewDate, today]);
+
+  const day = viewDate === today ? dayProp : (pastDay || emptyDay(viewDate));
+  const setDay = async (next) => {
+    if (viewDate === today) { await setDayProp(next); return; }
+    setPastDay(next);
+    await store.setDay(next);
+  };
+
   const [vendorId, setVendorId] = useState("");
   const [qtyByProduct, setQtyByProduct] = useState({}); // productId -> quantité saisie (texte)
   const [error, setError] = useState("");
@@ -4255,7 +4354,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
 
     await setDay({ ...day, lines: nextLines });
     await setProducts(nextProducts);
-    await ensureTodayInList(daysList);
+    if (viewDate === today) await ensureTodayInList(daysList);
     store.logActivity(
       currentUser,
       "distribute",
@@ -4307,6 +4406,7 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
 
   return (
     <div>
+      <DayNavigator date={viewDate} today={today} onChange={setViewDate} />
       <div style={{ position: "sticky", top: 78, zIndex: 15, background: "#F7F8FA", paddingBottom: 2 }}>
         <Card title="Vendeurs actifs">
           <VendorPicker vendors={activeVendors} selectedId={vendorId} onSelect={selectVendor} />
@@ -4511,8 +4611,23 @@ function Distribution({ products, setProducts, vendors, day, setDay, ensureToday
 // Retour du soir — tous les produits d'un vendeur d'un coup, + versement
 // ---------------------------------------------------------------------------
 
-function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, activeVendor, currentUser }) {
+function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, setDay: setDayProp, activeVendor, currentUser, today }) {
   const { showToast } = useToast();
+  const [viewDate, setViewDate] = useState(today);
+  const [pastDay, setPastDay] = useState(null);
+
+  useEffect(() => {
+    if (viewDate === today) { setPastDay(null); return; }
+    (async () => setPastDay(await store.getDay(viewDate)))();
+  }, [viewDate, today]);
+
+  const day = viewDate === today ? dayProp : (pastDay || emptyDay(viewDate));
+  const setDay = async (next) => {
+    if (viewDate === today) { await setDayProp(next); return; }
+    setPastDay(next);
+    await store.setDay(next);
+  };
+
   // Un vendeur au contrat clôturé ne doit plus pouvoir faire l'objet d'un
   // retour du soir saisi manuellement par l'administrateur (voir Distribution).
   const activeVendors = isAdmin ? vendors.filter((v) => v.contractStatut !== "cloture") : vendors;
@@ -4712,6 +4827,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day, setDay, ac
 
   return (
     <div>
+      <DayNavigator date={viewDate} today={today} onChange={setViewDate} />
       {!isAdmin && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, color: "#8A93A3", fontSize: 12.5 }}>
           <Eye size={14} /> Espace de consultation — seul l'administrateur peut saisir ou modifier ces informations.
@@ -5208,7 +5324,21 @@ function Messagerie({ currentUser, vendors = [] }) {
   );
 }
 
-function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notifications, setNotifications, daysList, today, currentUser }) {
+function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWithdrawals, notifications, setNotifications, daysList, today, currentUser }) {
+  const [viewDate, setViewDate] = useState(today);
+  const [pastDay, setPastDay] = useState(null);
+
+  useEffect(() => {
+    if (viewDate === today) { setPastDay(null); return; }
+    (async () => setPastDay(await store.getDay(viewDate)))();
+  }, [viewDate, today]);
+
+  const day = viewDate === today ? dayProp : (pastDay || emptyDay(viewDate));
+  const setDay = async (next) => {
+    if (viewDate === today) { await setDayProp(next); return; }
+    setPastDay(next);
+    await store.setDay(next);
+  };
   const { showToast } = useToast();
   const [label, setLabel] = useState("");
   const [montant, setMontant] = useState("");
@@ -5228,7 +5358,7 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
   const totalDepenses = (day.expenses || []).reduce((s, e) => s + (Number(e.montant) || 0), 0);
   const especesNettes = totalEspeces - totalDepenses;
 
-  const daysWithToday = allDays ? (allDays.some((d) => d.date === today) ? allDays : [...allDays, day]) : [day];
+  const daysWithToday = allDays ? (allDays.some((d) => d.date === today) ? allDays : [...allDays, dayProp]) : [dayProp];
   const depensesSemaine = sumExpensesOverRange(daysWithToday, getCurrentWeekRange(today));
   const depensesMois = sumExpensesOverRange(daysWithToday, getCurrentMonthRange(today));
 
@@ -5304,9 +5434,11 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
         }
       `}</style>
 
+      <DayNavigator date={viewDate} today={today} onChange={setViewDate} />
+
       <div style={{ marginBottom: 20 }}>
         <Button variant="gold" onClick={printCaisse}>
-          <Printer size={15} /> Imprimer / Enregistrer en PDF — Situation de caisse du {fmtDateFr(today)}
+          <Printer size={15} /> Imprimer / Enregistrer en PDF — Situation de caisse du {fmtDateFr(viewDate)}
         </Button>
       </div>
 
@@ -5314,7 +5446,7 @@ function Caisse({ vendors, day, setDay, withdrawals, setWithdrawals, notificatio
         <Card>
           <div style={{ textAlign: "center", marginBottom: 6 }}>
             <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 21, fontWeight: 700, color: "#1B2A4A" }}>
-              Situation de caisse — {fmtDateFr(today)}
+              Situation de caisse — {fmtDateFr(viewDate)}
             </div>
             <div style={{ fontSize: 12, color: "#8A93A3" }}>
               Document généré le {fmtDateFr(today)}{currentUser?.username ? ` par ${currentUser.username}` : ""}
