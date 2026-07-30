@@ -1227,6 +1227,80 @@ function AppRoot() {
   useEffect(() => {
     try { localStorage.setItem("z2t_dark_mode", darkMode ? "1" : "0"); } catch { /* stockage indisponible, on ignore */ }
   }, [darkMode]);
+
+  // ---- Notifications de messagerie façon Facebook/WhatsApp -----------------
+  // Avant : les messages n'étaient récupérés que pendant qu'on avait la
+  // conversation ouverte dans l'onglet Messagerie — rien ne prévenait si on
+  // était ailleurs dans l'app. Ici, un sondage léger tourne en permanence dès
+  // qu'on est connecté, quel que soit l'onglet affiché, pour repérer les
+  // nouveaux messages, faire sonner une alerte et allumer un badge sur
+  // l'onglet Messagerie de la barre latérale.
+  const [dmUnreadByUser, setDmUnreadByUser] = useState({});
+  const dmUnreadPrevRef = useRef({});
+  const usersByIdRef = useRef({});
+  const tabRef = useRef(tab);
+  useEffect(() => { tabRef.current = tab; }, [tab]);
+
+  const playNotificationSound = useCallback(() => {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.35);
+    } catch { /* audio indisponible (navigateur, permissions) : on ignore */ }
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    (async () => {
+      try {
+        const list = await store.getAllUsers();
+        usersByIdRef.current = Object.fromEntries(list.map((u) => [u.id, u]));
+      } catch { /* annuaire indisponible, les toasts afficheront un nom générique */ }
+    })();
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const counts = await store.getDMUnreadCounts();
+        if (cancelled) return;
+        setDmUnreadByUser(counts);
+        const prev = dmUnreadPrevRef.current;
+        const newSenders = [];
+        Object.entries(counts).forEach(([uid, n]) => {
+          if (n > (prev[uid] || 0)) newSenders.push(usersByIdRef.current[uid]?.username || "un utilisateur");
+        });
+        dmUnreadPrevRef.current = counts;
+        if (newSenders.length > 0) {
+          playNotificationSound();
+          if (tabRef.current !== "messagerie") {
+            showToast(`Nouveau message de ${newSenders.join(", ")}`, "info");
+          }
+        }
+      } catch { /* réseau indisponible : on retentera au prochain sondage */ }
+    };
+    poll();
+    const interval = setInterval(poll, 6000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [currentUser, playNotificationSound, showToast]);
+
+  const dmUnreadTotal = Object.values(dmUnreadByUser).reduce((s, n) => s + n, 0);
+
+  useEffect(() => {
+    document.title = dmUnreadTotal > 0 ? `(${dmUnreadTotal > 99 ? "99+" : dmUnreadTotal}) Z2T Marketing Manager` : "Z2T Marketing Manager";
+  }, [dmUnreadTotal]);
   const syncFailCounts = useRef({});
 
   // Force un nouveau rendu toutes les minutes pour détecter le changement de jour à 00h
@@ -1697,6 +1771,15 @@ function AppRoot() {
             >
               <Icon size={16} />
               {n.label}
+              {n.id === "messagerie" && dmUnreadTotal > 0 && (
+                <span style={{
+                  marginLeft: "auto", background: "#C1554A", color: "#fff", fontSize: 11, fontWeight: 700,
+                  borderRadius: 999, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center",
+                  padding: "0 5px",
+                }}>
+                  {dmUnreadTotal > 99 ? "99+" : dmUnreadTotal}
+                </span>
+              )}
             </button>
           );
         })}
@@ -5127,8 +5210,14 @@ function Messagerie({ currentUser, vendors = [] }) {
     const interval = setInterval(async () => {
       if (!conversationId) return;
       const msgs = await store.getDMMessages(conversationId);
-      if (!cancelled) setMessages(msgs);
-    }, 8000);
+      if (cancelled) return;
+      setMessages(msgs);
+      // La conversation reste ouverte à l'écran : les nouveaux messages qui
+      // arrivent doivent être marqués comme lus au fil de l'eau, sinon le
+      // badge "non lus" reste faussement allumé alors qu'on est en train
+      // de lire.
+      await store.markDMMessagesRead(conversationId, currentUser.id);
+    }, 4000);
     return () => { cancelled = true; clearInterval(interval); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedUserId]);
