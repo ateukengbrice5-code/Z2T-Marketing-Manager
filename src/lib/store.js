@@ -41,6 +41,7 @@ export async function getMyProfile() {
   return {
     id: data.id, username: data.username, role: data.role,
     vendorId: data.vendor_id, isPrimary: data.is_primary,
+    isSuperAdmin: !!data.is_super_admin,
   };
 }
 
@@ -836,4 +837,85 @@ export async function deleteAnnouncement(id) {
 export async function reactToNewsItem(itemType, itemKey, emoji) {
   const { myReaction } = await callNewsFeed({ action: "react", itemType, itemKey, emoji });
   return myReaction;
+}
+
+// -----------------------------------------------------------------------------
+// Entreprises clientes de la plateforme — réservé au super-admin. La date de
+// fin d'abonnement est calculée automatiquement à partir d'une durée en mois
+// (renouvellement), jamais saisie à la main. date_fin = null signifie "sans
+// expiration" (cas du compte historique créé avant la gestion multi-entreprises).
+// -----------------------------------------------------------------------------
+
+function mapEntreprise(e) {
+  return {
+    id: e.id, nom: e.nom,
+    contactNom: e.contact_nom, contactTelephone: e.contact_telephone, contactEmail: e.contact_email,
+    statut: e.statut, dureeMois: e.duree_mois, dateDebut: e.date_debut, dateFin: e.date_fin,
+    montant: e.montant != null ? Number(e.montant) : null, notes: e.notes,
+    createdAt: e.created_at, updatedAt: e.updated_at,
+  };
+}
+
+function addMoisISO(dateISO, mois) {
+  const d = new Date(dateISO + "T00:00:00");
+  d.setMonth(d.getMonth() + Number(mois));
+  return d.toISOString().slice(0, 10);
+}
+
+export async function getEntreprises() {
+  const { data, error } = await supabase.from("entreprises").select("*").order("nom");
+  if (error) throw error;
+  return (data || []).map(mapEntreprise);
+}
+
+// today : date du jour (ISO) fournie par l'appelant, pour rester cohérent
+// avec le reste de l'appli plutôt que de recalculer la date ici.
+export async function createEntreprise({ nom, contactNom, contactTelephone, contactEmail, dureeMois, montant, notes, createdBy, today }) {
+  const dateDebut = today;
+  const dateFin = dureeMois ? addMoisISO(dateDebut, dureeMois) : null;
+  const { data, error } = await supabase.from("entreprises").insert({
+    nom, contact_nom: contactNom || null, contact_telephone: contactTelephone || null, contact_email: contactEmail || null,
+    statut: "actif", duree_mois: dureeMois || null, date_debut: dateDebut, date_fin: dateFin,
+    montant: montant || null, notes: notes || null, created_by: createdBy || null,
+  }).select().single();
+  if (error) throw error;
+  return mapEntreprise(data);
+}
+
+// Renouvelle l'abonnement pour une durée donnée : repart de la date de fin
+// actuelle si elle n'est pas encore dépassée (renouvellement anticipé, on ne
+// perd pas de jours déjà payés), sinon repart d'aujourd'hui. Réactive aussi
+// l'accès si l'entreprise était désactivée.
+export async function renewEntreprise(id, dureeMois, today) {
+  const { data: current, error: getErr } = await supabase.from("entreprises").select("date_fin, statut").eq("id", id).single();
+  if (getErr) throw getErr;
+  const base = (current.date_fin && current.statut === "actif" && current.date_fin >= today) ? current.date_fin : today;
+  const dateFin = addMoisISO(base, dureeMois);
+  const { error } = await supabase.from("entreprises").update({
+    duree_mois: dureeMois, date_fin: dateFin, statut: "actif", updated_at: new Date().toISOString(),
+  }).eq("id", id);
+  if (error) throw error;
+}
+
+// Active ou désactive manuellement l'accès (indépendamment de la date de fin).
+export async function setEntrepriseStatut(id, statut) {
+  const { error } = await supabase.from("entreprises").update({ statut, updated_at: new Date().toISOString() }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function updateEntreprise(id, fields) {
+  const patch = { updated_at: new Date().toISOString() };
+  if (fields.nom !== undefined) patch.nom = fields.nom;
+  if (fields.contactNom !== undefined) patch.contact_nom = fields.contactNom || null;
+  if (fields.contactTelephone !== undefined) patch.contact_telephone = fields.contactTelephone || null;
+  if (fields.contactEmail !== undefined) patch.contact_email = fields.contactEmail || null;
+  if (fields.montant !== undefined) patch.montant = fields.montant || null;
+  if (fields.notes !== undefined) patch.notes = fields.notes || null;
+  const { error } = await supabase.from("entreprises").update(patch).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteEntreprise(id) {
+  const { error } = await supabase.from("entreprises").delete().eq("id", id);
+  if (error) throw error;
 }

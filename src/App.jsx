@@ -1616,13 +1616,15 @@ function AppRoot() {
   const isAdmin = currentUser.role === "admin";
   const isManager = currentUser.role === "manager";
   const isMessenger = currentUser.role === "messenger";
+  const isSuperAdmin = !!currentUser.isSuperAdmin;
   const canManage = isAdmin || isManager; // accès Tableau de bord / Finances / Stock / Personnel
   const nav = isAdmin
     ? (currentUser.isPrimary
         ? [...NAV_ADMIN,
            { id: "journal", label: "Journal d'activité", icon: History },
-           { id: "supervision", label: "Toutes les conversations", icon: Eye }]
-        : NAV_ADMIN)
+           { id: "supervision", label: "Toutes les conversations", icon: Eye },
+           ...(isSuperAdmin ? [{ id: "entreprises", label: "Entreprises (abonnements)", icon: Store }] : [])]
+        : [...NAV_ADMIN, ...(isSuperAdmin ? [{ id: "entreprises", label: "Entreprises (abonnements)", icon: Store }] : [])])
     : isManager ? NAV_MANAGER : isMessenger ? NAV_MESSENGER : NAV_VENDOR;
   const roleLabel = isAdmin ? (currentUser.isPrimary ? "admin principal" : "admin") : isManager ? "gestionnaire" : isMessenger ? "agent messagerie" : "vendeur";
   const activeVendor = currentUser.role === "vendor" ? currentVendor : null;
@@ -1836,6 +1838,7 @@ function AppRoot() {
         {tab === "historique" && isAdmin && <Historique vendors={vendors} daysList={daysList} today={today} currentUser={currentUser} reloadVendors={reloadVendors} />}
         {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
         {tab === "supervision" && isAdmin && currentUser.isPrimary && <Supervision currentUser={currentUser} />}
+        {tab === "entreprises" && isSuperAdmin && <EntreprisesAdmin currentUser={currentUser} />}
         </div>
       </div>
     </div>
@@ -6873,6 +6876,199 @@ function Supervision({ currentUser }) {
           </Card>
         </div>
       </div>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Entreprises clientes de la plateforme (abonnements) — réservé au super-admin.
+// La date de fin d'abonnement n'est jamais saisie à la main : on choisit une
+// durée (1, 3, 6 ou 12 mois) et elle est calculée automatiquement, à la
+// création comme au renouvellement.
+// -----------------------------------------------------------------------------
+
+const DUREES_ABONNEMENT = [
+  { value: 1, label: "1 mois" },
+  { value: 3, label: "3 mois" },
+  { value: 6, label: "6 mois" },
+  { value: 12, label: "12 mois" },
+];
+
+function joursRestants(dateFin, today) {
+  if (!dateFin) return null; // pas de date de fin = accès illimité
+  const d1 = new Date(today + "T00:00:00");
+  const d2 = new Date(dateFin + "T00:00:00");
+  return Math.round((d2 - d1) / 86400000);
+}
+
+function EntreprisesAdmin({ currentUser }) {
+  const { showToast } = useToast();
+  const today = todayISO();
+  const [entreprises, setEntreprises] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const [nom, setNom] = useState("");
+  const [contactNom, setContactNom] = useState("");
+  const [contactTelephone, setContactTelephone] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
+  const [dureeMois, setDureeMois] = useState(1);
+  const [montant, setMontant] = useState("");
+  const [notes, setNotes] = useState("");
+
+  const reload = async () => setEntreprises(await store.getEntreprises());
+  useEffect(() => { reload(); }, []);
+
+  const creer = async () => {
+    if (!nom.trim()) { showToast("Le nom de l'entreprise est requis.", "error"); return; }
+    setSaving(true);
+    try {
+      await store.createEntreprise({
+        nom: nom.trim(), contactNom: contactNom.trim(), contactTelephone: contactTelephone.trim(),
+        contactEmail: contactEmail.trim(), dureeMois: Number(dureeMois),
+        montant: montant ? Number(montant) : null, notes: notes.trim(),
+        createdBy: currentUser?.id, today,
+      });
+      showToast(`Entreprise "${nom.trim()}" créée et activée pour ${dureeMois} mois.`, "success");
+      setNom(""); setContactNom(""); setContactTelephone(""); setContactEmail(""); setMontant(""); setNotes(""); setDureeMois(1);
+      await reload();
+    } catch (err) {
+      showToast("Erreur lors de la création : " + (err.message || err), "error");
+    }
+    setSaving(false);
+  };
+
+  const toggleStatut = async (ent) => {
+    const nouveauStatut = ent.statut === "actif" ? "inactif" : "actif";
+    try {
+      await store.setEntrepriseStatut(ent.id, nouveauStatut);
+      showToast(`${ent.nom} : accès ${nouveauStatut === "actif" ? "activé" : "désactivé"}.`, "success");
+      await reload();
+    } catch (err) {
+      showToast("Erreur : " + (err.message || err), "error");
+    }
+  };
+
+  const renouveler = async (ent, dureeChoisie) => {
+    try {
+      await store.renewEntreprise(ent.id, Number(dureeChoisie), today);
+      showToast(`${ent.nom} : abonnement renouvelé de ${dureeChoisie} mois.`, "success");
+      await reload();
+    } catch (err) {
+      showToast("Erreur : " + (err.message || err), "error");
+    }
+  };
+
+  const supprimer = async (ent) => {
+    const ok = window.confirm(`Supprimer définitivement "${ent.nom}" de la liste des entreprises ?\n\nCette action est irréversible.`);
+    if (!ok) return;
+    try {
+      await store.deleteEntreprise(ent.id);
+      showToast(`${ent.nom} supprimée.`, "success");
+      await reload();
+    } catch (err) {
+      showToast("Erreur : " + (err.message || err), "error");
+    }
+  };
+
+  if (entreprises === null) return <EmptyState text="Chargement…" />;
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, color: "#8A93A3", fontSize: 12.5 }}>
+        <Eye size={14} /> Visible uniquement par toi (super-admin) — les entreprises désactivées perdent l'accès à l'application, leurs données restent intactes.
+      </div>
+
+      <Card title="Ajouter une entreprise">
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 220px" }}>
+              <Label>Nom de l'entreprise</Label>
+              <TextInput value={nom} onChange={(e) => setNom(e.target.value)} placeholder="Ex : Boutique Alpha" />
+            </div>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Durée de l'abonnement</Label>
+              <Select value={dureeMois} onChange={(e) => setDureeMois(e.target.value)}>
+                {DUREES_ABONNEMENT.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}
+              </Select>
+            </div>
+            <div style={{ flex: "1 1 160px" }}>
+              <Label>Montant (optionnel)</Label>
+              <TextInput type="number" value={montant} onChange={(e) => setMontant(e.target.value)} placeholder="Ex : 25000" />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 200px" }}>
+              <Label>Nom du contact</Label>
+              <TextInput value={contactNom} onChange={(e) => setContactNom(e.target.value)} />
+            </div>
+            <div style={{ flex: "1 1 180px" }}>
+              <Label>Téléphone</Label>
+              <TextInput value={contactTelephone} onChange={(e) => setContactTelephone(e.target.value)} />
+            </div>
+            <div style={{ flex: "1 1 200px" }}>
+              <Label>E-mail</Label>
+              <TextInput type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} />
+            </div>
+          </div>
+          <div>
+            <Label>Notes (optionnel)</Label>
+            <TextArea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
+          </div>
+          <div>
+            <Button onClick={creer} disabled={saving}>
+              <Plus size={15} /> Créer l'entreprise
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      <Card title={`Entreprises (${entreprises.length})`}>
+        {entreprises.length === 0 ? (
+          <EmptyState text="Aucune entreprise enregistrée pour l'instant." />
+        ) : (
+          <Table
+            headers={["Entreprise", "Statut", "Fin d'abonnement", "Jours restants", "Montant", "Contact", "Actions"]}
+            rows={entreprises.map((ent) => {
+              const jours = joursRestants(ent.dateFin, today);
+              const expireBientot = jours !== null && jours >= 0 && jours <= 7;
+              return [
+                <div key="n">
+                  <div style={{ fontWeight: 700 }}>{ent.nom}</div>
+                  {ent.notes && <div style={{ fontSize: 11.5, color: "#8A93A3", marginTop: 2 }}>{ent.notes}</div>}
+                </div>,
+                <Badge key="s" ok={ent.statut === "actif"} okText="Actif" warnText="Inactif" />,
+                ent.dateFin ? fmtDateFr(ent.dateFin) : "Illimité",
+                jours === null ? "—" : (
+                  <span style={{ fontWeight: 700, color: jours < 0 ? "#C1554A" : expireBientot ? "#D9A441" : "#3F8361" }}>
+                    {jours < 0 ? `Expiré depuis ${Math.abs(jours)} j` : `${jours} j`}
+                  </span>
+                ),
+                ent.montant != null ? fmtMoney(ent.montant) : "—",
+                <div key="c" style={{ fontSize: 12.5 }}>
+                  {ent.contactNom && <div>{ent.contactNom}</div>}
+                  {ent.contactTelephone && <div style={{ color: "#8A93A3" }}>{ent.contactTelephone}</div>}
+                  {!ent.contactNom && !ent.contactTelephone && "—"}
+                </div>,
+                <div key="a" style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 170 }}>
+                  <Toggle on={ent.statut === "actif"} onChange={() => toggleStatut(ent)} label={ent.statut === "actif" ? "Actif" : "Inactif"} />
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <Select
+                      defaultValue=""
+                      onChange={(e) => { if (e.target.value) { renouveler(ent, e.target.value); e.target.value = ""; } }}
+                    >
+                      <option value="">Renouveler…</option>
+                      {DUREES_ABONNEMENT.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}
+                    </Select>
+                    <button onClick={() => supprimer(ent)} style={iconBtnStyle} title="Supprimer">
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </div>,
+              ];
+            })}
+          />
+        )}
+      </Card>
     </div>
   );
 }
