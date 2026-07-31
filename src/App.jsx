@@ -1227,80 +1227,6 @@ function AppRoot() {
   useEffect(() => {
     try { localStorage.setItem("z2t_dark_mode", darkMode ? "1" : "0"); } catch { /* stockage indisponible, on ignore */ }
   }, [darkMode]);
-
-  // ---- Notifications de messagerie façon Facebook/WhatsApp -----------------
-  // Avant : les messages n'étaient récupérés que pendant qu'on avait la
-  // conversation ouverte dans l'onglet Messagerie — rien ne prévenait si on
-  // était ailleurs dans l'app. Ici, un sondage léger tourne en permanence dès
-  // qu'on est connecté, quel que soit l'onglet affiché, pour repérer les
-  // nouveaux messages, faire sonner une alerte et allumer un badge sur
-  // l'onglet Messagerie de la barre latérale.
-  const [dmUnreadByUser, setDmUnreadByUser] = useState({});
-  const dmUnreadPrevRef = useRef({});
-  const usersByIdRef = useRef({});
-  const tabRef = useRef(tab);
-  useEffect(() => { tabRef.current = tab; }, [tab]);
-
-  const playNotificationSound = useCallback(() => {
-    try {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return;
-      const ctx = new Ctx();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "sine";
-      osc.frequency.value = 880;
-      gain.gain.setValueAtTime(0.15, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.35);
-    } catch { /* audio indisponible (navigateur, permissions) : on ignore */ }
-  }, []);
-
-  useEffect(() => {
-    if (!currentUser) return;
-    (async () => {
-      try {
-        const list = await store.getAllUsers();
-        usersByIdRef.current = Object.fromEntries(list.map((u) => [u.id, u]));
-      } catch { /* annuaire indisponible, les toasts afficheront un nom générique */ }
-    })();
-  }, [currentUser]);
-
-  useEffect(() => {
-    if (!currentUser) return;
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const counts = await store.getDMUnreadCounts();
-        if (cancelled) return;
-        setDmUnreadByUser(counts);
-        const prev = dmUnreadPrevRef.current;
-        const newSenders = [];
-        Object.entries(counts).forEach(([uid, n]) => {
-          if (n > (prev[uid] || 0)) newSenders.push(usersByIdRef.current[uid]?.username || "un utilisateur");
-        });
-        dmUnreadPrevRef.current = counts;
-        if (newSenders.length > 0) {
-          playNotificationSound();
-          if (tabRef.current !== "messagerie") {
-            showToast(`Nouveau message de ${newSenders.join(", ")}`, "info");
-          }
-        }
-      } catch { /* réseau indisponible : on retentera au prochain sondage */ }
-    };
-    poll();
-    const interval = setInterval(poll, 6000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, [currentUser, playNotificationSound, showToast]);
-
-  const dmUnreadTotal = Object.values(dmUnreadByUser).reduce((s, n) => s + n, 0);
-
-  useEffect(() => {
-    document.title = dmUnreadTotal > 0 ? `(${dmUnreadTotal > 99 ? "99+" : dmUnreadTotal}) Z2T Marketing Manager` : "Z2T Marketing Manager";
-  }, [dmUnreadTotal]);
   const syncFailCounts = useRef({});
 
   // Force un nouveau rendu toutes les minutes pour détecter le changement de jour à 00h
@@ -1771,15 +1697,6 @@ function AppRoot() {
             >
               <Icon size={16} />
               {n.label}
-              {n.id === "messagerie" && dmUnreadTotal > 0 && (
-                <span style={{
-                  marginLeft: "auto", background: "#C1554A", color: "#fff", fontSize: 11, fontWeight: 700,
-                  borderRadius: 999, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center",
-                  padding: "0 5px",
-                }}>
-                  {dmUnreadTotal > 99 ? "99+" : dmUnreadTotal}
-                </span>
-              )}
             </button>
           );
         })}
@@ -1914,7 +1831,7 @@ function AppRoot() {
           <Messagerie currentUser={currentUser} vendors={vendors} />
         )}
         {tab === "rapports" && canManage && (
-          <Rapports vendors={vendors} products={products} daysList={daysList} today={today} />
+          <Rapports vendors={vendors} products={products} daysList={daysList} today={today} day={day} />
         )}
         {tab === "historique" && isAdmin && <Historique vendors={vendors} daysList={daysList} today={today} currentUser={currentUser} reloadVendors={reloadVendors} />}
         {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
@@ -2752,6 +2669,9 @@ function Inventaire({ products, currentUser }) {
       await store.saveInventaire({ date: today, lignes, createdBy: currentUser?.username });
       await store.logActivity(currentUser, "inventaire", `Inventaire du ${fmtDateFr(today)} enregistré (${lignes.filter((l) => l.ecart !== 0).length} écart(s)).`);
       showToast(`Inventaire du ${fmtDateFr(today)} enregistré.`, "success");
+      // Impression automatique du résultat qui vient d'être enregistré, avant
+      // que le formulaire ne soit réinitialisé.
+      printInventaire();
       setQtyPhysique({});
       await reloadHistorique();
     } catch (err) {
@@ -2776,6 +2696,24 @@ function Inventaire({ products, currentUser }) {
     };
     window.addEventListener("afterprint", cleanup);
   };
+
+  // Impression du détail d'un inventaire de l'historique (le "résultat
+  // enregistré" en bas de page), sur le même principe que l'inventaire du
+  // jour.
+  const historiquePrintRef = useRef(null);
+  const printHistorique = () => {
+    if (!historiquePrintRef.current) return;
+    document.body.classList.add("printing-section");
+    historiquePrintRef.current.setAttribute("data-print-active", "true");
+    window.print();
+    const cleanup2 = () => {
+      historiquePrintRef.current?.removeAttribute("data-print-active");
+      document.body.classList.remove("printing-section");
+      window.removeEventListener("afterprint", cleanup2);
+    };
+    window.addEventListener("afterprint", cleanup2);
+  };
+  const selectedInv = historique?.find((inv) => inv.date === selectedDate) || null;
 
   return (
     <>
@@ -2827,11 +2765,8 @@ function Inventaire({ products, currentUser }) {
               {nbEcarts > 0 ? `${nbEcarts} produit${nbEcarts > 1 ? "s" : ""} avec écart` : "Aucun écart pour l'instant"}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <Button variant="gold" onClick={printInventaire}>
-                <Printer size={15} /> Imprimer / Enregistrer en PDF
-              </Button>
               <Button onClick={enregistrer} disabled={saving}>
-                <ClipboardList size={15} /> Enregistrer l'inventaire du {fmtDateFr(today)}
+                <ClipboardList size={15} /> Enregistrer et imprimer l'inventaire du {fmtDateFr(today)}
               </Button>
             </div>
           </div>
@@ -2860,16 +2795,22 @@ function Inventaire({ products, currentUser }) {
               ]];
               if (selectedDate === inv.date) {
                 rows.push([
-                  <Table
-                    key="detail"
-                    headers={["Produit", "Stock système", "Stock physique", "Écart"]}
-                    rows={inv.lignes.map((l) => [
-                      l.productNom, l.stockSysteme, l.stockPhysique,
-                      <span key="e" style={{ fontWeight: 700, color: l.ecart === 0 ? "#8A93A3" : l.ecart > 0 ? "#3F9C6D" : "#C1554A" }}>
-                        {l.ecart > 0 ? `+${l.ecart}` : l.ecart}
-                      </span>,
-                    ])}
-                  />,
+                  <div key="detail">
+                    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+                      <Button variant="gold" onClick={printHistorique}>
+                        <Printer size={15} /> Imprimer / Enregistrer en PDF
+                      </Button>
+                    </div>
+                    <Table
+                      headers={["Produit", "Stock système", "Stock physique", "Écart"]}
+                      rows={inv.lignes.map((l) => [
+                        l.productNom, l.stockSysteme, l.stockPhysique,
+                        <span key="e" style={{ fontWeight: 700, color: l.ecart === 0 ? "#8A93A3" : l.ecart > 0 ? "#3F9C6D" : "#C1554A" }}>
+                          {l.ecart > 0 ? `+${l.ecart}` : l.ecart}
+                        </span>,
+                      ])}
+                    />
+                  </div>,
                 ]);
               }
               return rows;
@@ -2877,6 +2818,30 @@ function Inventaire({ products, currentUser }) {
           />
         )}
       </Card>
+
+      {selectedInv && (
+        <div ref={historiquePrintRef} style={{ display: "none" }}>
+          <Card>
+            <div style={{ textAlign: "center", marginBottom: 6 }}>
+              <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 21, fontWeight: 700, color: "#1B2A4A" }}>
+                Inventaire physique — {fmtDateFr(selectedInv.date)}
+              </div>
+              <div style={{ fontSize: 12, color: "#8A93A3" }}>
+                Enregistré{selectedInv.createdBy ? ` par ${selectedInv.createdBy}` : ""}
+              </div>
+            </div>
+            <Table
+              headers={["Produit", "Stock système", "Stock physique", "Écart"]}
+              rows={selectedInv.lignes.map((l) => [
+                l.productNom, l.stockSysteme, l.stockPhysique,
+                <span key="e" style={{ fontWeight: 700, color: l.ecart === 0 ? "#8A93A3" : l.ecart > 0 ? "#3F9C6D" : "#C1554A" }}>
+                  {l.ecart > 0 ? `+${l.ecart}` : l.ecart}
+                </span>,
+              ])}
+            />
+          </Card>
+        </div>
+      )}
     </>
   );
 }
@@ -5210,14 +5175,8 @@ function Messagerie({ currentUser, vendors = [] }) {
     const interval = setInterval(async () => {
       if (!conversationId) return;
       const msgs = await store.getDMMessages(conversationId);
-      if (cancelled) return;
-      setMessages(msgs);
-      // La conversation reste ouverte à l'écran : les nouveaux messages qui
-      // arrivent doivent être marqués comme lus au fil de l'eau, sinon le
-      // badge "non lus" reste faussement allumé alors qu'on est en train
-      // de lire.
-      await store.markDMMessagesRead(conversationId, currentUser.id);
-    }, 4000);
+      if (!cancelled) setMessages(msgs);
+    }, 8000);
     return () => { cancelled = true; clearInterval(interval); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedUserId]);
@@ -5584,6 +5543,9 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
             <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 21, fontWeight: 700, color: "#1B2A4A" }}>
               Situation de caisse — {fmtDateFr(viewDate)}
             </div>
+            <div style={{ fontSize: 13, color: "#1B2A4A", fontWeight: 600, marginTop: 2 }}>
+              Caissière : {currentUser?.username || "—"}
+            </div>
             <div style={{ fontSize: 12, color: "#8A93A3" }}>
               Document généré le {fmtDateFr(today)}{currentUser?.username ? ` par ${currentUser.username}` : ""}
             </div>
@@ -5840,7 +5802,7 @@ function periodLabelFR(type, range, monthValue) {
   return `Année ${range[0].slice(0, 4)}`;
 }
 
-function Rapports({ vendors, products, daysList, today }) {
+function Rapports({ vendors, products, daysList, today, day }) {
   const [periodType, setPeriodType] = useState("mois");
   const [month, setMonth] = useState(today.slice(0, 7));
   const [loading, setLoading] = useState(false);
@@ -5974,6 +5936,20 @@ function Rapports({ vendors, products, daysList, today }) {
   const rapportPrintRef = useRef(null);
   const produitPrintRef = useRef(null);
   const vendorPrintRef = useRef(null);
+
+  // Rafraîchissement automatique : dès qu'une vente, un versement ou une
+  // dépense modifie les données du jour, on relance silencieusement le
+  // même rapport (même période/mois déjà choisis) s'il a déjà été généré
+  // au moins une fois — pour éviter d'afficher des chiffres dépassés.
+  useEffect(() => {
+    if (report) generer();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [day]);
+
+  useEffect(() => {
+    if (produitReport) genererRapportProduits();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [day]);
 
   // Imprime uniquement la section ciblée : on marque l'élément juste avant
   // d'appeler window.print() (synchrone, dans le même clic), pour éviter
