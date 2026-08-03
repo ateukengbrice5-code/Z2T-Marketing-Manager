@@ -1604,6 +1604,19 @@ function AppRoot() {
     return <SetupScreen onCreated={handleSetupCreated} />;
   }
 
+  if (currentUser?.blocked) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "#F7F8FA", fontFamily: "Calibri, Arial, sans-serif" }}>
+        <div style={{ maxWidth: 440, background: "#fff", borderRadius: 14, padding: 32, textAlign: "center", boxShadow: "0 4px 20px rgba(0,0,0,0.06)" }}>
+          <AlertTriangle size={36} color="#C1554A" style={{ marginBottom: 14 }} />
+          <div style={{ fontSize: 17, fontWeight: 700, color: "#1B2A4A", marginBottom: 10 }}>Accès indisponible</div>
+          <div style={{ fontSize: 13.5, color: "#5B6472", marginBottom: 22 }}>{currentUser.blockedReason}</div>
+          <Button variant="ghost" onClick={handleLogout}>Se déconnecter</Button>
+        </div>
+      </div>
+    );
+  }
+
   if (!currentUser || day === null) {
     if (!currentUser) return <LoginScreen onLoggedIn={handleLoggedIn} />;
     return (
@@ -6914,22 +6927,38 @@ function EntreprisesAdmin({ currentUser }) {
   const [dureeMois, setDureeMois] = useState(1);
   const [montant, setMontant] = useState("");
   const [notes, setNotes] = useState("");
+  const [adminUsername, setAdminUsername] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
 
   const reload = async () => setEntreprises(await store.getEntreprises());
   useEffect(() => { reload(); }, []);
 
   const creer = async () => {
     if (!nom.trim()) { showToast("Le nom de l'entreprise est requis.", "error"); return; }
+    if (!adminUsername.trim() || !adminPassword) { showToast("Le nom d'utilisateur et le mot de passe du premier admin sont requis.", "error"); return; }
+    if (!isStrongPassword(adminPassword)) { showToast(PASSWORD_HELP_TEXT, "error"); return; }
     setSaving(true);
     try {
-      await store.createEntreprise({
+      const entreprise = await store.createEntreprise({
         nom: nom.trim(), contactNom: contactNom.trim(), contactTelephone: contactTelephone.trim(),
         contactEmail: contactEmail.trim(), dureeMois: Number(dureeMois),
         montant: montant ? Number(montant) : null, notes: notes.trim(),
         createdBy: currentUser?.id, today,
       });
-      showToast(`Entreprise "${nom.trim()}" créée et activée pour ${dureeMois} mois.`, "success");
+      try {
+        await store.createEntrepriseAdmin(entreprise.id, adminUsername.trim(), adminPassword);
+      } catch (adminErr) {
+        // L'entreprise a été créée mais pas son admin : on prévient
+        // clairement plutôt que de laisser une entreprise sans compte utilisable.
+        showToast(`Entreprise "${nom.trim()}" créée, mais le compte admin n'a pas pu être créé : ${adminErr.message || adminErr}. Réessaie depuis la fiche de l'entreprise.`, "error", 10000);
+        setNom(""); setContactNom(""); setContactTelephone(""); setContactEmail(""); setMontant(""); setNotes(""); setDureeMois(1);
+        await reload();
+        setSaving(false);
+        return;
+      }
+      showToast(`Entreprise "${nom.trim()}" créée et activée pour ${dureeMois} mois, avec son premier compte admin.`, "success");
       setNom(""); setContactNom(""); setContactTelephone(""); setContactEmail(""); setMontant(""); setNotes(""); setDureeMois(1);
+      setAdminUsername(""); setAdminPassword("");
       await reload();
     } catch (err) {
       showToast("Erreur lors de la création : " + (err.message || err), "error");
@@ -7013,6 +7042,21 @@ function EntreprisesAdmin({ currentUser }) {
           <div>
             <Label>Notes (optionnel)</Label>
             <TextArea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
+          </div>
+          <div style={{ paddingTop: 10, borderTop: "1px solid #F0F1F4" }}>
+            <div style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic", marginBottom: 10 }}>
+              Premier compte administrateur de cette entreprise (obligatoire) :
+            </div>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <div style={{ flex: "1 1 200px" }}>
+                <Label>Nom d'utilisateur</Label>
+                <TextInput value={adminUsername} onChange={(e) => setAdminUsername(e.target.value)} placeholder="Ex : admin-alpha" />
+              </div>
+              <div style={{ flex: "1 1 200px" }}>
+                <Label>Mot de passe (8 caractères minimum, avec lettres et chiffres)</Label>
+                <TextInput type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} />
+              </div>
+            </div>
           </div>
           <div>
             <Button onClick={creer} disabled={saving}>

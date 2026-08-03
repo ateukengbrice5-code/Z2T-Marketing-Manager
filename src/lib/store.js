@@ -36,13 +36,36 @@ export async function getSession() {
 export async function getMyProfile() {
   const { data: auth } = await supabase.auth.getUser();
   if (!auth?.user) return null;
-  const { data, error } = await supabase.from("profiles").select("*").eq("id", auth.user.id).single();
+  const { data, error } = await supabase.from("profiles").select("*, entreprises(nom, statut, date_fin)").eq("id", auth.user.id).single();
   if (error) return null;
+  const entreprise = data.entreprises;
+  let blocked = false;
+  let blockedReason = null;
+  // Le super-admin garde toujours accès, quel que soit le statut de son
+  // entreprise — il doit pouvoir gérer les abonnements même si le sien
+  // (Boutique principale) était un jour désactivé par erreur.
+  if (!data.is_super_admin && entreprise) {
+    if (entreprise.statut !== "actif") {
+      blocked = true;
+      blockedReason = `L'accès de "${entreprise.nom}" est désactivé. Contacte l'administrateur de la plateforme pour le réactiver.`;
+    } else if (entreprise.date_fin && entreprise.date_fin < todayISOForCheck()) {
+      blocked = true;
+      blockedReason = `L'abonnement de "${entreprise.nom}" a expiré le ${entreprise.date_fin}. Contacte l'administrateur de la plateforme pour le renouveler.`;
+    }
+  }
   return {
     id: data.id, username: data.username, role: data.role,
     vendorId: data.vendor_id, isPrimary: data.is_primary,
     isSuperAdmin: !!data.is_super_admin,
+    entrepriseId: data.entreprise_id,
+    blocked, blockedReason,
   };
+}
+
+function todayISOForCheck() {
+  const d = new Date();
+  const offset = d.getTimezoneOffset();
+  return new Date(d.getTime() - offset * 60000).toISOString().slice(0, 10);
 }
 
 // -----------------------------------------------------------------------------
@@ -880,6 +903,13 @@ export async function createEntreprise({ nom, contactNom, contactTelephone, cont
   }).select().single();
   if (error) throw error;
   return mapEntreprise(data);
+}
+
+// Crée le tout premier compte admin d'une entreprise cliente — réservé au
+// super-admin, passe par manage-user (même fonction Edge que la création des
+// autres comptes) pour créer l'utilisateur Auth + son profil ensemble.
+export async function createEntrepriseAdmin(entrepriseId, username, password) {
+  return callManageUser({ action: "create_entreprise_admin", entrepriseId, username, password });
 }
 
 // Renouvelle l'abonnement pour une durée donnée : repart de la date de fin

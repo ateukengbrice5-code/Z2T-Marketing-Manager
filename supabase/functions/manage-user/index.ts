@@ -39,7 +39,7 @@ Deno.serve(async (req) => {
     }
 
     const { data: callerProfile } = await callerClient
-      .from("profiles").select("role, is_primary, username, entreprise_id").eq("id", authData.user.id).single();
+      .from("profiles").select("role, is_primary, username, entreprise_id, is_super_admin").eq("id", authData.user.id).single();
 
     if (!callerProfile || !["admin", "manager"].includes(callerProfile.role)) {
       return new Response(JSON.stringify({ error: "Non autorisé." }), { status: 403, headers: cors });
@@ -48,6 +48,48 @@ Deno.serve(async (req) => {
     const body = await req.json();
     const action = body.action || "create";
     const adminClient = createClient(supabaseUrl, serviceKey);
+
+    if (action === "create_entreprise_admin") {
+      // Seul le super-admin peut créer le tout premier compte admin d'une
+      // nouvelle entreprise cliente — onboarding centralisé (Phase 2.7).
+      if (!callerProfile.is_super_admin) {
+        return new Response(JSON.stringify({ error: "Seul le super-administrateur peut créer le compte d'une nouvelle entreprise." }), { status: 403, headers: cors });
+      }
+      const { entrepriseId, username, password } = body;
+      if (!entrepriseId || !username || !password) {
+        return new Response(JSON.stringify({ error: "Champs manquants." }), { status: 400, headers: cors });
+      }
+      if (String(password).length < 8 || !/[A-Za-z]/.test(String(password)) || !/[0-9]/.test(String(password))) {
+        return new Response(JSON.stringify({ error: "Le mot de passe doit contenir au moins 8 caractères, dont une lettre et un chiffre." }), { status: 400, headers: cors });
+      }
+      const { data: entreprise } = await adminClient.from("entreprises").select("id, nom").eq("id", entrepriseId).single();
+      if (!entreprise) {
+        return new Response(JSON.stringify({ error: "Entreprise introuvable." }), { status: 404, headers: cors });
+      }
+
+      const authEmail = `${String(username).trim().toLowerCase()}@z2t.local`;
+      const { data: created, error: createErr } = await adminClient.auth.admin.createUser({
+        email: authEmail, password, email_confirm: true,
+      });
+      if (createErr) {
+        const msg = createErr.message === "A user with this email address has already been registered"
+          ? "Ce nom d'utilisateur est déjà pris (les noms d'utilisateur sont uniques sur toute la plateforme), choisis-en un autre."
+          : createErr.message;
+        return new Response(JSON.stringify({ error: msg }), { status: 400, headers: cors });
+      }
+
+      const { error: profileErr } = await adminClient.from("profiles").insert({
+        id: created.user.id, username: String(username).trim(),
+        role: "admin", vendor_id: null, is_primary: true,
+        entreprise_id: entrepriseId,
+      });
+      if (profileErr) {
+        await adminClient.auth.admin.deleteUser(created.user.id);
+        return new Response(JSON.stringify({ error: profileErr.message }), { status: 400, headers: cors });
+      }
+
+      return new Response(JSON.stringify({ ok: true, entrepriseNom: entreprise.nom }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+    }
 
     if (action === "delete") {
       const { userId } = body;
