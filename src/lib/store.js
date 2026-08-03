@@ -36,7 +36,7 @@ export async function getSession() {
 export async function getMyProfile() {
   const { data: auth } = await supabase.auth.getUser();
   if (!auth?.user) return null;
-  const { data, error } = await supabase.from("profiles").select("*, entreprises(nom, statut, date_fin)").eq("id", auth.user.id).single();
+ const { data, error } = await supabase.from("profiles").select("*, entreprises!profiles_entreprise_id_fkey(nom, statut, date_fin)").eq("id", auth.user.id).single();
   if (error) return null;
   const entreprise = data.entreprises;
   let blocked = false;
