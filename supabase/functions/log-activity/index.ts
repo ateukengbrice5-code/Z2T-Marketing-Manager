@@ -29,10 +29,11 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "Non authentifié." }), { status: 401, headers: cors });
     }
 
-    const { data: profile } = await callerClient.from("profiles").select("username, role, is_primary").eq("id", authData.user.id).single();
+    const { data: profile } = await callerClient.from("profiles").select("username, role, is_primary, entreprise_id").eq("id", authData.user.id).single();
 
-    // Ne journalise que les administrateurs secondaires (règle du produit)
-    if (!profile || profile.role !== "admin" || profile.is_primary) {
+    // Ne journalise pas l'admin principal (bruit inutile) — tout le reste
+    // (vendeurs, gestionnaires, messagerie, admins secondaires) est journalisé.
+    if (!profile || profile.is_primary) {
       return new Response(JSON.stringify({ ok: true, skipped: true }), { status: 200, headers: cors });
     }
 
@@ -53,6 +54,7 @@ Deno.serve(async (req) => {
       ip_address: ip,
       device: userAgent,
       metadata: metadata || {},
+      entreprise_id: profile.entreprise_id,
     });
     if (error) return new Response(JSON.stringify({ error: error.message }), { status: 400, headers: cors });
 

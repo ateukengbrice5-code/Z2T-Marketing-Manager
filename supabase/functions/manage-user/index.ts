@@ -39,7 +39,7 @@ Deno.serve(async (req) => {
     }
 
     const { data: callerProfile } = await callerClient
-      .from("profiles").select("role, is_primary, username").eq("id", authData.user.id).single();
+      .from("profiles").select("role, is_primary, username, entreprise_id").eq("id", authData.user.id).single();
 
     if (!callerProfile || !["admin", "manager"].includes(callerProfile.role)) {
       return new Response(JSON.stringify({ error: "Non autorisé." }), { status: 403, headers: cors });
@@ -53,7 +53,10 @@ Deno.serve(async (req) => {
       const { userId } = body;
       if (!userId) return new Response(JSON.stringify({ error: "Identifiant manquant." }), { status: 400, headers: cors });
 
-      const { data: targetProfile } = await adminClient.from("profiles").select("role, is_primary").eq("id", userId).single();
+      const { data: targetProfile } = await adminClient.from("profiles").select("role, is_primary, entreprise_id").eq("id", userId).single();
+      if (targetProfile && targetProfile.entreprise_id !== callerProfile.entreprise_id) {
+        return new Response(JSON.stringify({ error: "Ce compte n'appartient pas à ton entreprise." }), { status: 403, headers: cors });
+      }
       if (targetProfile?.role === "manager" && callerProfile.role !== "admin") {
         return new Response(JSON.stringify({ error: "Seul un administrateur peut supprimer un compte gestionnaire." }), { status: 403, headers: cors });
       }
@@ -81,9 +84,12 @@ Deno.serve(async (req) => {
         return new Response(JSON.stringify({ error: "Conversion non prise en charge." }), { status: 400, headers: cors });
       }
 
-      const { data: targetProfile } = await adminClient.from("profiles").select("role").eq("id", userId).single();
+      const { data: targetProfile } = await adminClient.from("profiles").select("role, entreprise_id").eq("id", userId).single();
       if (!targetProfile) {
         return new Response(JSON.stringify({ error: "Compte introuvable." }), { status: 404, headers: cors });
+      }
+      if (targetProfile.entreprise_id !== callerProfile.entreprise_id) {
+        return new Response(JSON.stringify({ error: "Ce compte n'appartient pas à ton entreprise." }), { status: 403, headers: cors });
       }
       if (targetProfile.role !== "vendor") {
         return new Response(JSON.stringify({ error: "Seul un compte vendeur peut être converti en compte messagerie." }), { status: 400, headers: cors });
@@ -122,6 +128,7 @@ Deno.serve(async (req) => {
       const { data: createdInvite, error: inviteErr } = await adminClient.from("invite_links").insert({
         token, role, vendor_id: role === "vendor" ? vendorId : null,
         created_by: callerProfile.username || null, expires_at: expiresAt,
+        entreprise_id: callerProfile.entreprise_id,
       }).select("id, expires_at").single();
       if (inviteErr) return new Response(JSON.stringify({ error: inviteErr.message }), { status: 400, headers: cors });
 
@@ -132,7 +139,7 @@ Deno.serve(async (req) => {
       // Un gestionnaire ne voit jamais les invitations admin ; un admin
       // secondaire ne voit jamais les invitations admin non plus, seul le
       // principal les voit — même logique que pour la création.
-      const query = adminClient.from("invite_links").select("*").is("used_at", null).order("created_at", { ascending: false });
+      const query = adminClient.from("invite_links").select("*").eq("entreprise_id", callerProfile.entreprise_id).is("used_at", null).order("created_at", { ascending: false });
       const { data: invites, error: listErr } = await query;
       if (listErr) return new Response(JSON.stringify({ error: listErr.message }), { status: 400, headers: cors });
       const visible = (invites || []).filter((inv) => {
@@ -146,8 +153,11 @@ Deno.serve(async (req) => {
     if (action === "revoke_invite") {
       const { inviteId } = body;
       if (!inviteId) return new Response(JSON.stringify({ error: "Identifiant manquant." }), { status: 400, headers: cors });
-      const { data: invite } = await adminClient.from("invite_links").select("role").eq("id", inviteId).single();
+      const { data: invite } = await adminClient.from("invite_links").select("role, entreprise_id").eq("id", inviteId).single();
       if (invite) {
+        if (invite.entreprise_id !== callerProfile.entreprise_id) {
+          return new Response(JSON.stringify({ error: "Ce lien n'appartient pas à ton entreprise." }), { status: 403, headers: cors });
+        }
         const permErr = roleCreationError(callerProfile, invite.role);
         if (permErr) return new Response(JSON.stringify({ error: permErr }), { status: 403, headers: cors });
       }
@@ -179,6 +189,7 @@ Deno.serve(async (req) => {
     const { error: profileErr } = await adminClient.from("profiles").insert({
       id: created.user.id, username: String(username).trim(),
       role, vendor_id: role === "vendor" ? vendorId : null, is_primary: false,
+      entreprise_id: callerProfile.entreprise_id,
     });
     if (profileErr) {
       return new Response(JSON.stringify({ error: profileErr.message }), { status: 400, headers: cors });

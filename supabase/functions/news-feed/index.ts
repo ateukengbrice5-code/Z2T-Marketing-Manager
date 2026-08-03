@@ -37,7 +37,7 @@ Deno.serve(async (req) => {
     // messagerie, gestionnaire, admin) est autorisé à lire/réagir — le fil
     // est fait pour toute l'équipe, pas seulement l'encadrement.
     const { data: callerProfile } = await callerClient
-      .from("profiles").select("role, username").eq("id", authData.user.id).single();
+      .from("profiles").select("role, username, entreprise_id").eq("id", authData.user.id).single();
     if (!callerProfile) {
       return new Response(JSON.stringify({ error: "Profil introuvable." }), { status: 403, headers: cors });
     }
@@ -50,10 +50,10 @@ Deno.serve(async (req) => {
       const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
       const [achievementsRes, birthdaysRes, announcementsRes, reactionsRes] = await Promise.all([
-        adminClient.from("objective_achievements").select("*").gte("created_at", since).order("created_at", { ascending: false }),
-        adminClient.from("vendors_with_birthday_today").select("*"),
-        adminClient.from("news_announcements").select("*").order("created_at", { ascending: false }).limit(50),
-        adminClient.from("news_reactions").select("*"),
+        adminClient.from("objective_achievements").select("*").eq("entreprise_id", callerProfile.entreprise_id).gte("created_at", since).order("created_at", { ascending: false }),
+        adminClient.from("vendors_with_birthday_today").select("*").eq("entreprise_id", callerProfile.entreprise_id),
+        adminClient.from("news_announcements").select("*").eq("entreprise_id", callerProfile.entreprise_id).order("created_at", { ascending: false }).limit(50),
+        adminClient.from("news_reactions").select("*").eq("entreprise_id", callerProfile.entreprise_id),
       ]);
       if (achievementsRes.error) return new Response(JSON.stringify({ error: achievementsRes.error.message }), { status: 400, headers: cors });
       if (birthdaysRes.error) return new Response(JSON.stringify({ error: birthdaysRes.error.message }), { status: 400, headers: cors });
@@ -122,6 +122,7 @@ Deno.serve(async (req) => {
       }
       const { data: created, error: insErr } = await adminClient.from("news_announcements").insert({
         content, created_by: callerProfile.username || null, created_by_id: authData.user.id,
+        entreprise_id: callerProfile.entreprise_id,
       }).select("id, created_at").single();
       if (insErr) return new Response(JSON.stringify({ error: insErr.message }), { status: 400, headers: cors });
       return new Response(JSON.stringify({ id: created.id, createdAt: created.created_at }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
@@ -130,8 +131,11 @@ Deno.serve(async (req) => {
     if (action === "delete_announcement") {
       const { id } = body;
       if (!id) return new Response(JSON.stringify({ error: "Identifiant manquant." }), { status: 400, headers: cors });
-      const { data: ann } = await adminClient.from("news_announcements").select("created_by_id").eq("id", id).single();
+      const { data: ann } = await adminClient.from("news_announcements").select("created_by_id, entreprise_id").eq("id", id).single();
       if (!ann) return new Response(JSON.stringify({ error: "Annonce introuvable." }), { status: 404, headers: cors });
+      if (ann.entreprise_id !== callerProfile.entreprise_id) {
+        return new Response(JSON.stringify({ error: "Cette annonce n'appartient pas à ton entreprise." }), { status: 403, headers: cors });
+      }
       const canDelete = callerProfile.role === "admin" || ann.created_by_id === authData.user.id;
       if (!canDelete) {
         return new Response(JSON.stringify({ error: "Tu ne peux supprimer que tes propres annonces." }), { status: 403, headers: cors });
@@ -165,6 +169,7 @@ Deno.serve(async (req) => {
         await adminClient.from("news_reactions").insert({
           item_type: itemType, item_key: itemKey, user_id: authData.user.id,
           username: callerProfile.username || null, emoji,
+          entreprise_id: callerProfile.entreprise_id,
         });
       }
       return new Response(JSON.stringify({ myReaction: emoji }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });

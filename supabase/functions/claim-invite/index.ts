@@ -54,6 +54,7 @@ Deno.serve(async (req) => {
       role: invite.role || "vendor",
       vendor_id: invite.vendor_id || null,
       is_primary: false,
+      entreprise_id: invite.entreprise_id,
     });
     if (profileErr) {
       // Nettoyage : on ne laisse pas un compte auth orphelin sans profil.
