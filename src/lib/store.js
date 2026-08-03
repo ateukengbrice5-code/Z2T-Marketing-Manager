@@ -912,6 +912,29 @@ export async function createEntrepriseAdmin(entrepriseId, username, password) {
   return callManageUser({ action: "create_entreprise_admin", entrepriseId, username, password });
 }
 
+async function callEntrepriseOverview(body) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  const { data, error } = await supabase.functions.invoke("entreprise-overview", {
+    body, headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (error) throw new Error(await readFunctionError(error));
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+
+// Vue résumée de toutes les entreprises (nb vendeurs, produits, stock) —
+// réservée au super-admin.
+export async function getEntreprisesSummary() {
+  const { entreprises } = await callEntrepriseOverview({ action: "summary" });
+  return entreprises || [];
+}
+
+// Détail d'une entreprise précise ("zoom") — réservé au super-admin.
+export async function getEntrepriseDetail(entrepriseId) {
+  return callEntrepriseOverview({ action: "zoom", entrepriseId });
+}
+
 // Renouvelle l'abonnement pour une durée donnée : repart de la date de fin
 // actuelle si elle n'est pas encore dépassée (renouvellement anticipé, on ne
 // perd pas de jours déjà payés), sinon repart d'aujourd'hui. Réactive aussi

@@ -6933,6 +6933,24 @@ function EntreprisesAdmin({ currentUser }) {
   const reload = async () => setEntreprises(await store.getEntreprises());
   useEffect(() => { reload(); }, []);
 
+  const [zoomId, setZoomId] = useState(null);
+  const [zoomData, setZoomData] = useState(null);
+  const [zoomLoading, setZoomLoading] = useState(false);
+
+  const voirDetail = async (entrepriseId) => {
+    setZoomId(entrepriseId);
+    setZoomData(null);
+    setZoomLoading(true);
+    try {
+      const data = await store.getEntrepriseDetail(entrepriseId);
+      setZoomData(data);
+    } catch (e) {
+      showToast(e.message || "Erreur lors du chargement du détail.", "error");
+      setZoomId(null);
+    }
+    setZoomLoading(false);
+  };
+
   const creer = async () => {
     if (!nom.trim()) { showToast("Le nom de l'entreprise est requis.", "error"); return; }
     if (!adminUsername.trim() || !adminPassword) { showToast("Le nom d'utilisateur et le mot de passe du premier admin sont requis.", "error"); return; }
@@ -7107,12 +7125,76 @@ function EntreprisesAdmin({ currentUser }) {
                       <Trash2 size={15} />
                     </button>
                   </div>
+                  <Button onClick={() => voirDetail(ent.id)} style={{ padding: "5px 10px", fontSize: 12 }}>
+                    <Eye size={13} /> Voir les données
+                  </Button>
                 </div>,
               ];
             })}
           />
         )}
       </Card>
+
+      {zoomId && (
+        <Card title={zoomLoading ? "Chargement…" : `Données de ${zoomData?.entreprise?.nom || ""}`}>
+          <button onClick={() => { setZoomId(null); setZoomData(null); }} style={{ ...iconBtnStyle, float: "right" }} title="Fermer">
+            <X size={16} />
+          </button>
+          {zoomLoading ? (
+            <div style={{ fontSize: 13, color: "#8A93A3" }}>Chargement…</div>
+          ) : zoomData ? (
+            <div>
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+                <StatCard label="VENDEURS" value={zoomData.vendors.length} />
+                <StatCard label="PRODUITS" value={zoomData.products.length} />
+                <StatCard label="STOCK TOTAL" value={zoomData.products.reduce((s, p) => s + (Number(p.stock) || 0), 0)} />
+                <StatCard label="CA (30 DERNIERS JOURS ACTIFS)" value={fmtMoney(zoomData.caTrenteJours)} accent="#3F8361" />
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#1B2A4A", marginBottom: 8 }}>Comptes admin/gestionnaire</div>
+                  {zoomData.admins.length === 0 ? (
+                    <EmptyState text="Aucun compte." />
+                  ) : (
+                    <Table
+                      headers={["Utilisateur", "Rôle", "En ligne"]}
+                      rows={zoomData.admins.map((a) => [
+                        a.username + (a.is_primary ? " (principal)" : ""),
+                        a.role === "admin" ? "Admin" : "Gestionnaire",
+                        a.is_online ? "🟢" : "⚪",
+                      ])}
+                    />
+                  )}
+                </div>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#1B2A4A", marginBottom: 8 }}>Vendeurs ({zoomData.vendors.length})</div>
+                  {zoomData.vendors.length === 0 ? (
+                    <EmptyState text="Aucun vendeur." />
+                  ) : (
+                    <Table
+                      headers={["Nom", "Contrat"]}
+                      rows={zoomData.vendors.map((v) => [`${v.nom} ${v.prenom || ""}`, v.contract_statut || "actif"])}
+                    />
+                  )}
+                </div>
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#1B2A4A", marginBottom: 8 }}>Produits ({zoomData.products.length})</div>
+                {zoomData.products.length === 0 ? (
+                  <EmptyState text="Aucun produit." />
+                ) : (
+                  <Table
+                    headers={["Produit", "Stock", "Prix"]}
+                    rows={zoomData.products.map((p) => [p.nom, p.stock, fmtMoney(p.prix)])}
+                  />
+                )}
+              </div>
+            </div>
+          ) : null}
+        </Card>
+      )}
     </div>
   );
 }
