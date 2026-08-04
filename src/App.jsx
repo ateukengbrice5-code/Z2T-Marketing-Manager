@@ -4462,6 +4462,7 @@ function DayNavigator({ date, today, onChange }) {
 }
 
 function Distribution({ products, setProducts, vendors, day: dayProp, setDay: setDayProp, ensureTodayInList, daysList, currentUser, today }) {
+  const { showToast } = useToast();
   const [viewDate, setViewDate] = useState(today);
   const [pastDay, setPastDay] = useState(null);
   const prevTodayRef = useRef(today);
@@ -4501,6 +4502,126 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
   // distribution, même saisie manuellement par l'administrateur.
   const activeVendors = vendors.filter((v) => v.contractStatut !== "cloture");
   const selectedVendor = activeVendors.find((v) => v.id === vendorId);
+
+  // ---------------------------------------------------------------------
+  // Report du stock invendu — évite de refaire la distribution à la main
+  // chaque matin : ce qu'un vendeur a rapporté non vendu (retour du soir)
+  // et qui n'a pas encore été redistribué peut être reporté en un clic
+  // vers aujourd'hui, comme une distribution normale (le stock système est
+  // décrémenté exactement comme lors d'une remise manuelle).
+  const [carryDays, setCarryDays] = useState([]);
+  const [reporting, setReporting] = useState(false);
+
+  useEffect(() => {
+    if (viewDate !== today) { setCarryDays([]); return; }
+    // On regarde jusqu'à 14 jours en arrière pour rattraper un report oublié
+    // un ou plusieurs matins précédents, pas seulement la veille.
+    const candidates = (daysList || []).filter((d) => d < today).sort((a, b) => b.localeCompare(a)).slice(0, 14);
+    if (candidates.length === 0) { setCarryDays([]); return; }
+    store.getDaysInRange(candidates).then(setCarryDays).catch(() => setCarryDays([]));
+  }, [today, viewDate, daysList]);
+
+  const reportCandidates = [];
+  carryDays.forEach((d) => {
+    (d.lines || []).forEach((l) => {
+      if ((l.quantiteRestante || 0) > 0 && !l.reporte && activeVendors.some((v) => v.id === l.vendorId)) {
+        reportCandidates.push({ ...l, sourceDate: d.date });
+      }
+    });
+  });
+
+  // Regroupées par vendeur + produit pour l'affichage et l'application en une fois.
+  const reportGroups = (() => {
+    const map = new Map();
+    reportCandidates.forEach((l) => {
+      const key = `${l.vendorId}::${l.productId}`;
+      if (!map.has(key)) {
+        map.set(key, { vendorId: l.vendorId, vendorNom: l.vendorNom, productId: l.productId, productNom: l.productNom, prix: l.prix, quantite: 0, sources: [] });
+      }
+      const g = map.get(key);
+      g.quantite += l.quantiteRestante;
+      g.sources.push({ date: l.sourceDate, lineId: l.id });
+    });
+    return Array.from(map.values());
+  })();
+
+  const reporterStockInvendu = async () => {
+    if (reportGroups.length === 0) return;
+    setError("");
+    setReporting(true);
+    try {
+      // Garde-fou : vérifie que le stock système est bien suffisant pour
+      // chaque produit avant d'appliquer le report (au cas où il aurait
+      // changé entre-temps).
+      const needByProduct = {};
+      reportGroups.forEach((g) => { needByProduct[g.productId] = (needByProduct[g.productId] || 0) + g.quantite; });
+      const insuffisants = [];
+      Object.entries(needByProduct).forEach(([productId, need]) => {
+        const product = products.find((p) => p.id === productId);
+        if (!product || product.stock < need) insuffisants.push(product ? product.nom : productId);
+      });
+      const groupsToApply = reportGroups.filter((g) => !insuffisants.includes(g.productNom));
+
+      if (groupsToApply.length === 0) {
+        showToast("Stock système insuffisant pour reporter les quantités invendues.", "error");
+        setReporting(false);
+        return;
+      }
+
+      let nextLines = [...day.lines];
+      let nextProducts = [...products];
+      groupsToApply.forEach((g) => {
+        const existingLine = nextLines.find(
+          (l) => l.vendorId === g.vendorId && l.productId === g.productId && l.quantiteRestante === null
+        );
+        nextLines = existingLine
+          ? nextLines.map((l) => (l.id === existingLine.id ? { ...l, quantiteRemise: l.quantiteRemise + g.quantite } : l))
+          : [...nextLines, {
+              id: uid(), vendorId: g.vendorId, vendorNom: g.vendorNom, productId: g.productId, productNom: g.productNom,
+              prix: g.prix, quantiteRemise: g.quantite, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
+            }];
+        nextProducts = nextProducts.map((p) => (p.id === g.productId ? { ...p, stock: p.stock - g.quantite } : p));
+      });
+
+      await setDay({ ...day, lines: nextLines });
+      await setProducts(nextProducts);
+      if (viewDate === today) await ensureTodayInList(daysList);
+
+      // Marque les lignes sources comme reportées (jour par jour) pour ne
+      // pas les proposer une seconde fois demain.
+      const bySourceDate = new Map();
+      groupsToApply.forEach((g) => {
+        g.sources.forEach(({ date, lineId }) => {
+          if (!bySourceDate.has(date)) bySourceDate.set(date, new Set());
+          bySourceDate.get(date).add(lineId);
+        });
+      });
+      for (const [date, lineIds] of bySourceDate.entries()) {
+        const sourceDay = carryDays.find((d) => d.date === date);
+        if (!sourceDay) continue;
+        const updatedLines = sourceDay.lines.map((l) => (lineIds.has(l.id) ? { ...l, reporte: true } : l));
+        await store.setDay({ ...sourceDay, lines: updatedLines });
+      }
+      setCarryDays((prev) => prev.map((d) => {
+        const ids = bySourceDate.get(d.date);
+        if (!ids) return d;
+        return { ...d, lines: d.lines.map((l) => (ids.has(l.id) ? { ...l, reporte: true } : l)) };
+      }));
+
+      store.logActivity(
+        currentUser, "report_stock_invendu",
+        `Stock invendu reporté vers aujourd'hui : ${groupsToApply.map((g) => `${g.quantite} ${g.productNom} → ${g.vendorNom}`).join(", ")}.`
+      );
+      showToast("Stock invendu reporté — les vendeurs concernés repartent avec leur stock de la veille.", "success");
+      if (insuffisants.length > 0) {
+        showToast(`Stock système insuffisant pour reporter : ${insuffisants.join(", ")}. À distribuer manuellement.`, "warning", 8000);
+      }
+    } catch (e) {
+      setError(e.message || "Erreur lors du report du stock invendu.");
+    }
+    setReporting(false);
+  };
+  // ---------------------------------------------------------------------
 
   // Produits déjà en main du vendeur sélectionné, pas encore retournés —
   // indexé par produit pour fusionner facilement avec le tableau de remise.
@@ -4623,6 +4744,25 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
   return (
     <div>
       <DayNavigator date={viewDate} today={today} onChange={setViewDate} />
+
+      {viewDate === today && reportGroups.length > 0 && (
+        <Card title="Stock invendu à reporter">
+          <div style={{ fontSize: 12.5, color: "#8A93A3", marginBottom: 12 }}>
+            Ces vendeurs ont un reliquat non vendu, rapporté lors d'un retour du soir précédent et pas encore
+            redistribué. Reporte-le en un clic pour éviter de refaire toute la distribution ce matin.
+          </div>
+          <Table
+            headers={["Vendeur", "Produit", "Quantité invendue"]}
+            rows={reportGroups.map((g) => [g.vendorNom, g.productNom, g.quantite])}
+          />
+          <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
+            <Button variant="gold" onClick={reporterStockInvendu} disabled={reporting}>
+              <RotateCcw size={15} /> {reporting ? "Report en cours…" : "Reporter tout vers aujourd'hui"}
+            </Button>
+          </div>
+        </Card>
+      )}
+
       <div style={{ position: "sticky", top: 78, zIndex: 15, background: "#F7F8FA", paddingBottom: 2 }}>
         <Card title="Vendeurs actifs">
           <VendorPicker vendors={activeVendors} selectedId={vendorId} onSelect={selectVendor} />
@@ -6780,6 +6920,7 @@ const EVENT_LABELS = {
   distribute: "Distribution",
   edit_distribution: "Distribution modifiée",
   cancel_distribution: "Distribution annulée",
+  report_stock_invendu: "Stock invendu reporté",
   retour_du_soir: "Retour du soir validé",
   correction_retour_du_soir: "Correction d'un retour du soir",
   add_mobile_payment: "Paiement mobile ajouté",
