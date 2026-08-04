@@ -1324,7 +1324,7 @@ function AppRoot() {
 
   // Charge les données une fois connecté (avec repli sur le cache local si hors-ligne)
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || currentUser.blocked) return;
     (async () => {
       if (!offline.isOnline()) {
         setProducts(offline.cacheGet("products") || []);
@@ -1379,7 +1379,7 @@ function AppRoot() {
     try { setUnseenAchievements(await store.getUnseenAchievements()); } catch (e) { console.error("Chargement des paliers atteints impossible", e); }
   }, []);
   useEffect(() => {
-    if (!canSeeAchievements || !online) return;
+    if (!canSeeAchievements || currentUser?.blocked || !online) return;
     reloadUnseenAchievements();
     const id = setInterval(reloadUnseenAchievements, 30000);
     return () => clearInterval(id);
@@ -1394,7 +1394,7 @@ function AppRoot() {
   // que le vendeur concerné et tous les admins voient les évènements récents
   // sans avoir à recharger la page.
   useEffect(() => {
-    if (!currentUser || !online) return;
+    if (!currentUser || currentUser.blocked || !online) return;
     const reload = async () => {
       try { const fresh = await store.getNotifications(); setNotifications(fresh); offline.cacheSet("notifications", fresh); } catch (e) { console.error("Rafraîchissement des notifications impossible", e); }
     };
