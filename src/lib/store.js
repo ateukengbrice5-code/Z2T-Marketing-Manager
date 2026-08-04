@@ -15,17 +15,28 @@ function usernameToEmail(username) {
 // français) reste dans error.context (un objet Response) et n'est jamais lu
 // par défaut, ce qui affichait juste "Edge Function returned a non-2xx
 // status code" à l'utilisateur. Ce helper va chercher le vrai message.
+// Il inclut aussi le code HTTP et, si le corps n'est pas du JSON exploitable
+// (crash côté fonction, mauvaise route, etc.), le texte brut renvoyé — pour
+// ne jamais retomber sur un message générique qui masque la vraie cause.
 async function readFunctionError(error) {
   if (!error) return null;
+  const status = error?.context?.status;
+  const prefix = status ? `Erreur ${status} — ` : "";
   try {
-    if (error.context && typeof error.context.json === "function") {
-      const body = await error.context.json();
-      if (body?.error) return body.error;
+    if (error.context && typeof error.context.clone === "function") {
+      // On clone la réponse avant de la lire : selon la version du SDK, le
+      // corps peut déjà avoir été partiellement consommé ailleurs, ce qui
+      // ferait échouer .json() silencieusement et masquerait la vraie cause.
+      const body = await error.context.clone().json().catch(() => null);
+      if (body?.error) return `${prefix}${body.error}`;
+      if (body) return `${prefix}${JSON.stringify(body)}`;
+      const text = await error.context.clone().text().catch(() => null);
+      if (text) return `${prefix}${text}`;
     }
   } catch (_) {
-    // le corps n'était pas du JSON exploitable, on retombe sur error.message
+    // le corps n'était pas exploitable du tout, on retombe sur error.message ci-dessous
   }
-  return error.message || "Erreur lors de l'appel à la fonction.";
+  return `${prefix}${error.message || "Erreur lors de l'appel à la fonction."}`;
 }
 
 export async function getSession() {
@@ -689,7 +700,13 @@ async function callManageUser(body) {
   const { data, error } = await supabase.functions.invoke("manage-user", {
     body, headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   });
-  if (error) throw new Error(await readFunctionError(error));
+  if (error) {
+    // Log complet dans la console (statut HTTP + objet d'erreur brut) pour
+    // pouvoir diagnostiquer précisément un échec de manage-user (ex. lien
+    // d'invitation admin) sans avoir à deviner depuis le message affiché.
+    console.error("manage-user a échoué", { action: body?.action, status: error?.context?.status, error });
+    throw new Error(await readFunctionError(error));
+  }
   if (data?.error) throw new Error(data.error);
   return data;
 }
