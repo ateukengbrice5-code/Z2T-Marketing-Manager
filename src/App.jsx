@@ -3674,6 +3674,8 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
   const [regDateInput, setRegDateInput] = useState(vendor?.dateEnregistrement || "");
   const [regDateSaving, setRegDateSaving] = useState(false);
   const [todayDay, setTodayDay] = useState(null);
+  const [cycleHistory, setCycleHistory] = useState([]);
+  const [withdrawals, setWithdrawals] = useState([]);
   const fileRef = useRef(null);
   const today = todayISO();
   const isAdmin = currentUser?.role === "admin";
@@ -3685,16 +3687,20 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
     const t = h.find((a) => a.date === today);
     if (t) { setStatut(t.statut); setNotes(t.notes || ""); setHeurePointage(t.heureArrivee || null); }
     try {
-      const [allDays, cycle, contest, dayToday] = await Promise.all([
+      const [allDays, cycle, contest, dayToday, cycles, allWithdrawals] = await Promise.all([
         store.getDaysInRange(daysList || []),
         store.getLatestSalaryCycle(vendor.id),
         store.getContestationsForVendor(vendor.id),
         store.getDay(today),
+        store.getSalaryCycleHistory(vendor.id),
+        store.getWithdrawals(),
       ]);
       setAllDaysForCycle(allDays);
       setLatestCycle(cycle);
       setContestations(contest);
       setTodayDay(dayToday);
+      setCycleHistory(cycles);
+      setWithdrawals(allWithdrawals.filter((w) => w.vendorId === vendor.id));
     } catch (e) {
       console.error("Chargement des données de salaire/présence impossible", e);
     }
@@ -3915,6 +3921,14 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
             <div style={{ fontSize: 20, fontWeight: 700, color: "#C1554A" }}>{absNonAutorise}</div>
             <div style={{ fontSize: 11, color: "#5B6472" }}>absences non autorisées</div>
           </div>
+          <div style={{ flex: 1, textAlign: "center", background: "#EEF1F8", borderRadius: 10, padding: "10px 6px" }}>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#1B2A4A" }}>{totalPiecesVendues}</div>
+            <div style={{ fontSize: 11, color: "#5B6472" }}>pièces vendues (cumul)</div>
+          </div>
+          <div style={{ flex: 1, textAlign: "center", background: "#F3FAF6", borderRadius: 10, padding: "10px 6px" }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#3F8361" }}>{fmtMoney(totalVerseGlobal)}</div>
+            <div style={{ fontSize: 11, color: "#5B6472" }}>versé (cumul)</div>
+          </div>
         </div>
 
         <div style={{ borderTop: "1px solid #F0F1F4", paddingTop: 16, marginBottom: 16 }}>
@@ -4047,6 +4061,69 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
                 </div>
               )}
             </>
+          )}
+        </div>
+
+        <div style={{ borderTop: "1px solid #F0F1F4", paddingTop: 16, marginTop: 16 }}>
+          <Label>Historique des cycles de salaire versés</Label>
+          {cycleHistory.length === 0 ? (
+            <EmptyState text="Aucun salaire versé pour l'instant." />
+          ) : (
+            <div style={{ maxHeight: 220, overflowY: "auto" }}>
+              <Table
+                headers={["Période", "Jours comptés", "Montant", "Versé le"]}
+                rows={cycleHistory.map((c) => [
+                  `${fmtDateFr(c.cycleStart)} → ${fmtDateFr(c.cycleEnd)}`,
+                  c.joursComptes,
+                  c.montant != null ? fmtMoney(c.montant) : "—",
+                  c.paidAt ? formatDateFR(isoFromDate(new Date(c.paidAt))) : "—",
+                ])}
+              />
+            </div>
+          )}
+        </div>
+
+        <div style={{ borderTop: "1px solid #F0F1F4", paddingTop: 16, marginTop: 16 }}>
+          <Label>Historique des ventes et versements</Label>
+          {venteHistory.length === 0 ? (
+            <EmptyState text="Aucune vente enregistrée pour l'instant." />
+          ) : (
+            <div style={{ maxHeight: 260, overflowY: "auto" }}>
+              <Table
+                headers={["Date", "Pièces vendues", "Montant attendu", "Versé", "Statut"]}
+                rows={venteHistory.map((d) => [
+                  formatDateFR(d.date),
+                  d.totalPieces,
+                  fmtMoney(d.montantAttendu),
+                  d.finalise ? fmtMoney((d.montantVerseEspeces || 0) + d.totalMobile) : "En attente",
+                  d.finalise ? (d.statut === "equilibre" ? "Équilibré" : d.statut === "exces" ? "Excédent" : "Manquant") : "—",
+                ])}
+              />
+            </div>
+          )}
+        </div>
+
+        <div style={{ borderTop: "1px solid #F0F1F4", paddingTop: 16, marginTop: 16 }}>
+          <Label>Retraits demandés par ce vendeur</Label>
+          {withdrawals.length === 0 ? (
+            <EmptyState text="Aucun retrait demandé pour l'instant." />
+          ) : (
+            <div style={{ maxHeight: 220, overflowY: "auto" }}>
+              <Table
+                headers={["Date", "Montant", "Méthode", "Statut"]}
+                rows={withdrawals.map((w) => [
+                  fmtDateFr(w.date),
+                  fmtMoney(w.montant),
+                  w.methode === "mobile" ? `Mobile${w.numeroMobile ? ` (${w.numeroMobile})` : ""}` : "Espèces",
+                  <span key="st" style={{
+                    fontSize: 11.5, fontWeight: 700,
+                    color: w.statut === "approuve" ? "#3F9C6D" : w.statut === "refuse" ? "#C1554A" : "#C79A3A",
+                  }}>
+                    {w.statut === "approuve" ? "Approuvé" : w.statut === "refuse" ? "Refusé" : "En attente"}
+                  </span>,
+                ])}
+              />
+            </div>
           )}
         </div>
 
