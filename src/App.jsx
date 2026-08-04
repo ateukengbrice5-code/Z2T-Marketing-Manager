@@ -1091,10 +1091,28 @@ function computeVersementSummary(day, vendorId) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Cloche de notifications — paliers d'objectif atteints par les vendeurs,
-// visible uniquement par l'administration (admin / gestionnaire).
-// ---------------------------------------------------------------------------
+// Historique jour par jour des ventes et versements d'un vendeur, à partir
+// d'un ensemble de journées (days). Utilisé à la fois côté fiche vendeur
+// (admin) et côté tableau de bord du vendeur lui-même.
+function buildVendeurVenteHistory(days, vendorId) {
+  return (days || [])
+    .map((d) => {
+      const s = computeVersementSummary(d, vendorId);
+      return {
+        date: d.date,
+        totalPieces: s.totalPieces,
+        montantAttendu: s.montantAttendu,
+        montantVerseEspeces: s.montantVerseEspeces,
+        totalMobile: s.totalMobile,
+        finalise: s.finalise,
+        statut: s.statut,
+      };
+    })
+    .filter((d) => d.totalPieces > 0 || d.montantAttendu > 0)
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
+
 
 function AdminAchievementBell({ achievements, pointageNotifications, onMarkSeen, onMarkPointageSeen, onOpen }) {
   const [open, setOpen] = useState(false);
@@ -2284,6 +2302,8 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
   }, 0);
 
   const serie15j = buildVendorDailySeries(daysWithToday, vendor.id, today, 15);
+  const venteHistory = buildVendeurVenteHistory(daysWithToday, vendor.id);
+  const totalPiecesVendues = venteHistory.reduce((s, d) => s + d.totalPieces, 0);
 
   const bonusTotal = computeVendorBonusTotal(daysWithToday, vendor.id);
   const dejaDemande = (withdrawals || [])
@@ -2357,6 +2377,7 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
         <StatCard label="CHIFFRE D'AFFAIRES — CETTE SEMAINE" value={fmtMoney(caSemaine.ca)} />
         <StatCard label="CHIFFRE D'AFFAIRES — CE MOIS" value={fmtMoney(caMois.ca)} />
         <StatCard label="CHIFFRE D'AFFAIRES TOTAL CUMULÉ" value={fmtMoney(caTotal)} accent="#D9A441" />
+        <StatCard label="PIÈCES VENDUES — TOTAL CUMULÉ" value={totalPiecesVendues} />
       </div>
 
       {objectives && (objectives.minimal > 0 || objectives.maximal > 0 || objectives.extraordinaire > 0) && (
@@ -2382,6 +2403,23 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
           <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#D9A441", borderRadius: 2, marginRight: 5 }} />Chiffre d'affaires</span>
           <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#1B2A4A", borderRadius: 2, marginRight: 5 }} />Quantité distribuée</span>
         </div>
+      </Card>
+
+      <Card title="Historique de mes ventes et versements">
+        {venteHistory.length === 0 ? (
+          <EmptyState text="Aucune vente enregistrée pour l'instant." />
+        ) : (
+          <Table
+            headers={["Date", "Pièces vendues", "Montant attendu", "Versé", "Statut"]}
+            rows={venteHistory.map((d) => [
+              formatDateFR(d.date),
+              d.totalPieces,
+              fmtMoney(d.montantAttendu),
+              d.finalise ? fmtMoney((d.montantVerseEspeces || 0) + d.totalMobile) : "En attente",
+              d.finalise ? (d.statut === "equilibre" ? "Équilibré" : d.statut === "exces" ? "Excédent" : "Manquant") : "—",
+            ])}
+          />
+        )}
       </Card>
 
       <Card title="Solde et retrait d'excédent">
@@ -3673,6 +3711,9 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
   const absAutorise = history.filter((a) => a.statut === "absent_autorise").length;
   const absNonAutorise = history.filter((a) => a.statut === "absent_non_autorise").length;
   const versementToday = todayDay ? computeVersementSummary(todayDay, vendor.id) : null;
+  const venteHistory = allDaysForCycle ? buildVendeurVenteHistory(allDaysForCycle, vendor.id) : [];
+  const totalPiecesVendues = venteHistory.reduce((s, d) => s + d.totalPieces, 0);
+  const totalVerseGlobal = venteHistory.reduce((s, d) => s + (d.finalise ? (d.montantVerseEspeces || 0) + d.totalMobile : 0), 0);
 
   const onPickPhoto = async (e) => {
     const file = e.target.files?.[0];
@@ -4111,6 +4152,28 @@ function MaPresence({ vendor, daysList, today, currentUser }) {
         <div style={{ fontSize: 11.5, color: "#9AA2B1" }}>
           Une journée compte dès qu'elle est marquée « présent » par l'administration, ou dès qu'un retour du soir a été fait ce jour-là.
         </div>
+      </Card>
+
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+        <StatCard label="PIÈCES VENDUES — TOTAL CUMULÉ" value={totalPiecesVendues} />
+        <StatCard label="VERSÉ — TOTAL CUMULÉ" value={fmtMoney(totalVerseGlobal)} accent="#3F8361" />
+      </div>
+
+      <Card title="Historique des ventes et versements">
+        {venteHistory.length === 0 ? (
+          <EmptyState text="Aucune vente enregistrée pour l'instant." />
+        ) : (
+          <Table
+            headers={["Date", "Pièces vendues", "Montant attendu", "Versé", "Statut"]}
+            rows={venteHistory.map((d) => [
+              formatDateFR(d.date),
+              d.totalPieces,
+              fmtMoney(d.montantAttendu),
+              d.finalise ? fmtMoney((d.montantVerseEspeces || 0) + d.totalMobile) : "En attente",
+              d.finalise ? (d.statut === "equilibre" ? "Équilibré" : d.statut === "exces" ? "Excédent" : "Manquant") : "—",
+            ])}
+          />
+        )}
       </Card>
 
       <Card title="Ma fiche de présence">
