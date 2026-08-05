@@ -15,28 +15,17 @@ function usernameToEmail(username) {
 // français) reste dans error.context (un objet Response) et n'est jamais lu
 // par défaut, ce qui affichait juste "Edge Function returned a non-2xx
 // status code" à l'utilisateur. Ce helper va chercher le vrai message.
-// Il inclut aussi le code HTTP et, si le corps n'est pas du JSON exploitable
-// (crash côté fonction, mauvaise route, etc.), le texte brut renvoyé — pour
-// ne jamais retomber sur un message générique qui masque la vraie cause.
 async function readFunctionError(error) {
   if (!error) return null;
-  const status = error?.context?.status;
-  const prefix = status ? `Erreur ${status} — ` : "";
   try {
-    if (error.context && typeof error.context.clone === "function") {
-      // On clone la réponse avant de la lire : selon la version du SDK, le
-      // corps peut déjà avoir été partiellement consommé ailleurs, ce qui
-      // ferait échouer .json() silencieusement et masquerait la vraie cause.
-      const body = await error.context.clone().json().catch(() => null);
-      if (body?.error) return `${prefix}${body.error}`;
-      if (body) return `${prefix}${JSON.stringify(body)}`;
-      const text = await error.context.clone().text().catch(() => null);
-      if (text) return `${prefix}${text}`;
+    if (error.context && typeof error.context.json === "function") {
+      const body = await error.context.json();
+      if (body?.error) return body.error;
     }
   } catch (_) {
-    // le corps n'était pas exploitable du tout, on retombe sur error.message ci-dessous
+    // le corps n'était pas du JSON exploitable, on retombe sur error.message
   }
-  return `${prefix}${error.message || "Erreur lors de l'appel à la fonction."}`;
+  return error.message || "Erreur lors de l'appel à la fonction.";
 }
 
 export async function getSession() {
@@ -47,7 +36,7 @@ export async function getSession() {
 export async function getMyProfile() {
   const { data: auth } = await supabase.auth.getUser();
   if (!auth?.user) return null;
-  const { data, error } = await supabase.from("profiles").select("*, entreprises!profiles_entreprise_id_fkey(nom, statut, date_fin)").eq("id", auth.user.id).single();
+  const { data, error } = await supabase.from("profiles").select("*, entreprises!profiles_entreprise_id_fkey(nom, statut, date_fin, features)").eq("id", auth.user.id).single();
   if (error) return null;
   const entreprise = data.entreprises;
   let blocked = false;
@@ -69,6 +58,7 @@ export async function getMyProfile() {
     vendorId: data.vendor_id, isPrimary: data.is_primary,
     isSuperAdmin: !!data.is_super_admin,
     entrepriseId: data.entreprise_id,
+    features: entreprise?.features || { news_feed: true, sales_history: true, auto_carry_forward_stock: false },
     blocked, blockedReason,
   };
 }
@@ -700,13 +690,7 @@ async function callManageUser(body) {
   const { data, error } = await supabase.functions.invoke("manage-user", {
     body, headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   });
-  if (error) {
-    // Log complet dans la console (statut HTTP + objet d'erreur brut) pour
-    // pouvoir diagnostiquer précisément un échec de manage-user (ex. lien
-    // d'invitation admin) sans avoir à deviner depuis le message affiché.
-    console.error("manage-user a échoué", { action: body?.action, status: error?.context?.status, error });
-    throw new Error(await readFunctionError(error));
-  }
+  if (error) throw new Error(await readFunctionError(error));
   if (data?.error) throw new Error(data.error);
   return data;
 }
@@ -893,7 +877,17 @@ function mapEntreprise(e) {
     statut: e.statut, dureeMois: e.duree_mois, dateDebut: e.date_debut, dateFin: e.date_fin,
     montant: e.montant != null ? Number(e.montant) : null, notes: e.notes,
     createdAt: e.created_at, updatedAt: e.updated_at,
+    features: e.features || { news_feed: true, sales_history: true, auto_carry_forward_stock: false },
   };
+}
+
+export async function setEntrepriseFeature(entrepriseId, key, enabled) {
+  const { data: current, error: readErr } = await supabase.from("entreprises").select("features").eq("id", entrepriseId).single();
+  if (readErr) throw readErr;
+  const features = { ...(current.features || {}), [key]: enabled };
+  const { error } = await supabase.from("entreprises").update({ features }).eq("id", entrepriseId);
+  if (error) throw error;
+  return features;
 }
 
 function addMoisISO(dateISO, mois) {

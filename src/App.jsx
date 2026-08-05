@@ -1649,14 +1649,15 @@ function AppRoot() {
   const isMessenger = currentUser.role === "messenger";
   const isSuperAdmin = !!currentUser.isSuperAdmin;
   const canManage = isAdmin || isManager; // accès Tableau de bord / Finances / Stock / Personnel
-  const nav = isAdmin
+  const nav = (isAdmin
     ? (currentUser.isPrimary
         ? [...NAV_ADMIN,
            { id: "journal", label: "Journal d'activité", icon: History },
            { id: "supervision", label: "Toutes les conversations", icon: Eye },
            ...(isSuperAdmin ? [{ id: "entreprises", label: "Entreprises (abonnements)", icon: Store }] : [])]
         : [...NAV_ADMIN, ...(isSuperAdmin ? [{ id: "entreprises", label: "Entreprises (abonnements)", icon: Store }] : [])])
-    : isManager ? NAV_MANAGER : isMessenger ? NAV_MESSENGER : NAV_VENDOR;
+    : isManager ? NAV_MANAGER : isMessenger ? NAV_MESSENGER : NAV_VENDOR
+  ).filter((item) => item.id !== "actualites" || currentUser.features?.news_feed !== false);
   const roleLabel = isAdmin ? (currentUser.isPrimary ? "admin principal" : "admin") : isManager ? "gestionnaire" : isMessenger ? "agent messagerie" : "vendeur";
   const activeVendor = currentUser.role === "vendor" ? currentVendor : null;
 
@@ -1828,9 +1829,9 @@ function AppRoot() {
           <Dashboard products={products} vendors={vendors} day={day} daysList={daysList} today={today} objectives={objectives} setObjectives={persistObjectives} />
         )}
         {tab === "dashboard" && !canManage && (
-          <VendorDashboard vendor={activeVendor} daysList={daysList} today={today} day={day} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} objectives={objectives} />
+          <VendorDashboard vendor={activeVendor} daysList={daysList} today={today} day={day} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} objectives={objectives} currentUser={currentUser} />
         )}
-        {tab === "actualites" && (
+        {tab === "actualites" && currentUser.features?.news_feed !== false && (
           <NewsFeed currentUser={currentUser} />
         )}
         {tab === "produits" && isAdmin && <Produits products={products} setProducts={persistProducts} reloadProducts={reloadProducts} currentUser={currentUser} />}
@@ -2237,7 +2238,7 @@ function ObjectiveProgressBar({ ca, objectifs, celebrate }) {
 // Tableau de bord du vendeur (lecture seule + demande de retrait d'excédent)
 // ---------------------------------------------------------------------------
 
-function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdrawals, notifications, setNotifications, objectives }) {
+function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdrawals, notifications, setNotifications, objectives, currentUser }) {
   const [allDays, setAllDays] = useState(null);
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [withdrawMethod, setWithdrawMethod] = useState("especes"); // "especes" | "mobile"
@@ -2377,7 +2378,9 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
         <StatCard label="CHIFFRE D'AFFAIRES — CETTE SEMAINE" value={fmtMoney(caSemaine.ca)} />
         <StatCard label="CHIFFRE D'AFFAIRES — CE MOIS" value={fmtMoney(caMois.ca)} />
         <StatCard label="CHIFFRE D'AFFAIRES TOTAL CUMULÉ" value={fmtMoney(caTotal)} accent="#D9A441" />
-        <StatCard label="PIÈCES VENDUES — TOTAL CUMULÉ" value={totalPiecesVendues} />
+        {currentUser?.features?.sales_history !== false && (
+          <StatCard label="PIÈCES VENDUES — TOTAL CUMULÉ" value={totalPiecesVendues} />
+        )}
       </div>
 
       {objectives && (objectives.minimal > 0 || objectives.maximal > 0 || objectives.extraordinaire > 0) && (
@@ -2405,22 +2408,24 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
         </div>
       </Card>
 
-      <Card title="Historique de mes ventes et versements">
-        {venteHistory.length === 0 ? (
-          <EmptyState text="Aucune vente enregistrée pour l'instant." />
-        ) : (
-          <Table
-            headers={["Date", "Pièces vendues", "Montant attendu", "Versé", "Statut"]}
-            rows={venteHistory.map((d) => [
-              formatDateFR(d.date),
-              d.totalPieces,
-              fmtMoney(d.montantAttendu),
-              d.finalise ? fmtMoney((d.montantVerseEspeces || 0) + d.totalMobile) : "En attente",
-              d.finalise ? (d.statut === "equilibre" ? "Équilibré" : d.statut === "exces" ? "Excédent" : "Manquant") : "—",
-            ])}
-          />
-        )}
-      </Card>
+      {currentUser?.features?.sales_history !== false && (
+        <Card title="Historique de mes ventes et versements">
+          {venteHistory.length === 0 ? (
+            <EmptyState text="Aucune vente enregistrée pour l'instant." />
+          ) : (
+            <Table
+              headers={["Date", "Pièces vendues", "Montant attendu", "Versé", "Statut"]}
+              rows={venteHistory.map((d) => [
+                formatDateFR(d.date),
+                d.totalPieces,
+                fmtMoney(d.montantAttendu),
+                d.finalise ? fmtMoney((d.montantVerseEspeces || 0) + d.totalMobile) : "En attente",
+                d.finalise ? (d.statut === "equilibre" ? "Équilibré" : d.statut === "exces" ? "Excédent" : "Manquant") : "—",
+              ])}
+            />
+          )}
+        </Card>
+      )}
 
       <Card title="Solde et retrait d'excédent">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -3674,8 +3679,6 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
   const [regDateInput, setRegDateInput] = useState(vendor?.dateEnregistrement || "");
   const [regDateSaving, setRegDateSaving] = useState(false);
   const [todayDay, setTodayDay] = useState(null);
-  const [cycleHistory, setCycleHistory] = useState([]);
-  const [withdrawals, setWithdrawals] = useState([]);
   const fileRef = useRef(null);
   const today = todayISO();
   const isAdmin = currentUser?.role === "admin";
@@ -3687,20 +3690,16 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
     const t = h.find((a) => a.date === today);
     if (t) { setStatut(t.statut); setNotes(t.notes || ""); setHeurePointage(t.heureArrivee || null); }
     try {
-      const [allDays, cycle, contest, dayToday, cycles, allWithdrawals] = await Promise.all([
+      const [allDays, cycle, contest, dayToday] = await Promise.all([
         store.getDaysInRange(daysList || []),
         store.getLatestSalaryCycle(vendor.id),
         store.getContestationsForVendor(vendor.id),
         store.getDay(today),
-        store.getSalaryCycleHistory(vendor.id),
-        store.getWithdrawals(),
       ]);
       setAllDaysForCycle(allDays);
       setLatestCycle(cycle);
       setContestations(contest);
       setTodayDay(dayToday);
-      setCycleHistory(cycles);
-      setWithdrawals(allWithdrawals.filter((w) => w.vendorId === vendor.id));
     } catch (e) {
       console.error("Chargement des données de salaire/présence impossible", e);
     }
@@ -3921,14 +3920,6 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
             <div style={{ fontSize: 20, fontWeight: 700, color: "#C1554A" }}>{absNonAutorise}</div>
             <div style={{ fontSize: 11, color: "#5B6472" }}>absences non autorisées</div>
           </div>
-          <div style={{ flex: 1, textAlign: "center", background: "#EEF1F8", borderRadius: 10, padding: "10px 6px" }}>
-            <div style={{ fontSize: 20, fontWeight: 700, color: "#1B2A4A" }}>{totalPiecesVendues}</div>
-            <div style={{ fontSize: 11, color: "#5B6472" }}>pièces vendues (cumul)</div>
-          </div>
-          <div style={{ flex: 1, textAlign: "center", background: "#F3FAF6", borderRadius: 10, padding: "10px 6px" }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#3F8361" }}>{fmtMoney(totalVerseGlobal)}</div>
-            <div style={{ fontSize: 11, color: "#5B6472" }}>versé (cumul)</div>
-          </div>
         </div>
 
         <div style={{ borderTop: "1px solid #F0F1F4", paddingTop: 16, marginBottom: 16 }}>
@@ -4061,69 +4052,6 @@ function VendorFiche({ vendor, onClose, currentUser, reloadVendors, daysList }) 
                 </div>
               )}
             </>
-          )}
-        </div>
-
-        <div style={{ borderTop: "1px solid #F0F1F4", paddingTop: 16, marginTop: 16 }}>
-          <Label>Historique des cycles de salaire versés</Label>
-          {cycleHistory.length === 0 ? (
-            <EmptyState text="Aucun salaire versé pour l'instant." />
-          ) : (
-            <div style={{ maxHeight: 220, overflowY: "auto" }}>
-              <Table
-                headers={["Période", "Jours comptés", "Montant", "Versé le"]}
-                rows={cycleHistory.map((c) => [
-                  `${fmtDateFr(c.cycleStart)} → ${fmtDateFr(c.cycleEnd)}`,
-                  c.joursComptes,
-                  c.montant != null ? fmtMoney(c.montant) : "—",
-                  c.paidAt ? formatDateFR(isoFromDate(new Date(c.paidAt))) : "—",
-                ])}
-              />
-            </div>
-          )}
-        </div>
-
-        <div style={{ borderTop: "1px solid #F0F1F4", paddingTop: 16, marginTop: 16 }}>
-          <Label>Historique des ventes et versements</Label>
-          {venteHistory.length === 0 ? (
-            <EmptyState text="Aucune vente enregistrée pour l'instant." />
-          ) : (
-            <div style={{ maxHeight: 260, overflowY: "auto" }}>
-              <Table
-                headers={["Date", "Pièces vendues", "Montant attendu", "Versé", "Statut"]}
-                rows={venteHistory.map((d) => [
-                  formatDateFR(d.date),
-                  d.totalPieces,
-                  fmtMoney(d.montantAttendu),
-                  d.finalise ? fmtMoney((d.montantVerseEspeces || 0) + d.totalMobile) : "En attente",
-                  d.finalise ? (d.statut === "equilibre" ? "Équilibré" : d.statut === "exces" ? "Excédent" : "Manquant") : "—",
-                ])}
-              />
-            </div>
-          )}
-        </div>
-
-        <div style={{ borderTop: "1px solid #F0F1F4", paddingTop: 16, marginTop: 16 }}>
-          <Label>Retraits demandés par ce vendeur</Label>
-          {withdrawals.length === 0 ? (
-            <EmptyState text="Aucun retrait demandé pour l'instant." />
-          ) : (
-            <div style={{ maxHeight: 220, overflowY: "auto" }}>
-              <Table
-                headers={["Date", "Montant", "Méthode", "Statut"]}
-                rows={withdrawals.map((w) => [
-                  fmtDateFr(w.date),
-                  fmtMoney(w.montant),
-                  w.methode === "mobile" ? `Mobile${w.numeroMobile ? ` (${w.numeroMobile})` : ""}` : "Espèces",
-                  <span key="st" style={{
-                    fontSize: 11.5, fontWeight: 700,
-                    color: w.statut === "approuve" ? "#3F9C6D" : w.statut === "refuse" ? "#C1554A" : "#C79A3A",
-                  }}>
-                    {w.statut === "approuve" ? "Approuvé" : w.statut === "refuse" ? "Refusé" : "En attente"}
-                  </span>,
-                ])}
-              />
-            </div>
           )}
         </div>
 
@@ -4462,7 +4390,6 @@ function DayNavigator({ date, today, onChange }) {
 }
 
 function Distribution({ products, setProducts, vendors, day: dayProp, setDay: setDayProp, ensureTodayInList, daysList, currentUser, today }) {
-  const { showToast } = useToast();
   const [viewDate, setViewDate] = useState(today);
   const [pastDay, setPastDay] = useState(null);
   const prevTodayRef = useRef(today);
@@ -4502,149 +4429,6 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
   // distribution, même saisie manuellement par l'administrateur.
   const activeVendors = vendors.filter((v) => v.contractStatut !== "cloture");
   const selectedVendor = activeVendors.find((v) => v.id === vendorId);
-
-  // ---------------------------------------------------------------------
-  // Report du stock invendu — évite de refaire la distribution à la main
-  // chaque matin : ce qu'un vendeur a rapporté non vendu (retour du soir)
-  // et qui n'a pas encore été redistribué peut être reporté en un clic
-  // vers aujourd'hui, comme une distribution normale (le stock système est
-  // décrémenté exactement comme lors d'une remise manuelle).
-  const [carryDays, setCarryDays] = useState([]);
-  const [reporting, setReporting] = useState(false);
-  // Filtre "par vendeur" pour l'affichage du stock invendu à reporter :
-  // "" = tous les vendeurs, sinon l'id du vendeur choisi (évite une longue liste).
-  const [invenduVendorFilter, setInvenduVendorFilter] = useState("");
-
-  useEffect(() => {
-    if (viewDate !== today) { setCarryDays([]); return; }
-    // On regarde jusqu'à 14 jours en arrière pour rattraper un report oublié
-    // un ou plusieurs matins précédents, pas seulement la veille.
-    const candidates = (daysList || []).filter((d) => d < today).sort((a, b) => b.localeCompare(a)).slice(0, 14);
-    if (candidates.length === 0) { setCarryDays([]); return; }
-    store.getDaysInRange(candidates).then(setCarryDays).catch(() => setCarryDays([]));
-  }, [today, viewDate, daysList]);
-
-  const reportCandidates = [];
-  carryDays.forEach((d) => {
-    (d.lines || []).forEach((l) => {
-      if ((l.quantiteRestante || 0) > 0 && !l.reporte && activeVendors.some((v) => v.id === l.vendorId)) {
-        reportCandidates.push({ ...l, sourceDate: d.date });
-      }
-    });
-  });
-
-  // Regroupées par vendeur + produit pour l'affichage et l'application en une fois.
-  const reportGroups = (() => {
-    const map = new Map();
-    reportCandidates.forEach((l) => {
-      const key = `${l.vendorId}::${l.productId}`;
-      if (!map.has(key)) {
-        map.set(key, { vendorId: l.vendorId, vendorNom: l.vendorNom, productId: l.productId, productNom: l.productNom, prix: l.prix, quantite: 0, sources: [] });
-      }
-      const g = map.get(key);
-      g.quantite += l.quantiteRestante;
-      g.sources.push({ date: l.sourceDate, lineId: l.id });
-    });
-    return Array.from(map.values());
-  })();
-
-  // Vendeurs concernés par un report, pour peupler le sélecteur de filtre.
-  const invenduVendorOptions = (() => {
-    const map = new Map();
-    reportGroups.forEach((g) => { if (!map.has(g.vendorId)) map.set(g.vendorId, g.vendorNom); });
-    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1]));
-  })();
-
-  // Si le vendeur sélectionné n'a plus de reliquat (ex : après un report), on revient à "tous".
-  useEffect(() => {
-    if (invenduVendorFilter && !invenduVendorOptions.some(([id]) => id === invenduVendorFilter)) {
-      setInvenduVendorFilter("");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reportGroups.length]);
-
-  const filteredReportGroups = invenduVendorFilter
-    ? reportGroups.filter((g) => g.vendorId === invenduVendorFilter)
-    : reportGroups;
-
-  const reporterStockInvendu = async (groupsParam) => {
-    const reportGroupsToApply = groupsParam && groupsParam.length ? groupsParam : reportGroups;
-    if (reportGroupsToApply.length === 0) return;
-    setError("");
-    setReporting(true);
-    try {
-      // Garde-fou : vérifie que le stock système est bien suffisant pour
-      // chaque produit avant d'appliquer le report (au cas où il aurait
-      // changé entre-temps).
-      const needByProduct = {};
-      reportGroupsToApply.forEach((g) => { needByProduct[g.productId] = (needByProduct[g.productId] || 0) + g.quantite; });
-      const insuffisants = [];
-      Object.entries(needByProduct).forEach(([productId, need]) => {
-        const product = products.find((p) => p.id === productId);
-        if (!product || product.stock < need) insuffisants.push(product ? product.nom : productId);
-      });
-      const groupsToApply = reportGroupsToApply.filter((g) => !insuffisants.includes(g.productNom));
-
-      if (groupsToApply.length === 0) {
-        showToast("Stock système insuffisant pour reporter les quantités invendues.", "error");
-        setReporting(false);
-        return;
-      }
-
-      let nextLines = [...day.lines];
-      let nextProducts = [...products];
-      groupsToApply.forEach((g) => {
-        const existingLine = nextLines.find(
-          (l) => l.vendorId === g.vendorId && l.productId === g.productId && l.quantiteRestante === null
-        );
-        nextLines = existingLine
-          ? nextLines.map((l) => (l.id === existingLine.id ? { ...l, quantiteRemise: l.quantiteRemise + g.quantite } : l))
-          : [...nextLines, {
-              id: uid(), vendorId: g.vendorId, vendorNom: g.vendorNom, productId: g.productId, productNom: g.productNom,
-              prix: g.prix, quantiteRemise: g.quantite, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
-            }];
-        nextProducts = nextProducts.map((p) => (p.id === g.productId ? { ...p, stock: p.stock - g.quantite } : p));
-      });
-
-      await setDay({ ...day, lines: nextLines });
-      await setProducts(nextProducts);
-      if (viewDate === today) await ensureTodayInList(daysList);
-
-      // Marque les lignes sources comme reportées (jour par jour) pour ne
-      // pas les proposer une seconde fois demain.
-      const bySourceDate = new Map();
-      groupsToApply.forEach((g) => {
-        g.sources.forEach(({ date, lineId }) => {
-          if (!bySourceDate.has(date)) bySourceDate.set(date, new Set());
-          bySourceDate.get(date).add(lineId);
-        });
-      });
-      for (const [date, lineIds] of bySourceDate.entries()) {
-        const sourceDay = carryDays.find((d) => d.date === date);
-        if (!sourceDay) continue;
-        const updatedLines = sourceDay.lines.map((l) => (lineIds.has(l.id) ? { ...l, reporte: true } : l));
-        await store.setDay({ ...sourceDay, lines: updatedLines });
-      }
-      setCarryDays((prev) => prev.map((d) => {
-        const ids = bySourceDate.get(d.date);
-        if (!ids) return d;
-        return { ...d, lines: d.lines.map((l) => (ids.has(l.id) ? { ...l, reporte: true } : l)) };
-      }));
-
-      store.logActivity(
-        currentUser, "report_stock_invendu",
-        `Stock invendu reporté vers aujourd'hui : ${groupsToApply.map((g) => `${g.quantite} ${g.productNom} → ${g.vendorNom}`).join(", ")}.`
-      );
-      showToast("Stock invendu reporté — les vendeurs concernés repartent avec leur stock de la veille.", "success");
-      if (insuffisants.length > 0) {
-        showToast(`Stock système insuffisant pour reporter : ${insuffisants.join(", ")}. À distribuer manuellement.`, "warning", 8000);
-      }
-    } catch (e) {
-      setError(e.message || "Erreur lors du report du stock invendu.");
-    }
-    setReporting(false);
-  };
-  // ---------------------------------------------------------------------
 
   // Produits déjà en main du vendeur sélectionné, pas encore retournés —
   // indexé par produit pour fusionner facilement avec le tableau de remise.
@@ -4764,49 +4548,24 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
   const nbSaisis = Object.values(qtyByProduct).filter((v) => Number(v) > 0).length;
   const QUICK_QTYS = [5, 10, 20];
 
+  // Lignes reconduites automatiquement à minuit (stock non vendu la veille,
+  // repris tel quel) — n'apparaît que sur "aujourd'hui" et seulement s'il y
+  // en a, pour ne pas encombrer l'écran le reste du temps.
+  const lignesReconduites = viewDate === today ? day.lines.filter((l) => l.autoReconduit) : [];
+
   return (
     <div>
       <DayNavigator date={viewDate} today={today} onChange={setViewDate} />
 
-      {viewDate === today && reportGroups.length > 0 && (
-        <Card title="Stock invendu à reporter">
-          <div style={{ fontSize: 12.5, color: "#8A93A3", marginBottom: 12 }}>
-            Ces vendeurs ont un reliquat non vendu, rapporté lors d'un retour du soir précédent et pas encore
-            redistribué. Reporte-le en un clic pour éviter de refaire toute la distribution ce matin.
+      {lignesReconduites.length > 0 && (
+        <Card title="Stock reconduit automatiquement ce matin">
+          <div style={{ fontSize: 12, color: "#8A93A3", marginBottom: 10 }}>
+            Ce qui n'a pas été vendu hier est resté chez le même vendeur — aucune nouvelle distribution n'était nécessaire pour ces produits.
           </div>
-
-          {invenduVendorOptions.length > 1 && (
-            <div style={{ marginBottom: 12, maxWidth: 280 }}>
-              <Select
-                value={invenduVendorFilter}
-                onChange={(e) => setInvenduVendorFilter(e.target.value)}
-              >
-                <option value="">Tous les vendeurs ({invenduVendorOptions.length})</option>
-                {invenduVendorOptions.map(([id, nom]) => (
-                  <option key={id} value={id}>{nom}</option>
-                ))}
-              </Select>
-            </div>
-          )}
-
           <Table
-            headers={["Vendeur", "Produit", "Quantité invendue"]}
-            rows={filteredReportGroups.map((g) => [g.vendorNom, g.productNom, g.quantite])}
+            headers={["Vendeur", "Produit", "Quantité reconduite"]}
+            rows={lignesReconduites.map((l) => [l.vendorNom, l.productNom, l.quantiteRemise])}
           />
-          <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
-            <Button
-              variant="gold"
-              onClick={() => reporterStockInvendu(invenduVendorFilter ? filteredReportGroups : reportGroups)}
-              disabled={reporting || filteredReportGroups.length === 0}
-            >
-              <RotateCcw size={15} />
-              {reporting
-                ? "Report en cours…"
-                : invenduVendorFilter
-                ? `Reporter pour ${invenduVendorOptions.find(([id]) => id === invenduVendorFilter)?.[1] || "ce vendeur"}`
-                : "Reporter tout vers aujourd'hui"}
-            </Button>
-          </div>
         </Card>
       )}
 
@@ -6967,7 +6726,6 @@ const EVENT_LABELS = {
   distribute: "Distribution",
   edit_distribution: "Distribution modifiée",
   cancel_distribution: "Distribution annulée",
-  report_stock_invendu: "Stock invendu reporté",
   retour_du_soir: "Retour du soir validé",
   correction_retour_du_soir: "Correction d'un retour du soir",
   add_mobile_payment: "Paiement mobile ajouté",
@@ -7242,6 +7000,12 @@ function joursRestants(dateFin, today) {
   return Math.round((d2 - d1) / 86400000);
 }
 
+const FEATURE_TOGGLES = [
+  { key: "news_feed", label: "Fil d'actualité", defaut: true },
+  { key: "sales_history", label: "Historique ventes/versements", defaut: true },
+  { key: "auto_carry_forward_stock", label: "Report auto. du stock invendu", defaut: false },
+];
+
 function EntreprisesAdmin({ currentUser }) {
   const { showToast } = useToast();
   const today = todayISO();
@@ -7264,6 +7028,16 @@ function EntreprisesAdmin({ currentUser }) {
   const [zoomId, setZoomId] = useState(null);
   const [zoomData, setZoomData] = useState(null);
   const [zoomLoading, setZoomLoading] = useState(false);
+
+  const toggleFeature = async (ent, key) => {
+    const current = ent.features?.[key] ?? FEATURE_TOGGLES.find((f) => f.key === key)?.defaut ?? false;
+    try {
+      await store.setEntrepriseFeature(ent.id, key, !current);
+      await reload();
+    } catch (e) {
+      showToast(e.message || "Erreur lors de la mise à jour.", "error");
+    }
+  };
 
   const voirDetail = async (entrepriseId) => {
     setZoomId(entrepriseId);
@@ -7417,7 +7191,7 @@ function EntreprisesAdmin({ currentUser }) {
           <EmptyState text="Aucune entreprise enregistrée pour l'instant." />
         ) : (
           <Table
-            headers={["Entreprise", "Statut", "Fin d'abonnement", "Jours restants", "Montant", "Contact", "Actions"]}
+            headers={["Entreprise", "Statut", "Fin d'abonnement", "Jours restants", "Montant", "Contact", "Fonctionnalités", "Actions"]}
             rows={entreprises.map((ent) => {
               const jours = joursRestants(ent.dateFin, today);
               const expireBientot = jours !== null && jours >= 0 && jours <= 7;
@@ -7438,6 +7212,16 @@ function EntreprisesAdmin({ currentUser }) {
                   {ent.contactNom && <div>{ent.contactNom}</div>}
                   {ent.contactTelephone && <div style={{ color: "#8A93A3" }}>{ent.contactTelephone}</div>}
                   {!ent.contactNom && !ent.contactTelephone && "—"}
+                </div>,
+                <div key="f" style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 190 }}>
+                  {FEATURE_TOGGLES.map((f) => (
+                    <Toggle
+                      key={f.key}
+                      on={ent.features?.[f.key] ?? f.defaut}
+                      onChange={() => toggleFeature(ent, f.key)}
+                      label={f.label}
+                    />
+                  ))}
                 </div>,
                 <div key="a" style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 170 }}>
                   <Toggle on={ent.statut === "actif"} onChange={() => toggleStatut(ent)} label={ent.statut === "actif" ? "Actif" : "Inactif"} />
