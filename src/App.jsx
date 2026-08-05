@@ -2247,6 +2247,9 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
   const [requestOk, setRequestOk] = useState(false);
   const [achievedToday, setAchievedToday] = useState(null); // paliers déjà enregistrés côté serveur pour aujourd'hui
   const [celebrate, setCelebrate] = useState(null); // palier en cours d'animation
+  const [latestCycle, setLatestCycle] = useState(null);
+  const [attendanceHistory, setAttendanceHistory] = useState([]);
+  const [myAchievements, setMyAchievements] = useState([]);
 
   useEffect(() => {
     (async () => {
@@ -2254,6 +2257,27 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
       setAllDays(loaded);
     })();
   }, [daysList]);
+
+  // Cycle de salaire en cours + historique des paliers obtenus : mêmes
+  // données déjà utilisées côté onglet "Ma présence" et fiche vendeur admin,
+  // simplement reprises ici pour qu'elles soient visibles dès l'accueil.
+  useEffect(() => {
+    if (!vendor) return;
+    (async () => {
+      try {
+        const [cycle, hist, ach] = await Promise.all([
+          store.getLatestSalaryCycle(vendor.id),
+          store.getVendorAttendanceHistory(vendor.id, 400),
+          store.getAchievementsForVendor(vendor.id),
+        ]);
+        setLatestCycle(cycle);
+        setAttendanceHistory(hist);
+        setMyAchievements(ach);
+      } catch (e) {
+        console.error("Chargement des données complémentaires du tableau de bord impossible", e);
+      }
+    })();
+  }, [vendor?.id]);
 
   // Charge les paliers déjà atteints aujourd'hui pour éviter de rejouer
   // l'animation à chaque rechargement de page.
@@ -2305,6 +2329,30 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
   const serie15j = buildVendorDailySeries(daysWithToday, vendor.id, today, 15);
   const venteHistory = buildVendeurVenteHistory(daysWithToday, vendor.id);
   const totalPiecesVendues = venteHistory.reduce((s, d) => s + d.totalPieces, 0);
+
+  // Progression vers le prochain salaire (26 jours de présence payable) —
+  // même logique que l'onglet "Ma présence" et la fiche vendeur admin.
+  const cycleStart = latestCycle ? addDays(latestCycle.cycleEnd, 1) : (vendor.dateEnregistrement || today);
+  const retourDoneDates = buildRetourDoneDates(daysWithToday, vendor.id);
+  const cycleJours = buildPresenceCycle(cycleStart, today, attendanceHistory, retourDoneDates);
+  const joursComptesCycle = cycleJours.filter((j) => j.payable).length;
+
+  // Produit qui se vend le mieux pour ce vendeur (même calcul que
+  // "produitFetiche" côté rapport admin, appliqué à tout son historique).
+  const parProduitVendeur = {};
+  daysWithToday.forEach((d) => {
+    (d.lines || []).filter((l) => l.vendorId === vendor.id).forEach((l) => {
+      if (l.quantiteVendue == null) return;
+      if (!parProduitVendeur[l.productId]) parProduitVendeur[l.productId] = { nom: l.productNom, vendu: 0 };
+      parProduitVendeur[l.productId].vendu += l.quantiteVendue || 0;
+    });
+  });
+  const produitFetiche = Object.values(parProduitVendeur).sort((a, b) => b.vendu - a.vendu)[0] || null;
+
+  // Comparaison du CA de ce mois-ci avec celui du mois précédent, sur toute
+  // la durée du mois précédent (pas juste jusqu'à la même date).
+  const caMoisPrecedent = sumVendorOverRange(daysWithToday, vendor.id, monthRangeFromInput(shiftMonthValue(today.slice(0, 7), -1))).ca;
+  const evolutionMois = caMoisPrecedent > 0 ? Math.round(((caMois.ca - caMoisPrecedent) / caMoisPrecedent) * 100) : null;
 
   const bonusTotal = computeVendorBonusTotal(daysWithToday, vendor.id);
   const dejaDemande = (withdrawals || [])
@@ -2373,19 +2421,63 @@ function VendorDashboard({ vendor, daysList, today, day, withdrawals, setWithdra
         </Card>
       )}
 
+      <Card title="Progression vers ton prochain salaire">
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 8, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 26, fontWeight: 700, color: joursComptesCycle >= 26 ? "#3F9C6D" : "#1B2A4A" }}>
+            {joursComptesCycle} / 26
+          </div>
+          <div style={{ fontSize: 12.5, color: "#8A93A3" }}>
+            jour(s) de présence comptés depuis le {fmtDateFr(cycleStart)}
+          </div>
+        </div>
+        <div style={{ height: 8, background: "#EEF0F4", borderRadius: 999, overflow: "hidden" }}>
+          <div style={{
+            height: "100%", width: `${Math.min(100, Math.round((joursComptesCycle / 26) * 100))}%`,
+            background: joursComptesCycle >= 26 ? "#3F9C6D" : "#D9A441", borderRadius: 999, transition: "width 0.3s ease",
+          }} />
+        </div>
+        <div style={{ fontSize: 11.5, color: "#9AA2B1", marginTop: 8 }}>
+          Une journée compte dès qu'elle est marquée « présent » par l'administration, ou dès qu'un retour du soir a été fait ce jour-là.
+        </div>
+      </Card>
+
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
         <StatCard label="CHIFFRE D'AFFAIRES — AUJOURD'HUI" value={fmtMoney(caJour.ca)} sub={`${caJour.vendu} article(s) vendu(s)`} />
         <StatCard label="CHIFFRE D'AFFAIRES — CETTE SEMAINE" value={fmtMoney(caSemaine.ca)} />
-        <StatCard label="CHIFFRE D'AFFAIRES — CE MOIS" value={fmtMoney(caMois.ca)} />
+        <StatCard
+          label="CHIFFRE D'AFFAIRES — CE MOIS"
+          value={fmtMoney(caMois.ca)}
+          sub={evolutionMois === null ? undefined : `${evolutionMois >= 0 ? "+" : ""}${evolutionMois}% vs le mois dernier`}
+          accent={evolutionMois === null ? undefined : (evolutionMois >= 0 ? "#3F8361" : "#C1554A")}
+        />
         <StatCard label="CHIFFRE D'AFFAIRES TOTAL CUMULÉ" value={fmtMoney(caTotal)} accent="#D9A441" />
         {currentUser?.features?.sales_history !== false && (
           <StatCard label="PIÈCES VENDUES — TOTAL CUMULÉ" value={totalPiecesVendues} />
+        )}
+        {produitFetiche && (
+          <StatCard label="TON PRODUIT PHARE" value={produitFetiche.nom} sub={`${produitFetiche.vendu} unité(s) vendue(s)`} accent="#1B2A4A" />
         )}
       </div>
 
       {objectives && (objectives.minimal > 0 || objectives.maximal > 0 || objectives.extraordinaire > 0) && (
         <Card title="Objectif du jour">
           <ObjectiveProgressBar ca={caJour.ca} objectifs={objectives} celebrate={celebrate} />
+        </Card>
+      )}
+
+      {myAchievements.length > 0 && (
+        <Card title="Mes trophées">
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {myAchievements.map((a) => (
+              <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 4px", borderBottom: "1px solid #F0F1F4" }}>
+                <Trophy size={16} color={PALIER_COLORS[a.palier]} style={{ flexShrink: 0 }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, color: "#1B2A4A", fontWeight: 600 }}>{PALIER_LABELS[a.palier] || a.palier}</div>
+                  <div style={{ fontSize: 11.5, color: "#8A93A3" }}>{fmtDateFr(a.date)} — {fmtMoney(a.montant)} de chiffre d'affaires ce jour-là</div>
+                </div>
+              </div>
+            ))}
+          </div>
         </Card>
       )}
 

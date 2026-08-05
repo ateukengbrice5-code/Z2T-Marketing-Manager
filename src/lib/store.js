@@ -771,6 +771,19 @@ export async function getAchievementsForVendorDate(vendorId, date) {
   return (data || []).map((a) => a.palier);
 }
 
+// Historique complet des paliers atteints par un vendeur, toutes dates
+// confondues — utilisé pour l'affichage "mes trophées" sur son tableau de
+// bord (contrairement à getAchievementsForVendorDate, limité à un seul jour).
+export async function getAchievementsForVendor(vendorId) {
+  const { data, error } = await supabase
+    .from("objective_achievements")
+    .select("*")
+    .eq("vendor_id", vendorId)
+    .order("date", { ascending: false });
+  if (error) throw error;
+  return (data || []).map((a) => ({ id: a.id, date: a.date, palier: a.palier, montant: Number(a.montant) || 0 }));
+}
+
 // Enregistre un palier atteint (idempotent : la contrainte unique côté base
 // empêche les doublons si l'événement se déclenche deux fois).
 export async function recordAchievement({ vendorId, vendorNom, date, palier, montant }) {
