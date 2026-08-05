@@ -355,6 +355,11 @@ export async function updateProductCategorie(id, categorie) {
   if (error) throw error;
 }
 
+export async function updateProductPrix(id, prix) {
+  const { error } = await supabase.from("products").update({ prix }).eq("id", id);
+  if (error) throw error;
+}
+
 export async function deleteProduct(id) {
   const { error } = await supabase.from("products").delete().eq("id", id);
   if (error) throw error;

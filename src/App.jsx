@@ -2590,6 +2590,7 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
   const [stock, setStock] = useState("");
   const [categorie, setCategorie] = useState("");
   const [catEdits, setCatEdits] = useState({});
+  const [prixEdits, setPrixEdits] = useState({});
 
   const categoriesExistantes = Array.from(new Set(products.map((p) => p.categorie).filter(Boolean)));
 
@@ -2625,6 +2626,26 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
     const p = products.find((pp) => pp.id === id);
     store.logActivity(currentUser, "update_product_category", `Catégorie de ${p ? p.nom : id} changée : ${value}.`);
     setCatEdits((c) => { const n = { ...c }; delete n[id]; return n; });
+    if (reloadProducts) await reloadProducts();
+  };
+
+  const savePrix = async (id) => {
+    const raw = prixEdits[id];
+    if (raw === undefined) return;
+    const prixNum = Number(raw);
+    const p = products.find((pp) => pp.id === id);
+    if (raw === "" || Number.isNaN(prixNum) || prixNum <= 0) {
+      showToast("Le prix unitaire doit être un nombre positif.", "error");
+      setPrixEdits((c) => { const n = { ...c }; delete n[id]; return n; });
+      return;
+    }
+    if (p && prixNum === Number(p.prix)) {
+      setPrixEdits((c) => { const n = { ...c }; delete n[id]; return n; });
+      return;
+    }
+    await store.updateProductPrix(id, prixNum);
+    store.logActivity(currentUser, "update_product_price", `Prix de ${p ? p.nom : id} modifié : ${p ? fmtMoney(p.prix) : ""} → ${fmtMoney(prixNum)}.`);
+    setPrixEdits((c) => { const n = { ...c }; delete n[id]; return n; });
     if (reloadProducts) await reloadProducts();
   };
 
@@ -2672,7 +2693,15 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
                   style={{ minWidth: 130 }}
                 />
               </div>,
-              fmtMoney(p.prix), p.stock,
+              <TextInput
+                key="prix"
+                type="number"
+                value={prixEdits[p.id] !== undefined ? prixEdits[p.id] : String(p.prix)}
+                onChange={(e) => setPrixEdits((c) => ({ ...c, [p.id]: e.target.value }))}
+                onBlur={() => savePrix(p.id)}
+                style={{ width: 100 }}
+              />,
+              p.stock,
               <button key="del" onClick={() => remove(p.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
             ])}
           />
