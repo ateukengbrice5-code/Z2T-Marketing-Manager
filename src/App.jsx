@@ -4747,6 +4747,68 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
           <EmptyState text="Aucune distribution enregistrée aujourd'hui." />
         ) : (
           (() => {
+            // Résumé groupé par catégorie puis par produit, tous vendeurs
+            // confondus — donne une vue d'ensemble rapide de ce qui est
+            // sorti aujourd'hui sans avoir à parcourir toute la liste
+            // détaillée par vendeur juste en dessous.
+            const parProduit = new Map();
+            day.lines.forEach((l) => {
+              if (!parProduit.has(l.productId)) {
+                const product = products.find((p) => p.id === l.productId);
+                parProduit.set(l.productId, { nom: l.productNom, categorie: product?.categorie || "Général", quantite: 0 });
+              }
+              parProduit.get(l.productId).quantite += l.quantiteRemise;
+            });
+            const parCategorie = new Map();
+            parProduit.forEach((p) => {
+              if (!parCategorie.has(p.categorie)) parCategorie.set(p.categorie, { categorie: p.categorie, total: 0, produits: [] });
+              const c = parCategorie.get(p.categorie);
+              c.total += p.quantite;
+              c.produits.push(p);
+            });
+            const categorySummary = Array.from(parCategorie.values())
+              .sort((a, b) => b.total - a.total)
+              .map((c) => ({ ...c, produits: c.produits.sort((x, y) => y.quantite - x.quantite) }));
+            const totalGeneral = categorySummary.reduce((s, c) => s + c.total, 0);
+
+            return (
+              <div style={{ marginBottom: 18, paddingBottom: 16, borderBottom: "1px solid #F0F1F4" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
+                  <div style={{ fontSize: 12.5, color: "#8A93A3" }}>Résumé par catégorie, toutes distributions du jour confondues</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#1B2A4A" }}>{totalGeneral} produit{totalGeneral > 1 ? "s" : ""} au total</div>
+                </div>
+                {categorySummary.map((c) => (
+                  <div key={c.categorie} style={{ marginBottom: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#1B2A4A", textTransform: "uppercase", letterSpacing: 0.3 }}>
+                        {c.categorie}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: "#8A93A3" }}>
+                        {c.produits.length} produit{c.produits.length > 1 ? "s" : ""} · {c.total} au total
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {c.produits.map((p) => (
+                        <div
+                          key={p.nom}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 6, padding: "6px 10px",
+                            borderRadius: 8, background: "#F7F8FA", border: "1px solid #E7E9EE", fontSize: 12.5,
+                          }}
+                        >
+                          <span style={{ color: "#1B2A4A", fontWeight: 600 }}>{p.nom}</span>
+                          <span style={{ color: "#5B6472" }}>× {p.quantite}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()
+        )}
+        {day.lines.length === 0 ? null : (
+          (() => {
             // Regroupe les lignes par vendeur + produit : plusieurs remises
             // successives au même vendeur pour le même produit dans la
             // journée (ex. un retour entre-temps, puis une nouvelle remise)
