@@ -4582,6 +4582,8 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
   const [editQty, setEditQty] = useState({}); // lineId -> valeur en cours d'édition
   const [filterStatutJour, setFilterStatutJour] = useState("tous"); // "tous" | "encours" — filtre du tableau "Distributions du jour"
   const [searchProduct, setSearchProduct] = useState(""); // filtre produit dans le tableau de remise
+  const [submitting, setSubmitting] = useState(false); // anti double-clic sur "Valider la remise"
+  const [correcting, setCorrecting] = useState(null); // id de la ligne en cours de correction (anti double-clic)
 
   // Un vendeur au contrat clôturé ne doit plus recevoir de nouvelle
   // distribution, même saisie manuellement par l'administrateur.
@@ -4777,25 +4779,34 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
   // Valide en une seule fois toutes les quantités saisies dans la liste :
   // une seule mise à jour de `day` et de `products` pour toute la remise.
   const validateDistribution = async () => {
-    setError("");
-    if (!vendorId) return;
-    const vendor = activeVendors.find((v) => v.id === vendorId);
-    if (!vendor) return; // vendeur clôturé (ou introuvable) : distribution bloquée
+    // Garde-fou anti double-clic/double-tap : sans ça, un deuxième appel
+    // déclenché pendant que le premier écrit encore en base (réseau lent
+    // sur le terrain) recalcule sa propre soustraction de stock et finit
+    // par décrémenter deux fois pour une seule remise réelle — le stock
+    // système passe alors sous le seuil d'alerte alors que le stock
+    // physique, lui, est resté correct.
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      setError("");
+      if (!vendorId) return;
+      const vendor = activeVendors.find((v) => v.id === vendorId);
+      if (!vendor) return; // vendeur clôturé (ou introuvable) : distribution bloquée
 
-    const items = products
-      .map((p) => ({ product: p, qty: Number(qtyByProduct[p.id]) }))
-      .filter((it) => qtyByProduct[it.product.id] && it.qty > 0);
+      const items = products
+        .map((p) => ({ product: p, qty: Number(qtyByProduct[p.id]) }))
+        .filter((it) => qtyByProduct[it.product.id] && it.qty > 0);
 
-    if (items.length === 0) return;
+      if (items.length === 0) return;
 
-    for (const item of items) {
-      if (item.product.stock < item.qty) {
-        setError(`Stock insuffisant pour ${item.product.nom} : il ne reste que ${item.product.stock} en stock.`);
-        return;
+      for (const item of items) {
+        if (item.product.stock < item.qty) {
+          setError(`Stock insuffisant pour ${item.product.nom} : il ne reste que ${item.product.stock} en stock.`);
+          return;
+        }
       }
-    }
 
-    let nextLines = [...day.lines];
+      let nextLines = [...day.lines];
     let nextProducts = [...products];
 
     items.forEach(({ product, qty }) => {
@@ -4846,12 +4857,15 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
       }));
     }
 
-    store.logActivity(
-      currentUser,
-      "distribute",
-      `Distribution à ${vendor.nom} : ${items.map((it) => `${it.qty} ${it.product.nom}`).join(", ")}.`
-    );
-    setQtyByProduct({});
+      store.logActivity(
+        currentUser,
+        "distribute",
+        `Distribution à ${vendor.nom} : ${items.map((it) => `${it.qty} ${it.product.nom}`).join(", ")}.`
+      );
+      setQtyByProduct({});
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const saveEditedQty = async (line) => {
@@ -5033,8 +5047,8 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
                 <div style={{ marginTop: 10, fontSize: 12.5, color: "#C1554A" }}>{error}</div>
               )}
               <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
-                <Button onClick={validateDistribution} disabled={nbSaisis === 0}>
-                  <Truck size={15} /> Valider la remise{nbSaisis > 0 ? ` (${nbSaisis} produit${nbSaisis > 1 ? "s" : ""})` : ""}
+                <Button onClick={validateDistribution} disabled={nbSaisis === 0 || submitting}>
+                  <Truck size={15} /> {submitting ? "Validation…" : `Valider la remise${nbSaisis > 0 ? ` (${nbSaisis} produit${nbSaisis > 1 ? "s" : ""})` : ""}`}
                 </Button>
               </div>
             </>
@@ -5362,41 +5376,50 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
 
   const validerCorrection = async (line) => {
     if (!isAdmin) return;
-    const val = correctionInputs[line.id];
-    if (val === undefined || val === "") return;
-    const restante = Number(val);
-    if (Number.isNaN(restante) || restante < 0 || restante > line.quantiteRemise) {
-      showToast(
-        `Quantité restante invalide (saisi ${val}, remis ${line.quantiteRemise}). La quantité retournée ne peut pas dépasser la quantité remise le matin, ni être négative.`,
-        "error",
-        8000
+    // Même garde-fou anti double-clic que validateDistribution : un second
+    // appel pendant l'écriture du premier réappliquerait le même delta de
+    // stock une deuxième fois.
+    if (correcting) return;
+    setCorrecting(line.id);
+    try {
+      const val = correctionInputs[line.id];
+      if (val === undefined || val === "") return;
+      const restante = Number(val);
+      if (Number.isNaN(restante) || restante < 0 || restante > line.quantiteRemise) {
+        showToast(
+          `Quantité restante invalide (saisi ${val}, remis ${line.quantiteRemise}). La quantité retournée ne peut pas dépasser la quantité remise le matin, ni être négative.`,
+          "error",
+          8000
+        );
+        return;
+      }
+      const ancienneRestante = line.quantiteRestante;
+      if (restante === ancienneRestante) {
+        annulerCorrection(line.id);
+        return;
+      }
+      const vendue = Math.max(0, line.quantiteRemise - restante);
+      const nextLines = day.lines.map((l) =>
+        l.id === line.id ? { ...l, quantiteRestante: restante, quantiteVendue: vendue, montantAttendu: vendue * l.prix } : l
       );
-      return;
-    }
-    const ancienneRestante = line.quantiteRestante;
-    if (restante === ancienneRestante) {
+      await setDay({ ...day, lines: nextLines });
+      // On ne réajuste le stock que de la différence entre l'ancienne et la
+      // nouvelle quantité retournée, pour ne pas fausser le stock déjà mis à
+      // jour lors de la première validation.
+      const delta = restante - ancienneRestante;
+      if (delta !== 0) {
+        const nextProducts = products.map((p) => (p.id === line.productId ? { ...p, stock: p.stock + delta } : p));
+        await setProducts(nextProducts);
+      }
+      store.logActivity(
+        currentUser,
+        "correction_retour_du_soir",
+        `Correction du retour du soir de ${vendor.nom} pour ${line.productNom} : ${ancienneRestante} → ${restante} retourné(s) (désormais ${vendue} vendu(s)).`
+      );
       annulerCorrection(line.id);
-      return;
+    } finally {
+      setCorrecting(null);
     }
-    const vendue = Math.max(0, line.quantiteRemise - restante);
-    const nextLines = day.lines.map((l) =>
-      l.id === line.id ? { ...l, quantiteRestante: restante, quantiteVendue: vendue, montantAttendu: vendue * l.prix } : l
-    );
-    await setDay({ ...day, lines: nextLines });
-    // On ne réajuste le stock que de la différence entre l'ancienne et la
-    // nouvelle quantité retournée, pour ne pas fausser le stock déjà mis à
-    // jour lors de la première validation.
-    const delta = restante - ancienneRestante;
-    if (delta !== 0) {
-      const nextProducts = products.map((p) => (p.id === line.productId ? { ...p, stock: p.stock + delta } : p));
-      await setProducts(nextProducts);
-    }
-    store.logActivity(
-      currentUser,
-      "correction_retour_du_soir",
-      `Correction du retour du soir de ${vendor.nom} pour ${line.productNom} : ${ancienneRestante} → ${restante} retourné(s) (désormais ${vendue} vendu(s)).`
-    );
-    annulerCorrection(line.id);
   };
 
   const addMobilePayment = async () => {
@@ -5538,7 +5561,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
                 base.push(
                   enCorrection ? (
                     <div key="a" style={{ display: "flex", gap: 6 }}>
-                      <Button variant="gold" onClick={() => validerCorrection(l)} style={{ padding: "6px 10px", fontSize: 12 }}>OK</Button>
+                      <Button variant="gold" onClick={() => validerCorrection(l)} disabled={correcting === l.id} style={{ padding: "6px 10px", fontSize: 12 }}>{correcting === l.id ? "…" : "OK"}</Button>
                       <Button variant="ghost" onClick={() => annulerCorrection(l.id)} style={{ padding: "6px 10px", fontSize: 12 }}>Annuler</Button>
                     </div>
                   ) : (
