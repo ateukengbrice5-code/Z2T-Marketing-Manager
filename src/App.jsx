@@ -4564,9 +4564,17 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
   // décrémenté exactement comme lors d'une remise manuelle).
   const [carryDays, setCarryDays] = useState([]);
   const [reporting, setReporting] = useState(false);
-  // Filtre "par vendeur" pour l'affichage du stock invendu à reporter :
-  // "" = tous les vendeurs, sinon l'id du vendeur choisi (évite une longue liste).
-  const [invenduVendorFilter, setInvenduVendorFilter] = useState("");
+  // Sections vendeur dépliées dans "Stock invendu à reporter" — la carte
+  // n'affiche par défaut qu'une ligne par vendeur (repliée) pour éviter une
+  // longue liste produit par produit ; on déplie au clic pour voir le détail.
+  const [expandedInvenduVendors, setExpandedInvenduVendors] = useState(new Set());
+  const toggleInvenduVendor = (vendorId) => {
+    setExpandedInvenduVendors((prev) => {
+      const next = new Set(prev);
+      if (next.has(vendorId)) next.delete(vendorId); else next.add(vendorId);
+      return next;
+    });
+  };
   // Sections vendeur dépliées dans "Distributions du jour" — regroupement
   // pour éviter de répéter le nom du vendeur à chaque ligne produit.
   const [expandedVendors, setExpandedVendors] = useState(new Set());
@@ -4604,24 +4612,29 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
     return Array.from(map.values());
   })();
 
-  // Vendeurs concernés par un report, pour peupler le sélecteur de filtre.
-  const invenduVendorOptions = (() => {
+  // Regroupées une deuxième fois par vendeur pour l'affichage replié : une
+  // ligne par vendeur (nombre de produits en reliquat), dépliable pour voir
+  // le détail produit par produit.
+  const reportGroupsByVendor = (() => {
     const map = new Map();
-    reportGroups.forEach((g) => { if (!map.has(g.vendorId)) map.set(g.vendorId, g.vendorNom); });
-    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+    reportGroups.forEach((g) => {
+      if (!map.has(g.vendorId)) map.set(g.vendorId, { vendorId: g.vendorId, vendorNom: g.vendorNom, groups: [] });
+      map.get(g.vendorId).groups.push(g);
+    });
+    return Array.from(map.values()).sort((a, b) => a.vendorNom.localeCompare(b.vendorNom));
   })();
 
-  // Si le vendeur sélectionné n'a plus de reliquat (ex : après un report), on revient à "tous".
+  // Referme automatiquement les sections des vendeurs qui n'ont plus de
+  // reliquat (ex : juste après un report), pour ne pas garder une section
+  // vide dépliée.
   useEffect(() => {
-    if (invenduVendorFilter && !invenduVendorOptions.some(([id]) => id === invenduVendorFilter)) {
-      setInvenduVendorFilter("");
-    }
+    setExpandedInvenduVendors((prev) => {
+      const stillPresent = new Set(reportGroupsByVendor.map((v) => v.vendorId));
+      const next = new Set(Array.from(prev).filter((id) => stillPresent.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reportGroups.length]);
-
-  const filteredReportGroups = invenduVendorFilter
-    ? reportGroups.filter((g) => g.vendorId === invenduVendorFilter)
-    : reportGroups;
 
   const reporterStockInvendu = async (groupsParam) => {
     const reportGroupsToApply = groupsParam && groupsParam.length ? groupsParam : reportGroups;
@@ -4771,6 +4784,36 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
     await setDay({ ...day, lines: nextLines });
     await setProducts(nextProducts);
     if (viewDate === today) await ensureTodayInList(daysList);
+
+    // Ferme automatiquement le reliquat non reporté de ce vendeur pour ces
+    // mêmes produits : une distribution manuelle refaite à la main est le
+    // même geste physique qu'un report, donc sans ça le reliquat des jours
+    // précédents continue de s'accumuler indéfiniment dans la carte "Stock
+    // invendu à reporter" (bug : le stock affiché ne correspondait plus à
+    // ce que le vendeur avait réellement en main).
+    const staleSources = new Map(); // date -> Set(lineId)
+    items.forEach(({ product }) => {
+      reportCandidates
+        .filter((l) => l.vendorId === vendorId && l.productId === product.id)
+        .forEach((l) => {
+          if (!staleSources.has(l.sourceDate)) staleSources.set(l.sourceDate, new Set());
+          staleSources.get(l.sourceDate).add(l.id);
+        });
+    });
+    if (staleSources.size > 0) {
+      for (const [date, lineIds] of staleSources.entries()) {
+        const sourceDay = carryDays.find((d) => d.date === date);
+        if (!sourceDay) continue;
+        const updatedLines = sourceDay.lines.map((l) => (lineIds.has(l.id) ? { ...l, reporte: true } : l));
+        await store.setDay({ ...sourceDay, lines: updatedLines });
+      }
+      setCarryDays((prev) => prev.map((d) => {
+        const ids = staleSources.get(d.date);
+        if (!ids) return d;
+        return { ...d, lines: d.lines.map((l) => (ids.has(l.id) ? { ...l, reporte: true } : l)) };
+      }));
+    }
+
     store.logActivity(
       currentUser,
       "distribute",
@@ -4831,36 +4874,56 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
             redistribué. Reporte-le en un clic pour éviter de refaire toute la distribution ce matin.
           </div>
 
-          {invenduVendorOptions.length > 1 && (
-            <div style={{ marginBottom: 12, maxWidth: 280 }}>
-              <Select
-                value={invenduVendorFilter}
-                onChange={(e) => setInvenduVendorFilter(e.target.value)}
-              >
-                <option value="">Tous les vendeurs ({invenduVendorOptions.length})</option>
-                {invenduVendorOptions.map(([id, nom]) => (
-                  <option key={id} value={id}>{nom}</option>
-                ))}
-              </Select>
-            </div>
-          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {reportGroupsByVendor.map((v) => {
+              const isOpen = expandedInvenduVendors.has(v.vendorId);
+              const totalQuantite = v.groups.reduce((sum, g) => sum + g.quantite, 0);
+              return (
+                <div key={v.vendorId} style={{ border: "1px solid #E4E7EC", borderRadius: 10, overflow: "hidden" }}>
+                  <div
+                    onClick={() => toggleInvenduVendor(v.vendorId)}
+                    style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      padding: "10px 14px", cursor: "pointer", background: "#FAFAFB",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                      <span style={{ fontWeight: 600 }}>{v.vendorNom}</span>
+                      <span style={{ fontSize: 12.5, color: "#8A93A3" }}>
+                        {v.groups.length} produit{v.groups.length > 1 ? "s" : ""} · {totalQuantite} unité{totalQuantite > 1 ? "s" : ""}
+                      </span>
+                    </div>
+                    <Button
+                      variant="gold"
+                      onClick={(e) => { e.stopPropagation(); reporterStockInvendu(v.groups); }}
+                      disabled={reporting}
+                    >
+                      <RotateCcw size={15} />
+                      {reporting ? "Report en cours…" : "Reporter tout"}
+                    </Button>
+                  </div>
+                  {isOpen && (
+                    <div style={{ padding: "0 14px 14px" }}>
+                      <Table
+                        headers={["Produit", "Quantité invendue"]}
+                        rows={v.groups.map((g) => [g.productNom, g.quantite])}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
 
-          <Table
-            headers={["Vendeur", "Produit", "Quantité invendue"]}
-            rows={filteredReportGroups.map((g) => [g.vendorNom, g.productNom, g.quantite])}
-          />
           <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
             <Button
               variant="gold"
-              onClick={() => reporterStockInvendu(invenduVendorFilter ? filteredReportGroups : reportGroups)}
-              disabled={reporting || filteredReportGroups.length === 0}
+              onClick={() => reporterStockInvendu(reportGroups)}
+              disabled={reporting || reportGroups.length === 0}
             >
               <RotateCcw size={15} />
-              {reporting
-                ? "Report en cours…"
-                : invenduVendorFilter
-                ? `Reporter pour ${invenduVendorOptions.find(([id]) => id === invenduVendorFilter)?.[1] || "ce vendeur"}`
-                : "Reporter tout vers aujourd'hui"}
+              {reporting ? "Report en cours…" : "Reporter tout vers aujourd'hui"}
             </Button>
           </div>
         </Card>
