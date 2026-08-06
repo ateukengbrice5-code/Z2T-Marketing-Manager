@@ -5930,14 +5930,22 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
   const [caisseDetailLoading, setCaisseDetailLoading] = useState(false);
   const [caisseDetailData, setCaisseDetailData] = useState(null);
   const [caisseDetailError, setCaisseDetailError] = useState("");
+  // Identifiant de la dernière requête lancée : si l'utilisateur change de
+  // période pendant qu'un chargement précédent (ex. tout un mois, plus lent)
+  // est encore en cours, ce garde-fou ignore son résultat quand il arrive
+  // en retard — sinon il pourrait écraser l'affichage avec des données
+  // périmées (ex. revenir sur "le mois" après avoir choisi un seul jour).
+  const caisseDetailRequestIdRef = useRef(0);
 
   const chargerDetailCaisse = async (metric, periodType, monthValue, customRange) => {
+    const requestId = ++caisseDetailRequestIdRef.current;
     setCaisseDetailLoading(true);
     setCaisseDetailError("");
     try {
       const range = rangeForPeriod(periodType, today, monthValue, customRange);
       const dates = (daysList || []).filter((d) => inRange(d, range));
       const loaded = await store.getDaysInRange(dates);
+      if (requestId !== caisseDetailRequestIdRef.current) return; // une sélection plus récente a pris le relais
       const daily = buildCaisseDailySeries(loaded, range, vendors);
       const vendorRows = aggregateVendorFullReport(loaded, range, vendors).rows;
       const expensesList = loaded
@@ -5946,10 +5954,11 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
         .sort((a, b) => (a.date < b.date ? 1 : -1));
       setCaisseDetailData({ range, daily, vendorRows, expensesList });
     } catch (err) {
+      if (requestId !== caisseDetailRequestIdRef.current) return;
       console.error("Erreur chargement détail caisse :", err);
       setCaisseDetailError("Impossible de charger le détail (" + (err?.message || "erreur inconnue") + "). Réessaie.");
     } finally {
-      setCaisseDetailLoading(false);
+      if (requestId === caisseDetailRequestIdRef.current) setCaisseDetailLoading(false);
     }
   };
 
