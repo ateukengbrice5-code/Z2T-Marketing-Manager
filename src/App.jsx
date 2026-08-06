@@ -235,18 +235,29 @@ function shiftMonthValue(monthValue, delta) {
 
 // Plage de la période précédente, de même durée que la période choisie
 // (utilisée pour comparer l'évolution du chiffre d'affaires d'un vendeur).
-function previousRangeForPeriod(type, today, monthValue) {
+function previousRangeForPeriod(type, today, monthValue, customRange) {
   if (type === "semaine") return getPreviousWeekRange(today);
   if (type === "mois") return monthRangeFromInput(shiftMonthValue(monthValue, -1));
   if (type === "trimestre") return getPreviousQuarterRange(today);
+  if (type === "personnalise") {
+    const range = rangeForPeriod(type, today, monthValue, customRange);
+    const start = new Date(range[0] + "T00:00:00");
+    const end = new Date(range[1] + "T00:00:00");
+    const nbJours = Math.round((end - start) / 86400000) + 1;
+    const prevEnd = new Date(start.getTime() - 86400000);
+    const prevStart = new Date(prevEnd.getTime() - (nbJours - 1) * 86400000);
+    return [isoFromDate(prevStart), isoFromDate(prevEnd)];
+  }
   return getPreviousYearRange(today);
 }
 
 // Renvoie [périodeActuelle, périodeN-1, périodeN-2, ...] jusqu'à n périodes
 // en arrière, en reculant pas à pas — utilisé pour repérer un vendeur resté
-// "moins rentable" plusieurs périodes de suite.
-function periodsBack(type, today, monthValue, n) {
-  const ranges = [rangeForPeriod(type, today, monthValue)];
+// "moins rentable" plusieurs périodes de suite. Une période personnalisée
+// n'a pas d'historique équivalent : on renvoie juste la période choisie.
+function periodsBack(type, today, monthValue, n, customRange) {
+  const ranges = [rangeForPeriod(type, today, monthValue, customRange)];
+  if (type === "personnalise") return ranges;
   if (type === "mois") {
     for (let i = 1; i <= n; i++) ranges.push(monthRangeFromInput(shiftMonthValue(monthValue, -i)));
     return ranges;
@@ -5915,15 +5926,16 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
   const [caisseDetailMetric, setCaisseDetailMetric] = useState(null);
   const [caisseDetailPeriodType, setCaisseDetailPeriodType] = useState("mois");
   const [caisseDetailMonth, setCaisseDetailMonth] = useState(today.slice(0, 7));
+  const [caisseDetailCustomRange, setCaisseDetailCustomRange] = useState([today, today]);
   const [caisseDetailLoading, setCaisseDetailLoading] = useState(false);
   const [caisseDetailData, setCaisseDetailData] = useState(null);
   const [caisseDetailError, setCaisseDetailError] = useState("");
 
-  const chargerDetailCaisse = async (metric, periodType, monthValue) => {
+  const chargerDetailCaisse = async (metric, periodType, monthValue, customRange) => {
     setCaisseDetailLoading(true);
     setCaisseDetailError("");
     try {
-      const range = rangeForPeriod(periodType, today, monthValue);
+      const range = rangeForPeriod(periodType, today, monthValue, customRange);
       const dates = (daysList || []).filter((d) => inRange(d, range));
       const loaded = await store.getDaysInRange(dates);
       const daily = buildCaisseDailySeries(loaded, range, vendors);
@@ -5944,15 +5956,15 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
   const toggleCaisseDetail = (metric) => {
     if (caisseDetailMetric === metric) { setCaisseDetailMetric(null); return; }
     setCaisseDetailMetric(metric);
-    chargerDetailCaisse(metric, caisseDetailPeriodType, caisseDetailMonth);
+    chargerDetailCaisse(metric, caisseDetailPeriodType, caisseDetailMonth, caisseDetailCustomRange);
   };
 
   // Recharge automatiquement dès que la période choisie change, tant qu'une
   // carte est ouverte.
   useEffect(() => {
-    if (caisseDetailMetric) chargerDetailCaisse(caisseDetailMetric, caisseDetailPeriodType, caisseDetailMonth);
+    if (caisseDetailMetric) chargerDetailCaisse(caisseDetailMetric, caisseDetailPeriodType, caisseDetailMonth, caisseDetailCustomRange);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [caisseDetailPeriodType, caisseDetailMonth]);
+  }, [caisseDetailPeriodType, caisseDetailMonth, caisseDetailCustomRange]);
 
   const summaries = vendors.map((v) => ({ vendor: v, summary: computeVersementSummary(day, v.id) })).filter((s) => s.summary.lines.length > 0);
 
@@ -6201,7 +6213,10 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
           <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 16 }}>
             <div>
               <Label>Période</Label>
-              <PeriodSelector value={caisseDetailPeriodType} onChange={setCaisseDetailPeriodType} />
+              <PeriodSelector
+                value={caisseDetailPeriodType} onChange={setCaisseDetailPeriodType}
+                customRange={caisseDetailCustomRange} onCustomRangeChange={setCaisseDetailCustomRange}
+              />
             </div>
             {caisseDetailPeriodType === "mois" && (
               <div style={{ flex: "1 1 160px" }}>
@@ -6403,28 +6418,59 @@ function monthLabelFR(monthValue) {
 
 // Sélecteur à 4 options (Semaine / Mois / Trimestre / Année), utilisé par
 // les deux cartes de l'onglet Rapports.
-function PeriodSelector({ value, onChange }) {
+function PeriodSelector({ value, onChange, customRange, onCustomRangeChange }) {
   const options = [
     { key: "semaine", label: "Semaine" },
     { key: "mois", label: "Mois" },
     { key: "trimestre", label: "Trimestre" },
     { key: "annee", label: "Année" },
+    ...(onCustomRangeChange ? [{ key: "personnalise", label: "Personnalisé" }] : []),
   ];
   return (
-    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-      {options.map((o) => (
-        <button
-          key={o.key}
-          onClick={() => onChange(o.key)}
-          style={{
-            padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer",
-            border: value === o.key ? "2px solid #D9A441" : "1px solid #D8DCE3",
-            background: value === o.key ? "#FFF8EC" : "#fff", color: "#1B2A4A",
-          }}
-        >
-          {o.label}
-        </button>
-      ))}
+    <div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {options.map((o) => (
+          <button
+            key={o.key}
+            onClick={() => onChange(o.key)}
+            style={{
+              padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer",
+              border: value === o.key ? "2px solid #D9A441" : "1px solid #D8DCE3",
+              background: value === o.key ? "#FFF8EC" : "#fff", color: "#1B2A4A",
+            }}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      {value === "personnalise" && onCustomRangeChange && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
+          <div>
+            <input
+              type="date"
+              value={customRange?.[0] || ""}
+              // En changeant la date de début, on aligne aussi la fin sur
+              // cette même date : choisir UNE date affiche directement les
+              // dépenses (et le reste) de CE jour-là, sans devoir aussi
+              // toucher le second champ. Pour une vraie plage, l'utilisateur
+              // ajuste ensuite le champ "au" séparément. (Pas de max ici :
+              // sinon impossible de repartir sur une date plus tardive après
+              // un premier choix.)
+              onChange={(e) => onCustomRangeChange([e.target.value, e.target.value])}
+              style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #D8DCE3", fontSize: 13, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A" }}
+            />
+          </div>
+          <span style={{ fontSize: 12.5, color: "#8A93A3" }}>au</span>
+          <div>
+            <input
+              type="date"
+              value={customRange?.[1] || ""}
+              onChange={(e) => onCustomRangeChange([customRange?.[0] || e.target.value, e.target.value])}
+              style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #D8DCE3", fontSize: 13, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A" }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -6432,16 +6478,23 @@ function PeriodSelector({ value, onChange }) {
 // Calcule la plage de dates correspondant au type de période choisi.
 // "mois" reste piloté par un sélecteur AAAA-MM (pour choisir n'importe quel
 // mois) ; les trois autres se basent toujours sur la période en cours.
-function rangeForPeriod(type, today, monthValue) {
+function rangeForPeriod(type, today, monthValue, customRange) {
   if (type === "semaine") return getCurrentWeekRange(today);
   if (type === "mois") return monthRangeFromInput(monthValue);
   if (type === "trimestre") return getCurrentQuarterRange(today);
+  if (type === "personnalise") {
+    if (customRange && customRange[0] && customRange[1]) {
+      return customRange[0] <= customRange[1] ? customRange : [customRange[1], customRange[0]];
+    }
+    return [today, today];
+  }
   return getCurrentYearRange(today);
 }
 
 function periodLabelFR(type, range, monthValue) {
   if (type === "mois") return monthLabelFR(monthValue);
   if (type === "semaine") return `Semaine du ${formatDateFR(range[0])} au ${formatDateFR(range[1])}`;
+  if (type === "personnalise") return `Du ${formatDateFR(range[0])} au ${formatDateFR(range[1])}`;
   if (type === "trimestre") {
     const trimestre = Math.floor((parseInt(range[0].slice(5, 7), 10) - 1) / 3) + 1;
     return `${trimestre}ᵉ trimestre ${range[0].slice(0, 4)}`;
@@ -6452,29 +6505,32 @@ function periodLabelFR(type, range, monthValue) {
 function Rapports({ vendors, products, daysList, today, day }) {
   const [periodType, setPeriodType] = useState("mois");
   const [month, setMonth] = useState(today.slice(0, 7));
+  const [customRange, setCustomRange] = useState([today, today]);
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState(null);
   const [reportError, setReportError] = useState("");
 
   const [produitPeriodType, setProduitPeriodType] = useState("mois");
   const [produitMonth, setProduitMonth] = useState(today.slice(0, 7));
+  const [produitCustomRange, setProduitCustomRange] = useState([today, today]);
   const [produitLoading, setProduitLoading] = useState(false);
   const [produitReport, setProduitReport] = useState(null);
   const [produitError, setProduitError] = useState("");
 
   const [vendorPeriodType, setVendorPeriodType] = useState("mois");
   const [vendorMonth, setVendorMonth] = useState(today.slice(0, 7));
+  const [vendorCustomRange, setVendorCustomRange] = useState([today, today]);
   const [vendorLoading, setVendorLoading] = useState(false);
   const [vendorReport, setVendorReport] = useState(null);
   const [vendorError, setVendorError] = useState("");
 
   // Rapport détaillé par produit — sur la période choisie (semaine / mois /
-  // trimestre / année).
+  // trimestre / année / personnalisée).
   const genererRapportProduits = async () => {
     setProduitLoading(true);
     setProduitError("");
     try {
-      const range = rangeForPeriod(produitPeriodType, today, produitMonth);
+      const range = rangeForPeriod(produitPeriodType, today, produitMonth, produitCustomRange);
       const dates = daysList.filter((d) => inRange(d, range));
       const loaded = await store.getDaysInRange(dates);
       setProduitReport({ range, ...aggregateProductReport(loaded, range, products) });
@@ -6496,8 +6552,8 @@ function Rapports({ vendors, products, daysList, today, day }) {
     setVendorLoading(true);
     setVendorError("");
     try {
-      const range = rangeForPeriod(vendorPeriodType, today, vendorMonth);
-      const prevRange = previousRangeForPeriod(vendorPeriodType, today, vendorMonth);
+      const range = rangeForPeriod(vendorPeriodType, today, vendorMonth, vendorCustomRange);
+      const prevRange = previousRangeForPeriod(vendorPeriodType, today, vendorMonth, vendorCustomRange);
 
       const dates = daysList.filter((d) => inRange(d, range));
       const datesPrec = daysList.filter((d) => inRange(d, prevRange));
@@ -6523,7 +6579,7 @@ function Rapports({ vendors, products, daysList, today, day }) {
       let streakMoinsRentable = 0;
       if (base.moinsRentable) {
         const cible = base.moinsRentable.vendorId;
-        const plages = periodsBack(vendorPeriodType, today, vendorMonth, 6);
+        const plages = periodsBack(vendorPeriodType, today, vendorMonth, 6, vendorCustomRange);
         for (const plage of plages) {
           const datesPlage = daysList.filter((d) => inRange(d, plage));
           const joursPlage = await store.getDaysInRange(datesPlage);
@@ -6546,7 +6602,7 @@ function Rapports({ vendors, products, daysList, today, day }) {
     setLoading(true);
     setReportError("");
     try {
-      const range = rangeForPeriod(periodType, today, month);
+      const range = rangeForPeriod(periodType, today, month, customRange);
       const dates = daysList.filter((d) => inRange(d, range));
       const loaded = await store.getDaysInRange(dates);
       const productsById = Object.fromEntries(products.map((p) => [p.id, p]));
@@ -6630,7 +6686,10 @@ function Rapports({ vendors, products, daysList, today, day }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
             <Label>Période</Label>
-            <PeriodSelector value={periodType} onChange={setPeriodType} />
+            <PeriodSelector
+              value={periodType} onChange={setPeriodType}
+              customRange={customRange} onCustomRangeChange={setCustomRange}
+            />
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
             {periodType === "mois" && (
@@ -6736,7 +6795,10 @@ function Rapports({ vendors, products, daysList, today, day }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
             <Label>Période</Label>
-            <PeriodSelector value={produitPeriodType} onChange={setProduitPeriodType} />
+            <PeriodSelector
+              value={produitPeriodType} onChange={setProduitPeriodType}
+              customRange={produitCustomRange} onCustomRangeChange={setProduitCustomRange}
+            />
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
             {produitPeriodType === "mois" && (
@@ -6781,7 +6843,10 @@ function Rapports({ vendors, products, daysList, today, day }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
             <Label>Période</Label>
-            <PeriodSelector value={vendorPeriodType} onChange={setVendorPeriodType} />
+            <PeriodSelector
+              value={vendorPeriodType} onChange={setVendorPeriodType}
+              customRange={vendorCustomRange} onCustomRangeChange={setVendorCustomRange}
+            />
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
             {vendorPeriodType === "mois" && (
