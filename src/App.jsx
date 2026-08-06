@@ -6734,14 +6734,14 @@ function Rapports({ vendors, products, daysList, today, day }) {
           </Card>
 
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
-            <StatCard label="CHIFFRE D'AFFAIRES DU MOIS" value={fmtMoney(report.totalCa)} accent="#D9A441" />
+            <StatCard label="CHIFFRE D'AFFAIRES SUR LA PÉRIODE" value={fmtMoney(report.totalCa)} accent="#D9A441" />
             <StatCard label="ARTICLES VENDUS" value={report.totalVendu} />
             <StatCard label="ESPÈCES ENCAISSÉES" value={fmtMoney(report.totalEspeces)} />
             <StatCard label="PAIEMENTS MOBILES" value={fmtMoney(report.totalMobile)} />
-            <StatCard label="DÉPENSES DU MOIS" value={fmtMoney(report.totalDepenses)} accent="#C1554A" />
+            <StatCard label="DÉPENSES SUR LA PÉRIODE" value={fmtMoney(report.totalDepenses)} accent="#C1554A" />
           </div>
 
-          <Card title="Évolution du chiffre d'affaires sur le mois">
+          <Card title="Évolution du chiffre d'affaires sur la période">
             <div style={{ height: 220 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={report.dailySeries} margin={{ left: 0, right: 10, top: 10 }}>
