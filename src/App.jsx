@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useContext } from "rea
 import {
   LayoutDashboard, Package, Boxes, Users, Truck, MoonStar, Wallet, History,
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown, ChevronLeft,
-  Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye, Pencil, Sun,
+  Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye, EyeOff, Pencil, Sun,
   MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, Menu, UserCircle, ClipboardList, Newspaper,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Cell } from "recharts";
@@ -463,6 +463,38 @@ function Card({ title, right, children }) {
 }
 
 function TextInput(props) {
+  const { type, style, ...rest } = props;
+  const [visible, setVisible] = useState(false);
+
+  if (type === "password") {
+    return (
+      <div style={{ position: "relative", width: "100%" }}>
+        <input
+          {...rest}
+          type={visible ? "text" : "password"}
+          style={{
+            width: "100%", padding: "9px 40px 9px 12px", borderRadius: 8, border: "1px solid #D8DCE3",
+            fontSize: 14, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A",
+            outline: "none", boxSizing: "border-box", ...style,
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => setVisible((v) => !v)}
+          aria-label={visible ? "Masquer le mot de passe" : "Afficher le mot de passe"}
+          tabIndex={-1}
+          style={{
+            position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+            background: "none", border: "none", padding: 4, cursor: "pointer",
+            display: "flex", alignItems: "center", color: "#8A93A3",
+          }}
+        >
+          {visible ? <EyeOff size={16} /> : <Eye size={16} />}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <input
       {...props}
