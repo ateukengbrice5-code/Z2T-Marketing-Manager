@@ -32,13 +32,15 @@ export default function VendorProfile({ vendorId }) {
       setVendor(vendorData);
 
       // Vérifier si c'est son anniversaire
-      if (vendorData.date_naissance) {
+      if (vendorData?.date_naissance) {
         const today = new Date();
         const birth = new Date(vendorData.date_naissance);
         const isBday = 
           today.getMonth() === birth.getMonth() && 
           today.getDate() === birth.getDate();
         setIsBirthday(isBday);
+      } else {
+        setIsBirthday(false);
       }
 
       // Récupérer l'historique de présence (30 derniers jours)
@@ -72,8 +74,10 @@ export default function VendorProfile({ vendorId }) {
   };
 
   const calculateAge = (birthDate) => {
+    if (!birthDate) return null;
     const today = new Date();
     const birth = new Date(birthDate);
+    if (isNaN(birth.getTime())) return null;
     let age = today.getFullYear() - birth.getFullYear();
     const monthDiff = today.getMonth() - birth.getMonth();
     if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
@@ -106,7 +110,7 @@ export default function VendorProfile({ vendorId }) {
   }
 
   const stats = getAttendanceStats();
-  const age = calculateAge(vendor.date_naissance);
+  const age = vendor?.date_naissance ? calculateAge(vendor.date_naissance) : null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
@@ -165,7 +169,7 @@ export default function VendorProfile({ vendorId }) {
                   {isBirthday && <span className="ml-3 text-3xl">🎉</span>}
                 </h1>
                 <p className="text-indigo-600 font-semibold text-lg mb-4">
-                  {isBirthday ? `Joyeux anniversaire ! ${age} ans aujourd'hui 🎂` : `${age} ans`}
+                  {isBirthday ? `Joyeux anniversaire ! ${age ?? '–'} ans aujourd'hui 🎂` : (age ? `${age} ans` : '—')}
                 </p>
 
                 {/* Badges */}
@@ -175,7 +179,7 @@ export default function VendorProfile({ vendorId }) {
                     {vendor.statut === 'actif' ? 'Actif' : 'Inactif'}
                   </div>
                   <div className="bg-blue-100 text-blue-800 px-4 py-2 rounded-full text-sm font-semibold">
-                    Vendeur depuis {new Date(vendor.date_enregistrement).toLocaleDateString('fr-FR')}
+                    Vendeur depuis {vendor.date_enregistrement ? new Date(vendor.date_enregistrement).toLocaleDateString('fr-FR') : '—'}
                   </div>
                 </div>
               </div>
@@ -202,7 +206,7 @@ export default function VendorProfile({ vendorId }) {
                   <Calendar className="w-4 h-4" />
                   Date de naissance
                 </p>
-                <p className="text-gray-800 font-semibold">{new Date(vendor.date_naissance).toLocaleDateString('fr-FR')}</p>
+                <p className="text-gray-800 font-semibold">{vendor.date_naissance ? new Date(vendor.date_naissance).toLocaleDateString('fr-FR') : 'Non renseigné'}</p>
               </div>
             </div>
           </div>
