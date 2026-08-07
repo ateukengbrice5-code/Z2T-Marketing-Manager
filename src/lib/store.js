@@ -755,17 +755,22 @@ export async function claimInvite({ token, username, password }) {
 // -----------------------------------------------------------------------------
 
 export async function getSalesObjectives() {
-  const { data, error } = await supabase.from("sales_objectives").select("*").eq("id", 1).maybeSingle();
+  const { data, error } = await supabase.from("sales_objectives").select("*").maybeSingle();
   if (error) throw error;
   if (!data) return { minimal: 0, maximal: 0, extraordinaire: 0 };
   return { minimal: Number(data.objectif_minimal) || 0, maximal: Number(data.objectif_maximal) || 0, extraordinaire: Number(data.objectif_extraordinaire) || 0 };
 }
 
 export async function setSalesObjectives({ minimal, maximal, extraordinaire }, updatedBy) {
-  const { error } = await supabase.from("sales_objectives").update({
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth?.user) throw new Error("Non authentifié.");
+  const { data: profile, error: profileErr } = await supabase.from("profiles").select("entreprise_id").eq("id", auth.user.id).single();
+  if (profileErr) throw profileErr;
+  const { error } = await supabase.from("sales_objectives").upsert({
+    entreprise_id: profile.entreprise_id,
     objectif_minimal: minimal, objectif_maximal: maximal, objectif_extraordinaire: extraordinaire,
     updated_by: updatedBy || null, updated_at: new Date().toISOString(),
-  }).eq("id", 1);
+  }, { onConflict: "entreprise_id" });
   if (error) throw error;
 }
 
