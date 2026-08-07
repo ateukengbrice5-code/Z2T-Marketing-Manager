@@ -4632,15 +4632,23 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
   });
 
   // Regroupées par vendeur + produit pour l'affichage et l'application en une fois.
+  // On garde aussi la quantité remise et la quantité vendue d'origine (en plus
+  // du restant déjà reporté) pour pouvoir afficher les 3 colonnes du tableau
+  // "Stock invendu à reporter" : Remis le matin / Restant / Invendu à reporter.
   const reportGroups = (() => {
     const map = new Map();
     reportCandidates.forEach((l) => {
       const key = `${l.vendorId}::${l.productId}`;
       if (!map.has(key)) {
-        map.set(key, { vendorId: l.vendorId, vendorNom: l.vendorNom, productId: l.productId, productNom: l.productNom, prix: l.prix, quantite: 0, sources: [] });
+        map.set(key, {
+          vendorId: l.vendorId, vendorNom: l.vendorNom, productId: l.productId, productNom: l.productNom,
+          prix: l.prix, quantite: 0, quantiteRemise: 0, quantiteVendue: 0, sources: [],
+        });
       }
       const g = map.get(key);
       g.quantite += l.quantiteRestante;
+      g.quantiteRemise += l.quantiteRemise || 0;
+      g.quantiteVendue += Math.max(0, (l.quantiteRemise || 0) - (l.quantiteRestante || 0));
       g.sources.push({ date: l.sourceDate, lineId: l.id });
     });
     return Array.from(map.values());
@@ -4924,6 +4932,11 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
             {reportGroupsByVendor.map((v) => {
               const isOpen = expandedInvenduVendors.has(v.vendorId);
               const totalQuantite = v.groups.reduce((sum, g) => sum + g.quantite, 0);
+              const nbNonVendus = v.groups.filter((g) => g.quantiteVendue === 0).length;
+              const nbPartiels = v.groups.length - nbNonVendus;
+              const detailParts = [];
+              if (nbNonVendus > 0) detailParts.push(`${nbNonVendus} jamais vendu${nbNonVendus > 1 ? "s" : ""}`);
+              if (nbPartiels > 0) detailParts.push(`${nbPartiels} partiel${nbPartiels > 1 ? "s" : ""}`);
               return (
                 <div key={v.vendorId} style={{ border: "1px solid #E4E7EC", borderRadius: 10, overflow: "hidden" }}>
                   <div
@@ -4937,7 +4950,8 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
                       {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                       <span style={{ fontWeight: 600 }}>{v.vendorNom}</span>
                       <span style={{ fontSize: 12.5, color: "#8A93A3" }}>
-                        {v.groups.length} produit{v.groups.length > 1 ? "s" : ""} · {totalQuantite} unité{totalQuantite > 1 ? "s" : ""}
+                        {v.groups.length} produit{v.groups.length > 1 ? "s" : ""} · {totalQuantite} unité{totalQuantite > 1 ? "s" : ""} à reporter
+                        {detailParts.length > 0 ? ` (${detailParts.join(", ")})` : ""}
                       </span>
                     </div>
                     <Button
@@ -4952,8 +4966,15 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
                   {isOpen && (
                     <div style={{ padding: "0 14px 14px" }}>
                       <Table
-                        headers={["Produit", "Quantité invendue"]}
-                        rows={v.groups.map((g) => [g.productNom, g.quantite])}
+                        headers={["Produit", "Remis le matin", "Restant", "Invendu à reporter"]}
+                        rows={v.groups.map((g) => [
+                          g.productNom,
+                          g.quantiteRemise,
+                          g.quantite,
+                          g.quantiteVendue === 0
+                            ? <span style={{ color: "#B7791F", fontWeight: 600 }}>{g.quantite} (non vendu)</span>
+                            : <span style={{ fontWeight: 600 }}>{g.quantite}</span>,
+                        ])}
                       />
                     </div>
                   )}
