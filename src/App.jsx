@@ -1473,8 +1473,16 @@ function AppRoot() {
     }
   }, [today, day, online]);
 
-  const reloadProducts = useCallback(async () => { setProducts(await store.getProducts()); }, []);
-  const reloadVendors = useCallback(async () => { setVendors(await store.getVendors()); }, []);
+  const reloadProducts = useCallback(async () => {
+    const p = await store.getProducts();
+    setProducts(p);
+    offline.cacheSet("products", p);
+  }, []);
+  const reloadVendors = useCallback(async () => {
+    const v = await store.getVendors();
+    setVendors(v);
+    offline.cacheSet("vendors", v);
+  }, []);
 
   // Notifications admin : un vendeur qui atteint un palier du jour apparaît
   // ici tant qu'un admin/gestionnaire ne l'a pas marqué comme vu.
