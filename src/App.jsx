@@ -5293,6 +5293,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
   const [montantVerseInput, setMontantVerseInput] = useState("");
   const [correctionId, setCorrectionId] = useState(null);
   const [correctionInputs, setCorrectionInputs] = useState({});
+  const [correcting, setCorrecting] = useState(null); // id de la ligne en cours de correction (anti double-clic)
 
   const vendor = isAdmin ? activeVendors.find((v) => v.id === selectedVendorId) : activeVendor;
 
