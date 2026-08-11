@@ -741,6 +741,15 @@ function AuthIllustration() {
 function AuthShell({ children }) {
   return (
     <div className="auth-shell" style={{ minHeight: 640, display: "flex", background: "#F7F8FA", borderRadius: 16, border: "1px solid #E7E9EE", overflow: "hidden" }}>
+      <style>{`
+        @media (max-width: 720px) {
+          .auth-shell { min-height: 0 !important; flex-direction: column; border-radius: 0 !important; border: none !important; }
+          .auth-illustration { flex: none !important; height: 150px !important; }
+          .auth-illustration svg { min-height: 0 !important; height: 150px !important; }
+          .auth-card-wrap { padding: 20px !important; }
+          .auth-card { width: 100% !important; padding: 26px 20px !important; }
+        }
+      `}</style>
       <div className="auth-illustration" style={{ flex: "1 1 0", minWidth: 0, background: "#152039" }}>
         <AuthIllustration />
       </div>
@@ -1307,7 +1316,7 @@ function AdminAchievementBell({ achievements, pointageNotifications, onMarkSeen,
       {open && (
         <div
           style={{
-            position: "absolute", top: 42, right: 0, width: 320, maxHeight: 380, overflowY: "auto",
+            position: "absolute", top: 42, right: 0, width: 320, maxWidth: "calc(100vw - 32px)", maxHeight: 380, overflowY: "auto",
             background: "#fff", border: "1px solid #E7E9EE", borderRadius: 12, boxShadow: "0 10px 30px rgba(27,42,74,0.14)", zIndex: 30,
           }}
         >
@@ -1924,7 +1933,13 @@ function AppRoot() {
         .mobile-more-sheet { display: none; }
         @media (max-width: 860px) {
           .app-sidebar { display: none; }
-          .app-main { margin-left: 0; padding-bottom: 78px !important; }
+          .app-main { margin-left: 0; padding: 0 14px calc(78px) 14px !important; }
+          .app-header { padding-top: 16px !important; gap: 10px !important; }
+          .app-header h1 { font-size: 19px !important; }
+        }
+        @media (max-width: 420px) {
+          .app-header { flex-wrap: wrap; }
+        }
           .mobile-bottom-nav {
             display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 100;
             background: #152039; padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)) 4px;
