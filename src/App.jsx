@@ -3,8 +3,8 @@ import {
   LayoutDashboard, Package, Boxes, Users, Truck, MoonStar, Wallet, History,
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown, ChevronLeft,
   Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye, EyeOff, Pencil, Sun,
-  MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, Menu, UserCircle, ClipboardList, Newspaper,
-  PackageX, UserX, Volume2, VolumeX,
+  MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, UserCircle, ClipboardList, Newspaper,
+  PackageX, UserX, Volume2, VolumeX, MoreHorizontal,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Cell } from "recharts";
 import * as store from "./lib/store.js";
@@ -95,39 +95,39 @@ function ToastProvider({ children }) {
 // ---------------------------------------------------------------------------
 
 const NAV_ADMIN = [
-  { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
+  { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard, primary: true },
   { id: "actualites", label: "Actualités", icon: Newspaper },
   { id: "produits", label: "Produits", icon: Package },
   { id: "stock", label: "Stock", icon: Boxes },
   { id: "vendeurs", label: "Vendeurs & comptes", icon: Users },
-  { id: "distribution", label: "Distribution", icon: Truck },
-  { id: "retour", label: "Retour du soir", icon: MoonStar },
-  { id: "caisse", label: "Caisse", icon: Wallet },
-  { id: "messagerie", label: "Messagerie", icon: MessageSquare },
+  { id: "distribution", label: "Distribution", icon: Truck, primary: true },
+  { id: "retour", label: "Retour du soir", icon: MoonStar, primary: true },
+  { id: "caisse", label: "Caisse", icon: Wallet, primary: true },
+  { id: "messagerie", label: "Messagerie", icon: MessageSquare, primary: true },
   { id: "rapports", label: "Rapports", icon: FileText },
   { id: "historique", label: "Historique", icon: History },
 ];
 
 const NAV_VENDOR = [
-  { id: "dashboard", label: "Mon tableau de bord", icon: LayoutDashboard },
-  { id: "actualites", label: "Actualités", icon: Newspaper },
-  { id: "retour", label: "Mon retour du soir", icon: MoonStar },
-  { id: "presence", label: "Ma présence", icon: CheckCircle2 },
-  { id: "messagerie", label: "Messages", icon: MessageSquare },
+  { id: "dashboard", label: "Mon tableau de bord", icon: LayoutDashboard, primary: true },
+  { id: "actualites", label: "Actualités", icon: Newspaper, primary: true },
+  { id: "retour", label: "Mon retour du soir", icon: MoonStar, primary: true },
+  { id: "presence", label: "Ma présence", icon: CheckCircle2, primary: true },
+  { id: "messagerie", label: "Messages", icon: MessageSquare, primary: true },
 ];
 
 const NAV_MANAGER = [
-  { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
+  { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard, primary: true },
   { id: "actualites", label: "Actualités", icon: Newspaper },
-  { id: "caisse", label: "Finances", icon: Wallet },
-  { id: "stock", label: "Stock", icon: Boxes },
-  { id: "vendeurs", label: "Personnel", icon: Users },
-  { id: "messagerie", label: "Messagerie", icon: MessageSquare },
+  { id: "caisse", label: "Finances", icon: Wallet, primary: true },
+  { id: "stock", label: "Stock", icon: Boxes, primary: true },
+  { id: "vendeurs", label: "Personnel", icon: Users, primary: true },
+  { id: "messagerie", label: "Messagerie", icon: MessageSquare, primary: true },
   { id: "rapports", label: "Rapports", icon: FileText },
 ];
 
 const NAV_MESSENGER = [
-  { id: "messagerie", label: "Messagerie", icon: MessageSquare },
+  { id: "messagerie", label: "Messagerie", icon: MessageSquare, primary: true },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1387,7 +1387,7 @@ function AppRoot() {
   const [syncing, setSyncing] = useState(false);
   const [objectives, setObjectives] = useState({ minimal: 0, maximal: 0, extraordinaire: 0 });
   const [unseenAchievements, setUnseenAchievements] = useState([]);
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(() => {
     try { return localStorage.getItem("z2t_dark_mode") === "1"; } catch { return false; }
   });
@@ -1907,20 +1907,39 @@ function AppRoot() {
     : isManager ? NAV_MANAGER : isMessenger ? NAV_MESSENGER : NAV_VENDOR;
   const roleLabel = isAdmin ? (currentUser.isPrimary ? "admin principal" : "admin") : isManager ? "gestionnaire" : isMessenger ? "agent messagerie" : "vendeur";
   const activeVendor = currentUser.role === "vendor" ? currentVendor : null;
+  // Barre de navigation mobile (façon WhatsApp/Instagram) : les items marqués
+  // "primary" dans NAV_* vont directement dans la barre du bas (max 5, le
+  // dernier emplacement étant repris par "Plus" s'il en reste d'autres) ;
+  // le reste apparaît dans le tiroir "Plus" qui s'ouvre par-dessus.
+  const mobilePrimary = nav.filter((n) => n.primary).slice(0, 5);
+  const mobileMore = nav.filter((n) => !mobilePrimary.includes(n));
 
   return (
     <div className="app-shell" data-theme={darkMode ? "dark" : "light"} style={{ display: "flex", minHeight: "100vh", fontFamily: "Calibri, Arial, sans-serif", background: "#F7F8FA" }}>
       <style>{`
-        .app-sidebar { position: fixed; top: 0; left: 0; height: 100vh; z-index: 100; transition: transform 0.25s ease; overflow-y: auto; }
+        .app-sidebar { position: fixed; top: 0; left: 0; height: 100vh; z-index: 100; overflow-y: auto; }
         .app-main { margin-left: 220px; }
-        .mobile-menu-btn { display: none; }
-        .mobile-nav-backdrop { display: none; }
+        .mobile-bottom-nav { display: none; }
+        .mobile-more-backdrop { display: none; }
+        .mobile-more-sheet { display: none; }
         @media (max-width: 860px) {
-          .app-sidebar { transform: translateX(-100%); box-shadow: 0 0 30px rgba(0,0,0,0.25); }
-          .app-sidebar.open { transform: translateX(0); }
-          .app-main { margin-left: 0; }
-          .mobile-menu-btn { display: inline-flex; }
-          .mobile-nav-backdrop.open { display: block; position: fixed; inset: 0; background: rgba(21,32,57,0.5); z-index: 90; }
+          .app-sidebar { display: none; }
+          .app-main { margin-left: 0; padding-bottom: 78px !important; }
+          .mobile-bottom-nav {
+            display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 100;
+            background: #152039; padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)) 4px;
+            box-shadow: 0 -2px 16px rgba(0,0,0,0.18);
+          }
+          .mobile-more-backdrop.open {
+            display: block; position: fixed; inset: 0; background: rgba(21,32,57,0.5); z-index: 90;
+          }
+          .mobile-more-sheet.open {
+            display: flex; flex-direction: column; position: fixed; left: 0; right: 0; bottom: 0; z-index: 101;
+            background: #fff; border-radius: 16px 16px 0 0; max-height: 75vh; overflow-y: auto;
+            padding: 8px 10px calc(14px + env(safe-area-inset-bottom, 0px)) 10px;
+            box-shadow: 0 -4px 24px rgba(0,0,0,0.2);
+          }
+          [data-theme="dark"] .mobile-more-sheet { background: #1A2131; }
         }
 
         /* Mode nuit — l'app est construite avec des couleurs fixes en style
@@ -1946,11 +1965,9 @@ function AppRoot() {
         [data-theme="dark"] tr:hover td { background: #1E2536 !important; }
       `}</style>
 
-      {/* Fond semi-transparent derrière le menu mobile ouvert */}
-      <div className={`mobile-nav-backdrop${mobileNavOpen ? " open" : ""}`} onClick={() => setMobileNavOpen(false)} />
-
-      {/* Barre latérale — fixe sur web/PC quel que soit le défilement, en tiroir sur mobile */}
-      <div className={`app-sidebar${mobileNavOpen ? " open" : ""}`} style={{ width: 220, background: "#152039", color: "#fff", padding: "22px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+      {/* Barre latérale — visible uniquement sur web/PC ; remplacée par la
+          barre de navigation du bas + le tiroir "Plus" sur mobile. */}
+      <div className="app-sidebar" style={{ width: 220, background: "#152039", color: "#fff", padding: "22px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
         <div className="sidebar-brand" style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 8px 4px 8px" }}>
           <Logo size={32} />
           <div style={{ fontFamily: "Cambria, Georgia, serif", fontWeight: 700, fontSize: 14, lineHeight: 1.15 }}>
@@ -1969,7 +1986,7 @@ function AppRoot() {
             <button
               key={n.id}
               className="nav-btn"
-              onClick={() => { setTab(n.id); setMobileNavOpen(false); }}
+              onClick={() => setTab(n.id)}
               style={{
                 display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left",
                 padding: "10px 12px", marginBottom: 3, borderRadius: 8, border: "none", cursor: "pointer",
@@ -2019,6 +2036,117 @@ function AppRoot() {
         <div className="sidebar-footer" style={{ padding: "10px 8px 0 8px", fontSize: 11, color: "#6B7690" }}>Données partagées entre tous les postes</div>
       </div>
 
+      {/* Navigation mobile — barre fixe en bas (façon WhatsApp/Instagram) avec
+          les items les plus utilisés, et un bouton "Plus" pour le reste. */}
+      <div className="mobile-bottom-nav">
+        {mobilePrimary.map((n) => {
+          const Icon = n.icon;
+          const active = tab === n.id;
+          const badgeCount = n.id === "messagerie" ? dmUnreadTotal : 0;
+          return (
+            <button
+              key={n.id}
+              onClick={() => setTab(n.id)}
+              style={{
+                flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+                padding: "6px 2px", border: "none", background: "transparent", cursor: "pointer",
+                color: active ? "#D9A441" : "#9AA6C2", position: "relative",
+              }}
+            >
+              <span style={{ position: "relative" }}>
+                <Icon size={20} />
+                {badgeCount > 0 && (
+                  <span style={{
+                    position: "absolute", top: -4, right: -7, background: "#C1554A", color: "#fff",
+                    borderRadius: 999, fontSize: 9.5, fontWeight: 700, padding: "1px 4px", minWidth: 14, textAlign: "center",
+                  }}>
+                    {badgeCount > 99 ? "99+" : badgeCount}
+                  </span>
+                )}
+              </span>
+              <span style={{ fontSize: 10, fontWeight: active ? 700 : 500, lineHeight: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 64 }}>
+                {n.label}
+              </span>
+            </button>
+          );
+        })}
+        {mobileMore.length > 0 && (
+          <button
+            onClick={() => setMobileMoreOpen(true)}
+            style={{
+              flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+              padding: "6px 2px", border: "none", background: "transparent", cursor: "pointer", color: "#9AA6C2",
+            }}
+          >
+            <MoreHorizontal size={20} />
+            <span style={{ fontSize: 10, fontWeight: 500, lineHeight: 1 }}>Plus</span>
+          </button>
+        )}
+      </div>
+
+      {/* Tiroir "Plus" — le reste des sections, plus mode nuit/déconnexion sur mobile */}
+      <div className={`mobile-more-backdrop${mobileMoreOpen ? " open" : ""}`} onClick={() => setMobileMoreOpen(false)} />
+      <div className={`mobile-more-sheet${mobileMoreOpen ? " open" : ""}`}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 6px 10px 6px" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: darkMode ? "#E8EAF0" : "#1B2A4A" }}>Plus</div>
+          <button onClick={() => setMobileMoreOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "#8A93A3", padding: 4 }}>
+            <X size={18} />
+          </button>
+        </div>
+        {mobileMore.map((n) => {
+          const Icon = n.icon;
+          const active = tab === n.id;
+          const badgeCount = n.id === "messagerie" ? dmUnreadTotal : 0;
+          return (
+            <button
+              key={n.id}
+              onClick={() => { setTab(n.id); setMobileMoreOpen(false); }}
+              style={{
+                display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
+                padding: "12px 10px", borderRadius: 10, border: "none", cursor: "pointer",
+                background: active ? "#F4E9D3" : "transparent",
+                color: active ? "#1B2A4A" : (darkMode ? "#E8EAF0" : "#1B2A4A"),
+                fontSize: 14, fontWeight: active ? 700 : 500,
+              }}
+            >
+              <Icon size={18} color={active ? "#D9A441" : "#8A93A3"} />
+              {n.label}
+              {badgeCount > 0 && (
+                <span style={{
+                  marginLeft: "auto", background: "#C1554A", color: "#fff", borderRadius: 999,
+                  fontSize: 10.5, fontWeight: 700, padding: "1px 6px", minWidth: 17, textAlign: "center",
+                }}>
+                  {badgeCount > 99 ? "99+" : badgeCount}
+                </span>
+              )}
+            </button>
+          );
+        })}
+        <div style={{ borderTop: darkMode ? "1px solid #2A3348" : "1px solid #F0F1F4", margin: "8px 0" }} />
+        <button
+          onClick={() => { setDarkMode((v) => !v); setMobileMoreOpen(false); }}
+          style={{
+            display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
+            padding: "12px 10px", borderRadius: 10, border: "none", cursor: "pointer",
+            background: "transparent", color: darkMode ? "#E8EAF0" : "#1B2A4A", fontSize: 14, fontWeight: 500,
+          }}
+        >
+          {darkMode ? <Sun size={18} color="#8A93A3" /> : <MoonStar size={18} color="#8A93A3" />}
+          {darkMode ? "Mode clair" : "Mode nuit"}
+        </button>
+        <button
+          onClick={handleLogout}
+          style={{
+            display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
+            padding: "12px 10px", borderRadius: 10, border: "none", cursor: "pointer",
+            background: "transparent", color: "#C1554A", fontSize: 14, fontWeight: 600,
+          }}
+        >
+          <LogOut size={18} />
+          Déconnexion
+        </button>
+      </div>
+
       {/* Contenu principal */}
       <div className="app-main" style={{ flex: 1, padding: "0 30px 26px 30px", overflowY: "auto", minWidth: 0 }}>
         <div
@@ -2031,13 +2159,6 @@ function AppRoot() {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <button
-              className="mobile-menu-btn"
-              onClick={() => setMobileNavOpen(true)}
-              style={{ background: "#fff", border: "1px solid #E7E9EE", borderRadius: 10, width: 36, height: 36, alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#1B2A4A" }}
-            >
-              <Menu size={18} />
-            </button>
             <h1 style={{ margin: 0, fontFamily: "Cambria, Georgia, serif", fontSize: 24, color: "#1B2A4A" }}>
               {nav.find((n) => n.id === tab)?.label}
             </h1>
