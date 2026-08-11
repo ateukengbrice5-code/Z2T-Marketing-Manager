@@ -308,9 +308,16 @@ export async function deleteDMMessage(id) {
 // "notifications" pour les alertes intelligentes. La RLS de "dm_messages"
 // limite déjà la lecture aux conversations de l'utilisateur connecté, donc
 // ce flux ne renvoie que les messages qui le concernent.
+//
+// Cette fonction est appelée depuis DEUX endroits en même temps (la pastille
+// globale au niveau de l'app, ET le composant Messagerie quand il est ouvert)
+// : chaque appel doit donc avoir son propre nom de canal Supabase, sinon les
+// deux abonnements entrent en conflit sur le même topic dès que les deux
+// sont actifs simultanément.
 export function subscribeToDMMessages(onInsert) {
+  const channelName = `dm-messages-realtime-${Math.random().toString(36).slice(2, 10)}`;
   const channel = supabase
-    .channel("dm-messages-realtime")
+    .channel(channelName)
     .on(
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "dm_messages" },
