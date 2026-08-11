@@ -4,7 +4,7 @@ import {
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown, ChevronLeft,
   Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye, EyeOff, Pencil, Sun,
   MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, Menu, UserCircle, ClipboardList, Newspaper,
-  PackageX, UserX,
+  PackageX, UserX, Volume2, VolumeX,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Cell } from "recharts";
 import * as store from "./lib/store.js";
@@ -347,6 +347,50 @@ function fmtMoney(n) {
 
 function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+}
+
+// ---------------------------------------------------------------------------
+// Son de notification (façon WhatsApp/Messenger) — généré directement en JS
+// via Web Audio, donc pas besoin d'héberger un fichier audio. Un seul
+// AudioContext est réutilisé (les navigateurs limitent le nombre qu'on peut
+// créer, et le premier doit de toute façon être créé/débloqué après un geste
+// utilisateur — voir unlockNotificationSound ci-dessous).
+let notifAudioCtx = null;
+function getNotifAudioCtx() {
+  if (typeof window === "undefined") return null;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  if (!notifAudioCtx) notifAudioCtx = new Ctx();
+  return notifAudioCtx;
+}
+// À appeler une fois au premier clic/geste de l'utilisateur dans l'app, pour
+// que les navigateurs (Chrome, Safari…) autorisent l'audio par la suite —
+// sans ça, le tout premier son après le chargement de la page peut être
+// silencieusement bloqué par la politique anti-autoplay du navigateur.
+function unlockNotificationSound() {
+  const ctx = getNotifAudioCtx();
+  if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+}
+// Petit carillon à deux notes (façon "ding-dong" de messagerie), volume doux.
+function playNotificationSound() {
+  const ctx = getNotifAudioCtx();
+  if (!ctx) return;
+  if (ctx.state === "suspended") { ctx.resume().catch(() => {}); }
+  const notes = [880, 1175]; // la5 puis ré6 — accord montant, discret
+  notes.forEach((freq, i) => {
+    const start = ctx.currentTime + i * 0.11;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0, start);
+    gain.gain.linearRampToValueAtTime(0.16, start + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + 0.35);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(start);
+    osc.stop(start + 0.4);
+  });
 }
 
 // Règle commune de robustesse des mots de passe pour tous les comptes
@@ -1350,6 +1394,19 @@ function AppRoot() {
   useEffect(() => {
     try { localStorage.setItem("z2t_dark_mode", darkMode ? "1" : "0"); } catch { /* stockage indisponible, on ignore */ }
   }, [darkMode]);
+  const [soundEnabled, setSoundEnabled] = useState(() => {
+    try { return localStorage.getItem("z2t_notif_sound") !== "0"; } catch { return true; } // activé par défaut
+  });
+  useEffect(() => {
+    try { localStorage.setItem("z2t_notif_sound", soundEnabled ? "1" : "0"); } catch { /* stockage indisponible, on ignore */ }
+  }, [soundEnabled]);
+  // Débloque l'audio dès le premier clic n'importe où dans l'app (politique
+  // anti-autoplay des navigateurs) — une seule fois suffit.
+  useEffect(() => {
+    const onFirstInteraction = () => { unlockNotificationSound(); window.removeEventListener("pointerdown", onFirstInteraction); };
+    window.addEventListener("pointerdown", onFirstInteraction);
+    return () => window.removeEventListener("pointerdown", onFirstInteraction);
+  }, []);
   const syncFailCounts = useRef({});
 
   // Force un nouveau rendu toutes les minutes pour détecter le changement de jour à 00h
@@ -1547,10 +1604,11 @@ function AppRoot() {
       const estPourMoi = canSeeAchievements ? !n.vendorId || ADMIN_ALERT_TYPES.has(n.type) : n.vendorId === currentVendor?.id;
       if (estPourMoi && ADMIN_ALERT_TYPES.has(n.type)) {
         showToast(n.message, n.type === "stock_rupture" || n.type === "retrait_inhabituel" ? "warning" : "info", 8000);
+        if (soundEnabled) playNotificationSound();
       }
     });
     return unsubscribe;
-  }, [currentUser, online, canSeeAchievements, currentVendor]);
+  }, [currentUser, online, canSeeAchievements, currentVendor, soundEnabled]);
 
   const markNotificationSeenByAdmin = async (id) => {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, seenByAdmin: true } : n)));
@@ -1945,13 +2003,22 @@ function AppRoot() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             {canManage && (
-              <AdminAchievementBell
-                achievements={unseenAchievements}
-                pointageNotifications={unseenPointage}
-                onMarkSeen={markAchievementSeen}
-                onMarkPointageSeen={markNotificationSeenByAdmin}
-                onOpen={reloadUnseenAchievements}
-              />
+              <>
+                <button
+                  onClick={() => setSoundEnabled((s) => !s)}
+                  title={soundEnabled ? "Couper le son des alertes" : "Activer le son des alertes"}
+                  style={{ background: "#fff", border: "1px solid #E7E9EE", borderRadius: 10, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#1B2A4A" }}
+                >
+                  {soundEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}
+                </button>
+                <AdminAchievementBell
+                  achievements={unseenAchievements}
+                  pointageNotifications={unseenPointage}
+                  onMarkSeen={markAchievementSeen}
+                  onMarkPointageSeen={markNotificationSeenByAdmin}
+                  onOpen={reloadUnseenAchievements}
+                />
+              </>
             )}
             <div className="app-date" style={{ fontSize: 13, color: "#8A93A3", textTransform: "capitalize" }}>{formatDateFR(today)}</div>
           </div>
