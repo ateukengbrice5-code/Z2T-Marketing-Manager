@@ -3,8 +3,8 @@ import {
   LayoutDashboard, Package, Boxes, Users, Truck, MoonStar, Wallet, History,
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown, ChevronLeft,
   Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye, EyeOff, Pencil, Sun,
-  MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, UserCircle, ClipboardList, Newspaper,
-  PackageX, UserX, Volume2, VolumeX, MoreHorizontal,
+  MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, Menu, UserCircle, ClipboardList, Newspaper,
+  PackageX, UserX, Volume2, VolumeX,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Cell } from "recharts";
 import * as store from "./lib/store.js";
@@ -95,39 +95,39 @@ function ToastProvider({ children }) {
 // ---------------------------------------------------------------------------
 
 const NAV_ADMIN = [
-  { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard, primary: true },
+  { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
   { id: "actualites", label: "Actualités", icon: Newspaper },
   { id: "produits", label: "Produits", icon: Package },
   { id: "stock", label: "Stock", icon: Boxes },
   { id: "vendeurs", label: "Vendeurs & comptes", icon: Users },
-  { id: "distribution", label: "Distribution", icon: Truck, primary: true },
-  { id: "retour", label: "Retour du soir", icon: MoonStar, primary: true },
-  { id: "caisse", label: "Caisse", icon: Wallet, primary: true },
-  { id: "messagerie", label: "Messagerie", icon: MessageSquare, primary: true },
+  { id: "distribution", label: "Distribution", icon: Truck },
+  { id: "retour", label: "Retour du soir", icon: MoonStar },
+  { id: "caisse", label: "Caisse", icon: Wallet },
+  { id: "messagerie", label: "Messagerie", icon: MessageSquare },
   { id: "rapports", label: "Rapports", icon: FileText },
   { id: "historique", label: "Historique", icon: History },
 ];
 
 const NAV_VENDOR = [
-  { id: "dashboard", label: "Mon tableau de bord", icon: LayoutDashboard, primary: true },
-  { id: "actualites", label: "Actualités", icon: Newspaper, primary: true },
-  { id: "retour", label: "Mon retour du soir", icon: MoonStar, primary: true },
-  { id: "presence", label: "Ma présence", icon: CheckCircle2, primary: true },
-  { id: "messagerie", label: "Messages", icon: MessageSquare, primary: true },
+  { id: "dashboard", label: "Mon tableau de bord", icon: LayoutDashboard },
+  { id: "actualites", label: "Actualités", icon: Newspaper },
+  { id: "retour", label: "Mon retour du soir", icon: MoonStar },
+  { id: "presence", label: "Ma présence", icon: CheckCircle2 },
+  { id: "messagerie", label: "Messages", icon: MessageSquare },
 ];
 
 const NAV_MANAGER = [
-  { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard, primary: true },
+  { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
   { id: "actualites", label: "Actualités", icon: Newspaper },
-  { id: "caisse", label: "Finances", icon: Wallet, primary: true },
-  { id: "stock", label: "Stock", icon: Boxes, primary: true },
-  { id: "vendeurs", label: "Personnel", icon: Users, primary: true },
-  { id: "messagerie", label: "Messagerie", icon: MessageSquare, primary: true },
+  { id: "caisse", label: "Finances", icon: Wallet },
+  { id: "stock", label: "Stock", icon: Boxes },
+  { id: "vendeurs", label: "Personnel", icon: Users },
+  { id: "messagerie", label: "Messagerie", icon: MessageSquare },
   { id: "rapports", label: "Rapports", icon: FileText },
 ];
 
 const NAV_MESSENGER = [
-  { id: "messagerie", label: "Messagerie", icon: MessageSquare, primary: true },
+  { id: "messagerie", label: "Messagerie", icon: MessageSquare },
 ];
 
 // ---------------------------------------------------------------------------
@@ -519,7 +519,7 @@ function TextInput(props) {
           type={visible ? "text" : "password"}
           style={{
             width: "100%", padding: "9px 40px 9px 12px", borderRadius: 8, border: "1px solid #D8DCE3",
-            fontSize: 14, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A",
+            fontSize: 16, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A",
             outline: "none", boxSizing: "border-box", ...style,
           }}
         />
@@ -545,7 +545,7 @@ function TextInput(props) {
       {...props}
       style={{
         width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #D8DCE3",
-        fontSize: 14, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A",
+        fontSize: 16, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A",
         outline: "none", boxSizing: "border-box", ...props.style,
       }}
     />
@@ -558,7 +558,7 @@ function TextArea(props) {
       {...props}
       style={{
         width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #D8DCE3",
-        fontSize: 14, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A",
+        fontSize: 16, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A",
         outline: "none", boxSizing: "border-box", resize: "vertical", ...props.style,
       }}
     />
@@ -571,7 +571,7 @@ function Select(props) {
       {...props}
       style={{
         width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #D8DCE3",
-        fontSize: 14, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A",
+        fontSize: 16, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A",
         outline: "none", background: "#fff", boxSizing: "border-box", ...props.style,
       }}
     >
@@ -741,15 +741,6 @@ function AuthIllustration() {
 function AuthShell({ children }) {
   return (
     <div className="auth-shell" style={{ minHeight: 640, display: "flex", background: "#F7F8FA", borderRadius: 16, border: "1px solid #E7E9EE", overflow: "hidden" }}>
-      <style>{`
-        @media (max-width: 720px) {
-          .auth-shell { min-height: 0 !important; flex-direction: column; border-radius: 0 !important; border: none !important; }
-          .auth-illustration { flex: none !important; height: 150px !important; }
-          .auth-illustration svg { min-height: 0 !important; height: 150px !important; }
-          .auth-card-wrap { padding: 20px !important; }
-          .auth-card { width: 100% !important; padding: 26px 20px !important; }
-        }
-      `}</style>
       <div className="auth-illustration" style={{ flex: "1 1 0", minWidth: 0, background: "#152039" }}>
         <AuthIllustration />
       </div>
@@ -1316,7 +1307,7 @@ function AdminAchievementBell({ achievements, pointageNotifications, onMarkSeen,
       {open && (
         <div
           style={{
-            position: "absolute", top: 42, right: 0, width: 320, maxWidth: "calc(100vw - 32px)", maxHeight: 380, overflowY: "auto",
+            position: "absolute", top: 42, right: 0, width: 320, maxWidth: "calc(100vw - 24px)", maxHeight: 380, overflowY: "auto",
             background: "#fff", border: "1px solid #E7E9EE", borderRadius: 12, boxShadow: "0 10px 30px rgba(27,42,74,0.14)", zIndex: 30,
           }}
         >
@@ -1365,68 +1356,14 @@ function AdminAchievementBell({ achievements, pointageNotifications, onMarkSeen,
 }
 
 // ---------------------------------------------------------------------------
-// Filet de sécurité : si un composant plante pendant le rendu, on affiche
-// l'erreur réelle au lieu de laisser l'écran dans un état vide/confus
-// (utile en particulier sur mobile où le diagnostic est plus difficile).
+// Composant principal
 // ---------------------------------------------------------------------------
-
-class ErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { error: null };
-  }
-  static getDerivedStateFromError(error) {
-    return { error };
-  }
-  componentDidCatch(error, info) {
-    console.error("Erreur applicative interceptée :", error, info);
-  }
-  render() {
-    if (this.state.error) {
-      return (
-        <div style={{
-          minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
-          padding: 24, background: "#F7F8FA", fontFamily: "Calibri, Arial, sans-serif", boxSizing: "border-box",
-        }}>
-          <div style={{ maxWidth: 480, width: "100%", background: "#fff", borderRadius: 14, padding: 28, boxShadow: "0 4px 20px rgba(0,0,0,0.06)", boxSizing: "border-box" }}>
-            <AlertTriangle size={32} color="#C1554A" style={{ marginBottom: 12 }} />
-            <div style={{ fontSize: 16, fontWeight: 700, color: "#1B2A4A", marginBottom: 8 }}>
-              Une erreur est survenue dans l'application
-            </div>
-            <div style={{ fontSize: 13, color: "#5B6472", marginBottom: 14 }}>
-              Fais une capture d'écran de ce message et envoie-le, ça permettra de trouver la cause exacte.
-            </div>
-            <div style={{
-              fontSize: 12, fontFamily: "monospace", color: "#C1554A", background: "#FDF1EF",
-              border: "1px solid #F0CFC9", borderRadius: 8, padding: 12, marginBottom: 16,
-              whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 200, overflowY: "auto",
-            }}>
-              {String(this.state.error?.message || this.state.error)}
-            </div>
-            <button
-              onClick={() => window.location.reload()}
-              style={{
-                width: "100%", padding: "10px 16px", borderRadius: 10, border: "none", cursor: "pointer",
-                background: "#1B2A4A", color: "#fff", fontSize: 13.5, fontWeight: 600,
-              }}
-            >
-              Recharger la page
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
 
 export default function App() {
   return (
-    <ErrorBoundary>
-      <ToastProvider>
-        <AppRoot />
-      </ToastProvider>
-    </ErrorBoundary>
+    <ToastProvider>
+      <AppRoot />
+    </ToastProvider>
   );
 }
 
@@ -1672,38 +1609,6 @@ function AppRoot() {
     });
     return unsubscribe;
   }, [currentUser, online, canSeeAchievements, currentVendor, soundEnabled]);
-
-  // Messagerie — pastille "non lus" sur l'onglet Messagerie, visible depuis
-  // n'importe quel onglet de l'app (comme le badge de l'icône de discussion
-  // sur WhatsApp/Messenger).
-  const [dmUnreadTotal, setDmUnreadTotal] = useState(0);
-  const refreshDmUnreadTotal = useCallback(async () => {
-    if (!currentUser) return;
-    try {
-      const counts = await store.getDMUnreadCounts();
-      setDmUnreadTotal(Object.values(counts).reduce((s, n) => s + n, 0));
-    } catch (e) { console.error("Impossible de charger les messages non lus", e); }
-  }, [currentUser]);
-  useEffect(() => { refreshDmUnreadTotal(); }, [refreshDmUnreadTotal]);
-
-  // Messages directs en temps réel, même hors de l'onglet Messagerie : la
-  // pastille se met à jour instantanément et un toast + son préviennent
-  // l'utilisateur d'un nouveau message — sauf s'il est déjà en train de
-  // discuter (l'aperçu instantané dans le fil suffit alors, pas besoin
-  // d'un doublon). Le composant Messagerie a son propre abonnement pour
-  // faire apparaître le message dans le fil ouvert et jouer le son dans ce cas.
-  useEffect(() => {
-    if (!currentUser || currentUser.blocked || !online) return;
-    const unsubscribe = store.subscribeToDMMessages((m) => {
-      if (m.senderId === currentUser.id) return; // mes propres messages envoyés
-      refreshDmUnreadTotal();
-      if (tab !== "messagerie") {
-        showToast(`Nouveau message de ${m.senderUsername} : ${m.content.slice(0, 60)}`, "info", 8000);
-        if (soundEnabled) playNotificationSound();
-      }
-    });
-    return unsubscribe;
-  }, [currentUser, online, tab, soundEnabled, refreshDmUnreadTotal]);
 
   const markNotificationSeenByAdmin = async (id) => {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, seenByAdmin: true } : n)));
@@ -1970,167 +1875,65 @@ function AppRoot() {
     : isManager ? NAV_MANAGER : isMessenger ? NAV_MESSENGER : NAV_VENDOR;
   const roleLabel = isAdmin ? (currentUser.isPrimary ? "admin principal" : "admin") : isManager ? "gestionnaire" : isMessenger ? "agent messagerie" : "vendeur";
   const activeVendor = currentUser.role === "vendor" ? currentVendor : null;
-  // Barre de navigation mobile (façon WhatsApp/Instagram) : les items marqués
-  // "primary" dans NAV_* vont directement dans la barre du bas (max 5, le
-  // dernier emplacement étant repris par "Plus" s'il en reste d'autres) ;
-  // le reste apparaît dans le tiroir "Plus" qui s'ouvre par-dessus.
-  const mobilePrimary = nav.filter((n) => n.primary).slice(0, 5);
-  const mobileMore = nav.filter((n) => !mobilePrimary.includes(n));
 
   return (
     <div className="app-shell" data-theme={darkMode ? "dark" : "light"} style={{ display: "flex", minHeight: "100vh", fontFamily: "Calibri, Arial, sans-serif", background: "#F7F8FA" }}>
       <style>{`
-        /* ===== Mise en page desktop (barre latérale fixe à gauche) ===== */
-        .app-sidebar {
-          position: fixed;
-          top: 0;
-          left: 0;
-          width: 220px;
-          height: 100vh;
-          z-index: 100;
-          overflow-y: auto;
-        }
-        .app-main {
-          margin-left: 220px;
-          padding: 0 30px 26px 30px;
-        }
-        .app-header {
-          padding: 26px 0 16px 0;
-        }
-
-        /* ===== Navigation mobile façon WhatsApp/Instagram (cachée par défaut, activée sous 860px) ===== */
-        .mobile-bottom-nav {
-          display: none;
-        }
-        .mobile-more-backdrop {
-          display: none;
-        }
-        .mobile-more-sheet {
-          display: none;
-        }
-
+        .app-sidebar { position: fixed; top: 0; left: 0; height: 100vh; z-index: 100; overflow-y: auto; }
+        .app-main { margin-left: 220px; }
+        .mobile-bottom-nav { display: none; }
+        .mobile-more-backdrop { display: none; }
         @media (max-width: 860px) {
-          .app-sidebar {
-            display: none;
-          }
-          .app-main {
-            margin-left: 0;
-            padding: 0 14px 78px 14px !important;
-          }
-          .app-header {
-            padding-top: 16px !important;
-            gap: 10px !important;
-          }
-          .app-header h1 {
-            font-size: 19px !important;
-          }
-
+          .app-sidebar { display: none; }
+          .app-main { margin-left: 0; padding-left: 14px !important; padding-right: 14px !important; padding-bottom: 82px !important; }
           .mobile-bottom-nav {
-            display: flex;
-            position: fixed;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            z-index: 100;
-            background: #152039;
-            padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)) 4px;
-            box-shadow: 0 -2px 16px rgba(0, 0, 0, 0.18);
+            display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+            background: #fff; border-top: 1px solid #E7E9EE; padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)) 4px;
+            box-shadow: 0 -2px 14px rgba(27,42,74,0.08);
           }
-
           .mobile-more-backdrop.open {
-            display: block;
-            position: fixed;
-            inset: 0;
-            background: rgba(21, 32, 57, 0.5);
-            z-index: 90;
-          }
-
-          .mobile-more-sheet.open {
-            display: flex;
-            flex-direction: column;
-            position: fixed;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            z-index: 101;
-            background: #fff;
-            border-radius: 16px 16px 0 0;
-            max-height: 75vh;
-            overflow-y: auto;
-            padding: 8px 10px calc(14px + env(safe-area-inset-bottom, 0px)) 10px;
-            box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.2);
-          }
-
-          [data-theme="dark"] .mobile-more-sheet {
-            background: #1A2131;
+            display: block; position: fixed; inset: 0; background: rgba(21,32,57,0.5); z-index: 190;
           }
         }
 
-        @media (max-width: 420px) {
-          .app-header {
-            flex-wrap: wrap;
-          }
+        /* Feuille "Plus" façon WhatsApp — glisse depuis le bas, contient les
+           sections qui ne tiennent pas dans la barre du bas + réglages. */
+        .mobile-more-sheet {
+          position: fixed; left: 0; right: 0; bottom: 0; z-index: 200; background: #fff;
+          border-radius: 16px 16px 0 0; max-height: 72vh; overflow-y: auto;
+          padding: 8px 8px calc(10px + env(safe-area-inset-bottom, 0px)) 8px;
+          transform: translateY(100%); transition: transform 0.22s ease;
+          box-shadow: 0 -8px 30px rgba(27,42,74,0.18);
         }
+        .mobile-more-sheet.open { transform: translateY(0); }
+        [data-theme="dark"] .mobile-bottom-nav { background: #151C2B !important; border-top-color: #232B3D !important; }
+        [data-theme="dark"] .mobile-more-sheet { background: #151C2B !important; }
 
-        /* ===== Mode nuit — l'app est construite avec des couleurs fixes en
-           style inline (pas de variables CSS d'origine), donc on surcharge
-           par-dessus avec !important plutôt que de réécrire des centaines de
+        /* Mode nuit — l'app est construite avec des couleurs fixes en style
+           inline (pas de variables CSS d'origine), donc on surcharge par
+           dessus avec !important plutôt que de réécrire des centaines de
            styles. Couvre l'essentiel (fond, cartes, tableaux, champs,
-           textes) ; un recoin très spécifique peut rester en clair. ===== */
-        [data-theme="dark"] {
-          background: #10151F;
+           textes) ; un recoin très spécifique peut rester en clair. */
+        [data-theme="dark"] { background: #10151F; }
+        [data-theme="dark"] .app-main { background: #10151F; }
+        [data-theme="dark"] .app-header { background: #10151F !important; border-bottom-color: #232B3D !important; }
+        [data-theme="dark"] .app-header h1 { color: #E8EAF0 !important; }
+        [data-theme="dark"] .app-date { color: #8B95AC !important; }
+        [data-theme="dark"] .card { background: #1A2131 !important; border-color: #262E42 !important; }
+        [data-theme="dark"] .card h3 { color: #E8EAF0 !important; }
+        [data-theme="dark"] h1, [data-theme="dark"] h2 { color: #E8EAF0 !important; }
+        [data-theme="dark"] label { color: #B7BECB !important; }
+        [data-theme="dark"] input, [data-theme="dark"] select, [data-theme="dark"] textarea {
+          background: #131A28 !important; border-color: #2A3348 !important; color: #E8EAF0 !important;
         }
-        [data-theme="dark"] .app-main {
-          background: #10151F;
-        }
-        [data-theme="dark"] .app-header {
-          background: #10151F !important;
-          border-bottom-color: #232B3D !important;
-        }
-        [data-theme="dark"] .app-header h1 {
-          color: #E8EAF0 !important;
-        }
-        [data-theme="dark"] .app-date {
-          color: #8B95AC !important;
-        }
-        [data-theme="dark"] .card {
-          background: #1A2131 !important;
-          border-color: #262E42 !important;
-        }
-        [data-theme="dark"] .card h3 {
-          color: #E8EAF0 !important;
-        }
-        [data-theme="dark"] h1,
-        [data-theme="dark"] h2 {
-          color: #E8EAF0 !important;
-        }
-        [data-theme="dark"] label {
-          color: #B7BECB !important;
-        }
-        [data-theme="dark"] input,
-        [data-theme="dark"] select,
-        [data-theme="dark"] textarea {
-          background: #131A28 !important;
-          border-color: #2A3348 !important;
-          color: #E8EAF0 !important;
-        }
-        [data-theme="dark"] table {
-          color: #D6DAE4 !important;
-        }
-        [data-theme="dark"] th {
-          color: #8B95AC !important;
-          border-bottom-color: #262E42 !important;
-        }
-        [data-theme="dark"] td {
-          border-bottom-color: #212739 !important;
-        }
-        [data-theme="dark"] tr:hover td {
-          background: #1E2536 !important;
-        }
+        [data-theme="dark"] table { color: #D6DAE4 !important; }
+        [data-theme="dark"] th { color: #8B95AC !important; border-bottom-color: #262E42 !important; }
+        [data-theme="dark"] td { border-bottom-color: #212739 !important; }
+        [data-theme="dark"] tr:hover td { background: #1E2536 !important; }
       `}</style>
 
-      {/* Barre latérale — visible uniquement sur web/PC ; remplacée par la
-          barre de navigation du bas + le tiroir "Plus" sur mobile. */}
+      {/* Barre latérale — visible seulement sur web/PC ; sur mobile elle est
+          masquée (display:none) et remplacée par la barre du bas ci-dessous. */}
       <div className="app-sidebar" style={{ width: 220, background: "#152039", color: "#fff", padding: "22px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
         <div className="sidebar-brand" style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 8px 4px 8px" }}>
           <Logo size={32} />
@@ -2145,7 +1948,6 @@ function AppRoot() {
         {nav.map((n) => {
           const Icon = n.icon;
           const active = tab === n.id;
-          const badgeCount = n.id === "messagerie" ? dmUnreadTotal : 0;
           return (
             <button
               key={n.id}
@@ -2160,14 +1962,6 @@ function AppRoot() {
             >
               <Icon size={16} />
               {n.label}
-              {badgeCount > 0 && (
-                <span style={{
-                  marginLeft: "auto", background: "#C1554A", color: "#fff", borderRadius: 999,
-                  fontSize: 10.5, fontWeight: 700, padding: "1px 6px", minWidth: 17, textAlign: "center",
-                }}>
-                  {badgeCount > 99 ? "99+" : badgeCount}
-                </span>
-              )}
             </button>
           );
         })}
@@ -2200,116 +1994,101 @@ function AppRoot() {
         <div className="sidebar-footer" style={{ padding: "10px 8px 0 8px", fontSize: 11, color: "#6B7690" }}>Données partagées entre tous les postes</div>
       </div>
 
-      {/* Navigation mobile — barre fixe en bas (façon WhatsApp/Instagram) avec
-          les items les plus utilisés, et un bouton "Plus" pour le reste. */}
-      <div className="mobile-bottom-nav">
-        {mobilePrimary.map((n) => {
-          const Icon = n.icon;
-          const active = tab === n.id;
-          const badgeCount = n.id === "messagerie" ? dmUnreadTotal : 0;
-          return (
-            <button
-              key={n.id}
-              onClick={() => setTab(n.id)}
-              style={{
-                flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
-                padding: "6px 2px", border: "none", background: "transparent", cursor: "pointer",
-                color: active ? "#D9A441" : "#9AA6C2", position: "relative",
-              }}
-            >
-              <span style={{ position: "relative" }}>
-                <Icon size={20} />
-                {badgeCount > 0 && (
-                  <span style={{
-                    position: "absolute", top: -4, right: -7, background: "#C1554A", color: "#fff",
-                    borderRadius: 999, fontSize: 9.5, fontWeight: 700, padding: "1px 4px", minWidth: 14, textAlign: "center",
-                  }}>
-                    {badgeCount > 99 ? "99+" : badgeCount}
-                  </span>
-                )}
-              </span>
-              <span style={{ fontSize: 10, fontWeight: active ? 700 : 500, lineHeight: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 64 }}>
-                {n.label}
-              </span>
-            </button>
-          );
-        })}
-        {mobileMore.length > 0 && (
-          <button
-            onClick={() => setMobileMoreOpen(true)}
-            style={{
-              flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
-              padding: "6px 2px", border: "none", background: "transparent", cursor: "pointer", color: "#9AA6C2",
-            }}
-          >
-            <MoreHorizontal size={20} />
-            <span style={{ fontSize: 10, fontWeight: 500, lineHeight: 1 }}>Plus</span>
-          </button>
-        )}
-      </div>
-
-      {/* Tiroir "Plus" — le reste des sections, plus mode nuit/déconnexion sur mobile */}
-      <div className={`mobile-more-backdrop${mobileMoreOpen ? " open" : ""}`} onClick={() => setMobileMoreOpen(false)} />
-      <div className={`mobile-more-sheet${mobileMoreOpen ? " open" : ""}`}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 6px 10px 6px" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: darkMode ? "#E8EAF0" : "#1B2A4A" }}>Plus</div>
-          <button onClick={() => setMobileMoreOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "#8A93A3", padding: 4 }}>
-            <X size={18} />
-          </button>
-        </div>
-        {mobileMore.map((n) => {
-          const Icon = n.icon;
-          const active = tab === n.id;
-          const badgeCount = n.id === "messagerie" ? dmUnreadTotal : 0;
-          return (
-            <button
-              key={n.id}
-              onClick={() => { setTab(n.id); setMobileMoreOpen(false); }}
-              style={{
-                display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
-                padding: "12px 10px", borderRadius: 10, border: "none", cursor: "pointer",
-                background: active ? "#F4E9D3" : "transparent",
-                color: active ? "#1B2A4A" : (darkMode ? "#E8EAF0" : "#1B2A4A"),
-                fontSize: 14, fontWeight: active ? 700 : 500,
-              }}
-            >
-              <Icon size={18} color={active ? "#D9A441" : "#8A93A3"} />
-              {n.label}
-              {badgeCount > 0 && (
-                <span style={{
-                  marginLeft: "auto", background: "#C1554A", color: "#fff", borderRadius: 999,
-                  fontSize: 10.5, fontWeight: 700, padding: "1px 6px", minWidth: 17, textAlign: "center",
-                }}>
-                  {badgeCount > 99 ? "99+" : badgeCount}
-                </span>
+      {/* Barre de navigation du bas — mobile uniquement, façon WhatsApp
+          (icônes + libellé court, onglet actif surligné). Les 4 premières
+          sections vont directement en onglet ; s'il y en a plus, un onglet
+          "Plus" ouvre une feuille qui glisse depuis le bas avec le reste,
+          plus le mode nuit et la déconnexion (qui vivaient dans la barre
+          latérale, invisible sur mobile). */}
+      {(() => {
+        const mainTabs = nav.slice(0, 4);
+        const moreTabs = nav.slice(4);
+        const hasMore = moreTabs.length > 0;
+        return (
+          <>
+            <nav className="mobile-bottom-nav">
+              {mainTabs.map((n) => {
+                const Icon = n.icon;
+                const active = tab === n.id && !mobileMoreOpen;
+                return (
+                  <button
+                    key={n.id}
+                    onClick={() => { setTab(n.id); setMobileMoreOpen(false); }}
+                    style={{
+                      flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+                      background: "none", border: "none", cursor: "pointer", padding: "4px 2px",
+                      color: active ? "#D9A441" : "#8A93A3",
+                    }}
+                  >
+                    <Icon size={21} />
+                    <span style={{ fontSize: 10, fontWeight: active ? 700 : 500, textAlign: "center", lineHeight: 1.1 }}>{n.label}</span>
+                  </button>
+                );
+              })}
+              {hasMore && (
+                <button
+                  onClick={() => setMobileMoreOpen(true)}
+                  style={{
+                    flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+                    background: "none", border: "none", cursor: "pointer", padding: "4px 2px",
+                    color: mobileMoreOpen ? "#D9A441" : "#8A93A3",
+                  }}
+                >
+                  <Menu size={21} />
+                  <span style={{ fontSize: 10, fontWeight: mobileMoreOpen ? 700 : 500 }}>Plus</span>
+                </button>
               )}
-            </button>
-          );
-        })}
-        <div style={{ borderTop: darkMode ? "1px solid #2A3348" : "1px solid #F0F1F4", margin: "8px 0" }} />
-        <button
-          onClick={() => { setDarkMode((v) => !v); setMobileMoreOpen(false); }}
-          style={{
-            display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
-            padding: "12px 10px", borderRadius: 10, border: "none", cursor: "pointer",
-            background: "transparent", color: darkMode ? "#E8EAF0" : "#1B2A4A", fontSize: 14, fontWeight: 500,
-          }}
-        >
-          {darkMode ? <Sun size={18} color="#8A93A3" /> : <MoonStar size={18} color="#8A93A3" />}
-          {darkMode ? "Mode clair" : "Mode nuit"}
-        </button>
-        <button
-          onClick={handleLogout}
-          style={{
-            display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
-            padding: "12px 10px", borderRadius: 10, border: "none", cursor: "pointer",
-            background: "transparent", color: "#C1554A", fontSize: 14, fontWeight: 600,
-          }}
-        >
-          <LogOut size={18} />
-          Déconnexion
-        </button>
-      </div>
+            </nav>
+
+            <div className={`mobile-more-backdrop${mobileMoreOpen ? " open" : ""}`} onClick={() => setMobileMoreOpen(false)} />
+            <div className={`mobile-more-sheet${mobileMoreOpen ? " open" : ""}`}>
+              <div style={{ width: 40, height: 4, borderRadius: 999, background: "#DDE1E8", margin: "4px auto 10px auto" }} />
+              {moreTabs.map((n) => {
+                const Icon = n.icon;
+                const active = tab === n.id;
+                return (
+                  <button
+                    key={n.id}
+                    onClick={() => { setTab(n.id); setMobileMoreOpen(false); }}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
+                      padding: "13px 14px", borderRadius: 10, border: "none", cursor: "pointer",
+                      background: active ? "rgba(217,164,65,0.12)" : "transparent", color: active ? "#B9860F" : (darkMode ? "#D6DAE4" : "#1B2A4A"),
+                      fontSize: 14.5, fontWeight: active ? 700 : 500,
+                    }}
+                  >
+                    <Icon size={19} />
+                    {n.label}
+                  </button>
+                );
+              })}
+              {moreTabs.length > 0 && <div style={{ height: 1, background: "#EEF0F4", margin: "6px 4px" }} />}
+              <button
+                onClick={() => { setDarkMode((v) => !v); setMobileMoreOpen(false); }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
+                  padding: "13px 14px", borderRadius: 10, border: "none", cursor: "pointer",
+                  background: "transparent", color: darkMode ? "#D6DAE4" : "#1B2A4A", fontSize: 14.5, fontWeight: 500,
+                }}
+              >
+                {darkMode ? <Sun size={19} /> : <MoonStar size={19} />}
+                {darkMode ? "Mode clair" : "Mode nuit"}
+              </button>
+              <button
+                onClick={handleLogout}
+                style={{
+                  display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
+                  padding: "13px 14px", borderRadius: 10, border: "none", cursor: "pointer",
+                  background: "transparent", color: "#C1554A", fontSize: 14.5, fontWeight: 600,
+                }}
+              >
+                <LogOut size={19} />
+                Déconnexion
+              </button>
+            </div>
+          </>
+        );
+      })()}
 
       {/* Contenu principal */}
       <div className="app-main" style={{ flex: 1, padding: "0 30px 26px 30px", overflowY: "auto", minWidth: 0 }}>
@@ -2412,7 +2191,7 @@ function AppRoot() {
           <Caisse vendors={vendors} day={day} setDay={persistDay} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} daysList={daysList} today={today} currentUser={currentUser} />
         )}
         {tab === "messagerie" && (
-          <Messagerie currentUser={currentUser} vendors={vendors} soundEnabled={soundEnabled} onUnreadChange={refreshDmUnreadTotal} />
+          <Messagerie currentUser={currentUser} vendors={vendors} />
         )}
         {tab === "rapports" && canManage && (
           <Rapports vendors={vendors} products={products} daysList={daysList} today={today} day={day} />
@@ -6278,7 +6057,7 @@ function timeShort(iso) {
 
 const ROLE_GROUP_LABEL = { admin: "Administrateurs", manager: "Gestionnaires", vendor: "Vendeurs", messenger: "Agents messagerie" };
 
-function Messagerie({ currentUser, vendors = [], soundEnabled = true, onUnreadChange }) {
+function Messagerie({ currentUser, vendors = [] }) {
   const { showToast } = useToast();
   const [users, setUsers] = useState(null);
   const [selectedUserId, setSelectedUserId] = useState(null);
@@ -6297,7 +6076,6 @@ function Messagerie({ currentUser, vendors = [], soundEnabled = true, onUnreadCh
     setUsers(u);
     setUnreadCounts(counts);
     if (!selectedUserId && u.length > 0) setSelectedUserId(u[0].id);
-    if (onUnreadChange) onUnreadChange();
   };
 
   useEffect(() => { reloadDirectory(); }, []);
@@ -6317,35 +6095,14 @@ function Messagerie({ currentUser, vendors = [], soundEnabled = true, onUnreadCh
       reloadDirectory();
     };
     load();
-    // Filet de sécurité si la connexion temps réel ci-dessous venait à se
-    // couper — l'abonnement realtime fait déjà le travail dans le cas normal.
     const interval = setInterval(async () => {
       if (!conversationId) return;
       const msgs = await store.getDMMessages(conversationId);
       if (!cancelled) setMessages(msgs);
-    }, 20000);
+    }, 8000);
     return () => { cancelled = true; clearInterval(interval); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedUserId]);
-
-  // Réception en temps réel, façon WhatsApp/Messenger : le message apparaît
-  // instantanément dans le fil ouvert (sans attendre le prochain sondage),
-  // avec un petit son — et met à jour la pastille "non lus" du contact
-  // concerné dans l'annuaire, qu'il s'agisse ou non de la conversation
-  // actuellement ouverte.
-  useEffect(() => {
-    const unsubscribe = store.subscribeToDMMessages((m) => {
-      if (m.senderId === currentUser.id) return; // mes propres messages envoyés (déjà affichés à l'envoi)
-      if (m.conversationId === conversationId) {
-        setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
-        store.markDMMessagesRead(m.conversationId, currentUser.id).catch(() => {});
-      }
-      if (soundEnabled) playNotificationSound();
-      reloadDirectory();
-    });
-    return unsubscribe;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, currentUser.id, soundEnabled]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
