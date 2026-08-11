@@ -345,9 +345,27 @@ export async function addProduct({ nom, prix, stock, categorie }) {
   if (error) throw error;
 }
 
+// @deprecated — écrit une valeur ABSOLUE calculée côté client. En cas
+// d'utilisation simultanée depuis deux appareils, le dernier appel écrase
+// silencieusement le mouvement de stock de l'autre (perte de stock).
+// Utiliser adjustProductStock ci-dessous, qui applique une variation de
+// façon atomique directement en base.
 export async function updateProductStock(id, stock) {
   const { error } = await supabase.from("products").update({ stock }).eq("id", id);
   if (error) throw error;
+}
+
+// Applique une variation de stock (positive ou négative) de façon atomique
+// via la fonction Postgres adjust_product_stock (voir migration SQL) :
+// "stock = stock + delta" est calculé en une seule opération en base, donc
+// deux appareils qui distribuent/retournent du stock en même temps
+// s'additionnent correctement au lieu de s'écraser l'un l'autre. Renvoie
+// le nouveau stock réel (tel que calculé par la base, pas côté client).
+export async function adjustProductStock(id, delta) {
+  if (!delta) return null;
+  const { data, error } = await supabase.rpc("adjust_product_stock", { p_id: id, p_delta: delta });
+  if (error) throw error;
+  return data;
 }
 
 export async function updateProductCategorie(id, categorie) {

@@ -1359,6 +1359,7 @@ function AppRoot() {
     for (const action of queue) {
       try {
         if (action.type === "addProduct") await store.addProduct(action.payload);
+        else if (action.type === "adjustProductStock") await store.adjustProductStock(action.payload.id, action.payload.delta);
         else if (action.type === "updateProductStock") await store.updateProductStock(action.payload.id, action.payload.stock);
         else if (action.type === "deleteProduct") await store.deleteProduct(action.payload.id);
         else if (action.type === "setDay") await store.setDay(action.payload);
@@ -1537,7 +1538,10 @@ function AppRoot() {
     if (!offline.isOnline()) {
       for (const p of next) {
         if (!prevById[p.id]) offline.enqueue({ type: "addProduct", payload: { nom: p.nom, prix: p.prix, stock: p.stock, categorie: p.categorie } });
-        else if (prevById[p.id].stock !== p.stock) offline.enqueue({ type: "updateProductStock", payload: { id: p.id, stock: p.stock } });
+        // On met en file la VARIATION de stock (delta), pas la valeur absolue :
+        // rejouée plus tard via adjustProductStock, elle s'additionne correctement
+        // au stock réel du moment au lieu de l'écraser (voir persistProducts).
+        else if (prevById[p.id].stock !== p.stock) offline.enqueue({ type: "adjustProductStock", payload: { id: p.id, delta: p.stock - prevById[p.id].stock } });
       }
       for (const p of products) {
         if (!next.find((x) => x.id === p.id)) offline.enqueue({ type: "deleteProduct", payload: { id: p.id } });
@@ -1551,8 +1555,19 @@ function AppRoot() {
           await store.addProduct({ nom: p.nom, prix: p.prix, stock: p.stock, categorie: p.categorie });
           store.logActivity(currentUser, "add_product", `Produit ajouté : ${p.nom} (stock initial ${p.stock}, prix ${p.prix} FCFA).`);
         } else if (prevById[p.id].stock !== p.stock) {
-          await store.updateProductStock(p.id, p.stock);
-          store.logActivity(currentUser, "update_product_stock", `Stock de ${p.nom} modifié : ${prevById[p.id].stock} → ${p.stock}.`);
+          // Écriture atomique de la variation en base (stock = stock + delta)
+          // au lieu d'écraser avec une valeur absolue calculée côté client :
+          // deux appareils qui touchent au même produit en même temps
+          // s'additionnent correctement au lieu de s'effacer l'un l'autre.
+          const delta = p.stock - prevById[p.id].stock;
+          await store.adjustProductStock(p.id, delta);
+          store.logActivity(currentUser, "update_product_stock", `Stock de ${p.nom} modifié : ${prevById[p.id].stock} → ${p.stock} (${delta > 0 ? "+" : ""}${delta}).`);
+        } else if (prevById[p.id].prix !== p.prix) {
+          await store.updateProductPrix(p.id, p.prix);
+          store.logActivity(currentUser, "update_product_price", `Prix de ${p.nom} modifié : ${prevById[p.id].prix} → ${p.prix} FCFA.`);
+        } else if (prevById[p.id].categorie !== p.categorie) {
+          await store.updateProductCategorie(p.id, p.categorie);
+          store.logActivity(currentUser, "update_product_categorie", `Catégorie de ${p.nom} modifiée : ${prevById[p.id].categorie} → ${p.categorie}.`);
         }
       }
       for (const p of products) {
@@ -1561,6 +1576,8 @@ function AppRoot() {
           store.logActivity(currentUser, "delete_product", `Produit supprimé : ${p.nom}.`);
         }
       }
+      // On recharge depuis la base : reflète le stock réel après application
+      // atomique du delta (utile si un autre appareil a aussi écrit entre-temps).
       const fresh = await store.getProducts();
       setProducts(fresh);
       offline.cacheSet("products", fresh);
@@ -1574,9 +1591,16 @@ function AppRoot() {
     setDay(next);
     offline.cacheSet("day:" + next.date, next);
     if (!offline.isOnline()) {
-      const q = offline.getQueue().filter((a) => !(a.type === "setDay" && a.payload?.date === next.date));
-      q.push({ id: Math.random().toString(36).slice(2, 10), createdAt: Date.now(), type: "setDay", payload: next });
-      localStorage.setItem("z2t_offline_queue", JSON.stringify(q));
+      // Un seul "setDay" en attente par date : on retire l'ancien avant
+      // d'empiler le nouveau (sinon on rejouerait plusieurs versions
+      // obsolètes du même jour au retour du réseau). On passe uniquement
+      // par les fonctions publiques du module offline (comme partout
+      // ailleurs dans ce fichier), pour ne pas dupliquer sa logique interne
+      // de queue avec un accès localStorage direct qui pourrait diverger.
+      offline.getQueue()
+        .filter((a) => a.type === "setDay" && a.payload?.date === next.date)
+        .forEach((a) => offline.dequeue(a.id));
+      offline.enqueue({ type: "setDay", payload: next });
       setQueueCount(offline.queueLength());
       return;
     }
@@ -2587,6 +2611,7 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
   const [stock, setStock] = useState("");
   const [categorie, setCategorie] = useState("");
   const [catEdits, setCatEdits] = useState({});
+  const [prixEdits, setPrixEdits] = useState({});
 
   const categoriesExistantes = Array.from(new Set(products.map((p) => p.categorie).filter(Boolean)));
 
@@ -2622,6 +2647,26 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
     const p = products.find((pp) => pp.id === id);
     store.logActivity(currentUser, "update_product_category", `Catégorie de ${p ? p.nom : id} changée : ${value}.`);
     setCatEdits((c) => { const n = { ...c }; delete n[id]; return n; });
+    if (reloadProducts) await reloadProducts();
+  };
+
+  const savePrix = async (id) => {
+    const raw = prixEdits[id];
+    if (raw === undefined) return;
+    const p = products.find((pp) => pp.id === id);
+    const prixNum = Number(raw);
+    if (raw === "" || Number.isNaN(prixNum) || prixNum <= 0) {
+      showToast("Le prix unitaire doit être un nombre positif.", "error");
+      setPrixEdits((c) => { const n = { ...c }; delete n[id]; return n; });
+      return;
+    }
+    if (p && prixNum === Number(p.prix)) {
+      setPrixEdits((c) => { const n = { ...c }; delete n[id]; return n; });
+      return;
+    }
+    await store.updateProductPrix(id, prixNum);
+    store.logActivity(currentUser, "update_product_price", `Prix de ${p ? p.nom : id} modifié : ${p ? fmtMoney(p.prix) : ""} → ${fmtMoney(prixNum)}.`);
+    setPrixEdits((c) => { const n = { ...c }; delete n[id]; return n; });
     if (reloadProducts) await reloadProducts();
   };
 
@@ -2669,7 +2714,15 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
                   style={{ minWidth: 130 }}
                 />
               </div>,
-              fmtMoney(p.prix), p.stock,
+              <TextInput
+                key="pr"
+                type="number"
+                value={prixEdits[p.id] !== undefined ? prixEdits[p.id] : String(p.prix)}
+                onChange={(e) => setPrixEdits((c) => ({ ...c, [p.id]: e.target.value }))}
+                onBlur={() => savePrix(p.id)}
+                style={{ width: 100 }}
+              />,
+              p.stock,
               <button key="del" onClick={() => remove(p.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
             ])}
           />
@@ -5302,6 +5355,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
   const [correctionId, setCorrectionId] = useState(null);
   const [correctionInputs, setCorrectionInputs] = useState({});
   const [correcting, setCorrecting] = useState(null); // id de la ligne en cours de correction (anti double-clic)
+  const [versementSubmitting, setVersementSubmitting] = useState(false); // anti double-clic sur "Enregistrer le versement"
 
   const vendor = isAdmin ? activeVendors.find((v) => v.id === selectedVendorId) : activeVendor;
 
@@ -5484,17 +5538,25 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
 
   const enregistrerVersement = async () => {
     if (!isAdmin) return;
+    // Anti double-clic : un second appel pendant l'écriture du premier
+    // dupliquait l'entrée dans le journal d'activité pour le même versement.
+    if (versementSubmitting) return;
     const montant = Number(montantVerseInput);
     if (Number.isNaN(montant) || montantVerseInput === "") return;
     if (montant < 0) {
       showToast("Le montant versé en espèces ne peut pas être négatif.", "error");
       return;
     }
-    const versements = { ...(day.versements || {}) };
-    const current = versements[vendor.id] || { mobilePayments: [], montantVerseEspeces: null };
-    versements[vendor.id] = { ...current, montantVerseEspeces: montant, validePar: currentUser?.username || null, heureVersement: nowHHMM() };
-    await setDay({ ...day, versements });
-    store.logActivity(currentUser, "enregistrer_versement", `Versement en espèces de ${montant} FCFA enregistré pour ${vendor.nom}.`);
+    setVersementSubmitting(true);
+    try {
+      const versements = { ...(day.versements || {}) };
+      const current = versements[vendor.id] || { mobilePayments: [], montantVerseEspeces: null };
+      versements[vendor.id] = { ...current, montantVerseEspeces: montant, validePar: currentUser?.username || null, heureVersement: nowHHMM() };
+      await setDay({ ...day, versements });
+      store.logActivity(currentUser, "enregistrer_versement", `Versement en espèces de ${montant} FCFA enregistré pour ${vendor.nom}.`);
+    } finally {
+      setVersementSubmitting(false);
+    }
   };
 
   return (
@@ -5684,7 +5746,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
                 <Label>Montant réellement remis en espèces</Label>
                 <TextInput type="number" value={montantVerseInput} onChange={(e) => setMontantVerseInput(e.target.value)} placeholder="0" />
               </div>
-              <Button onClick={enregistrerVersement}>Enregistrer le versement</Button>
+              <Button onClick={enregistrerVersement} disabled={versementSubmitting}>Enregistrer le versement</Button>
             </div>
           ) : (
             !summary.finalise && <div style={{ fontSize: 12.5, color: "#8A93A3", fontStyle: "italic" }}>En attente de saisie du versement par l'administration.</div>
