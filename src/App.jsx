@@ -1884,7 +1884,7 @@ function AppRoot() {
         .mobile-bottom-nav { display: none; }
         .mobile-more-backdrop { display: none; }
         @media (max-width: 860px) {
-          .app-sidebar { display: none; }
+          .app-sidebar { display: none !important; }
           .app-main { margin-left: 0; padding-left: 14px !important; padding-right: 14px !important; padding-bottom: 82px !important; }
           .mobile-bottom-nav {
             display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
