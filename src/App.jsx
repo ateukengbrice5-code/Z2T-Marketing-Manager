@@ -4,6 +4,7 @@ import {
   Plus, Trash2, CheckCircle2, AlertTriangle, ChevronRight, ChevronDown, ChevronLeft,
   Store, LogOut, Smartphone, Trophy, TrendingUp, ArrowDownToLine, RotateCcw, Eye, EyeOff, Pencil, Sun,
   MessageSquare, Send, X, Link2, Cake, Camera, FileText, Printer, Bell, PartyPopper, Menu, UserCircle, ClipboardList, Newspaper,
+  PackageX, UserX,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Cell } from "recharts";
 import * as store from "./lib/store.js";
@@ -904,6 +905,21 @@ const PALIER_ORDER = ["minimal", "maximal", "extraordinaire"];
 const PALIER_LABELS = { minimal: "Objectif minimal", maximal: "Objectif maximal", extraordinaire: "Objectif extraordinaire" };
 const PALIER_COLORS = { minimal: "#C1554A", maximal: "#D9A441", extraordinaire: "#3F8361" };
 
+// Types de notification traités comme des "alertes intelligentes" côté
+// administration (par opposition aux notifications purement informatives).
+// Voir migration_alertes_intelligentes.sql pour les triggers qui créent
+// automatiquement stock_bas / stock_rupture / retrait_inhabituel, et
+// enregistrerVersement (Retour du soir) pour ecart_caisse.
+const ADMIN_ALERT_TYPES = new Set(["pointage", "stock_bas", "stock_rupture", "retrait_inhabituel", "ecart_caisse", "pointage_manquant"]);
+const ALERT_TYPE_ICONS = {
+  stock_bas: { Icon: PackageX, color: "#D9A441" },
+  stock_rupture: { Icon: PackageX, color: "#C1554A" },
+  retrait_inhabituel: { Icon: AlertTriangle, color: "#C1554A" },
+  ecart_caisse: { Icon: AlertTriangle, color: "#D9A441" },
+  pointage_manquant: { Icon: UserX, color: "#C1554A" },
+  pointage: { Icon: CheckCircle2, color: "#3F9C6D" },
+};
+
 // Calcule, pour un CA donné et des seuils donnés, la liste des paliers
 // atteints (seuils > 0 uniquement — un seuil à 0 est considéré "non défini").
 function reachedPaliers(ca, objectifs) {
@@ -1229,7 +1245,7 @@ function AdminAchievementBell({ achievements, pointageNotifications, onMarkSeen,
           position: "relative", background: "#fff", border: "1px solid #E7E9EE", borderRadius: 10,
           width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#1B2A4A",
         }}
-        title="Notifications (paliers atteints, pointage…)"
+        title="Notifications (paliers atteints, alertes stock, pointage…)"
       >
         <Bell size={17} />
         {items.length > 0 && (
@@ -1280,7 +1296,10 @@ function AdminAchievementBell({ achievements, pointageNotifications, onMarkSeen,
                   onClick={() => onMarkPointageSeen(item.id)}
                   style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 14px", borderBottom: "1px solid #F5F6F8", cursor: "pointer" }}
                 >
-                  <CheckCircle2 size={15} color="#3F9C6D" style={{ marginTop: 2, flexShrink: 0 }} />
+                  {(() => {
+                    const { Icon, color } = ALERT_TYPE_ICONS[item.data.type] || { Icon: CheckCircle2, color: "#3F9C6D" };
+                    return <Icon size={15} color={color} style={{ marginTop: 2, flexShrink: 0 }} />;
+                  })()}
                   <div style={{ fontSize: 13, color: "#1B2A4A" }}>{item.data.message}</div>
                 </div>
               )
@@ -1505,7 +1524,8 @@ function AppRoot() {
 
   // Rafraîchit périodiquement les notifications (pointage, retraits…) pour
   // que le vendeur concerné et tous les admins voient les évènements récents
-  // sans avoir à recharger la page.
+  // sans avoir à recharger la page. Reste en place comme filet de sécurité
+  // si la connexion temps réel ci-dessous venait à se couper.
   useEffect(() => {
     if (!currentUser || currentUser.blocked || !online) return;
     const reload = async () => {
@@ -1515,11 +1535,31 @@ function AppRoot() {
     return () => clearInterval(id);
   }, [currentUser, online]);
 
+  // Alertes intelligentes en temps réel : dès qu'une notification est
+  // insérée en base (stock bas/rupture, retrait inhabituel, écart de
+  // caisse, pointage manquant…), elle apparaît instantanément ici — sans
+  // attendre le prochain passage du polling ci-dessus — et un toast prévient
+  // l'administrateur immédiatement, même s'il est sur un autre onglet de l'app.
+  useEffect(() => {
+    if (!currentUser || currentUser.blocked || !online) return;
+    const unsubscribe = store.subscribeToNotifications((n) => {
+      setNotifications((prev) => (prev.some((x) => x.id === n.id) ? prev : [n, ...prev]));
+      const estPourMoi = canSeeAchievements ? !n.vendorId || ADMIN_ALERT_TYPES.has(n.type) : n.vendorId === currentVendor?.id;
+      if (estPourMoi && ADMIN_ALERT_TYPES.has(n.type)) {
+        showToast(n.message, n.type === "stock_rupture" || n.type === "retrait_inhabituel" ? "warning" : "info", 8000);
+      }
+    });
+    return unsubscribe;
+  }, [currentUser, online, canSeeAchievements, currentVendor]);
+
   const markNotificationSeenByAdmin = async (id) => {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, seenByAdmin: true } : n)));
     try { await store.markNotificationSeenByAdmin(id); } catch (e) { console.error("Impossible de marquer la notification comme vue", e); }
   };
-  const unseenPointage = canSeeAchievements ? notifications.filter((n) => n.type === "pointage" && !n.seenByAdmin) : [];
+  // Toutes les alertes "intelligentes" destinées à l'administration (au-delà
+  // du seul pointage) : stock bas/rupture, retrait inhabituel, écart de
+  // caisse, pointage manquant.
+  const unseenPointage = canSeeAchievements ? notifications.filter((n) => ADMIN_ALERT_TYPES.has(n.type) && !n.seenByAdmin) : [];
 
   const persistObjectives = async (next) => {
     setObjectives(next);
@@ -2612,6 +2652,7 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
   const [categorie, setCategorie] = useState("");
   const [catEdits, setCatEdits] = useState({});
   const [prixEdits, setPrixEdits] = useState({});
+  const [seuilEdits, setSeuilEdits] = useState({});
 
   const categoriesExistantes = Array.from(new Set(products.map((p) => p.categorie).filter(Boolean)));
 
@@ -2670,6 +2711,26 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
     if (reloadProducts) await reloadProducts();
   };
 
+  const saveSeuil = async (id) => {
+    const raw = seuilEdits[id];
+    if (raw === undefined) return;
+    const p = products.find((pp) => pp.id === id);
+    const seuilNum = Number(raw);
+    if (raw === "" || Number.isNaN(seuilNum) || seuilNum < 0) {
+      showToast("Le seuil d'alerte doit être un nombre positif ou nul.", "error");
+      setSeuilEdits((c) => { const n = { ...c }; delete n[id]; return n; });
+      return;
+    }
+    if (p && seuilNum === Number(p.seuilAlerte)) {
+      setSeuilEdits((c) => { const n = { ...c }; delete n[id]; return n; });
+      return;
+    }
+    await store.updateProductSeuilAlerte(id, seuilNum);
+    store.logActivity(currentUser, "update_product_seuil_alerte", `Seuil d'alerte de ${p ? p.nom : id} modifié : ${p ? p.seuilAlerte : ""} → ${seuilNum}.`);
+    setSeuilEdits((c) => { const n = { ...c }; delete n[id]; return n; });
+    if (reloadProducts) await reloadProducts();
+  };
+
   return (
     <div>
       <Card title="Ajouter un produit">
@@ -2702,7 +2763,7 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
           <EmptyState text="Aucun produit pour le moment. Ajoute ton premier produit ci-dessus." />
         ) : (
           <Table
-            headers={["Produit", "Catégorie", "Prix unitaire", "Stock actuel", ""]}
+            headers={["Produit", "Catégorie", "Prix unitaire", "Stock actuel", "Seuil d'alerte", ""]}
             rows={products.map((p) => [
               p.nom,
               <div key="c" style={{ display: "flex", gap: 6 }}>
@@ -2723,6 +2784,14 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
                 style={{ width: 100 }}
               />,
               p.stock,
+              <TextInput
+                key="se"
+                type="number"
+                value={seuilEdits[p.id] !== undefined ? seuilEdits[p.id] : String(p.seuilAlerte ?? 5)}
+                onChange={(e) => setSeuilEdits((c) => ({ ...c, [p.id]: e.target.value }))}
+                onBlur={() => saveSeuil(p.id)}
+                style={{ width: 80 }}
+              />,
               <button key="del" onClick={() => remove(p.id)} style={iconBtnStyle}><Trash2 size={15} /></button>,
             ])}
           />
@@ -5552,8 +5621,27 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
       const versements = { ...(day.versements || {}) };
       const current = versements[vendor.id] || { mobilePayments: [], montantVerseEspeces: null };
       versements[vendor.id] = { ...current, montantVerseEspeces: montant, validePar: currentUser?.username || null, heureVersement: nowHHMM() };
-      await setDay({ ...day, versements });
+      const dayApres = { ...day, versements };
+      await setDay(dayApres);
       store.logActivity(currentUser, "enregistrer_versement", `Versement en espèces de ${montant} FCFA enregistré pour ${vendor.nom}.`);
+
+      // Alerte écart de caisse : si le montant versé s'écarte trop de ce qui
+      // était attendu (au-delà de 2000 FCFA ou de 10% du montant attendu, le
+      // plus grand des deux), on prévient l'administration en temps réel —
+      // seuils ajustables ici si besoin.
+      const { montantAVerserEspeces, ecart } = computeVersementSummary(dayApres, vendor.id);
+      const seuilEcart = Math.max(2000, montantAVerserEspeces * 0.1);
+      if (Math.abs(ecart) >= seuilEcart) {
+        const sens = ecart > 0 ? "excédent" : "manque";
+        try {
+          await store.createNotification({
+            vendorId: vendor.id,
+            message: `Écart de caisse pour ${vendor.nom} : ${sens} de ${fmtMoney(Math.abs(ecart))} (attendu ${fmtMoney(montantAVerserEspeces)}, versé ${fmtMoney(montant)}).`,
+            type: "ecart_caisse",
+            seenByAdmin: false,
+          });
+        } catch (err) { console.error("Notification d'écart de caisse impossible", err); }
+      }
     } finally {
       setVersementSubmitting(false);
     }

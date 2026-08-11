@@ -337,11 +337,16 @@ export async function getAllConversations() {
 export async function getProducts() {
   const { data, error } = await supabase.from("products").select("*").order("nom");
   if (error) throw error;
-  return (data || []).map((p) => ({ id: p.id, nom: p.nom, prix: Number(p.prix), stock: p.stock, categorie: p.categorie || "Général" }));
+  return (data || []).map((p) => ({ id: p.id, nom: p.nom, prix: Number(p.prix), stock: p.stock, categorie: p.categorie || "Général", seuilAlerte: p.seuil_alerte ?? 5 }));
 }
 
-export async function addProduct({ nom, prix, stock, categorie }) {
-  const { error } = await supabase.from("products").insert({ nom, prix, stock, categorie: (categorie || "").trim() || "Général" });
+export async function addProduct({ nom, prix, stock, categorie, seuilAlerte }) {
+  const { error } = await supabase.from("products").insert({ nom, prix, stock, categorie: (categorie || "").trim() || "Général", seuil_alerte: seuilAlerte ?? 5 });
+  if (error) throw error;
+}
+
+export async function updateProductSeuilAlerte(id, seuil) {
+  const { error } = await supabase.from("products").update({ seuil_alerte: seuil }).eq("id", id);
   if (error) throw error;
 }
 
@@ -546,6 +551,30 @@ export async function markNotificationRead(id) {
 export async function markNotificationSeenByAdmin(id) {
   const { error } = await supabase.from("notifications").update({ seen_by_admin: true }).eq("id", id);
   if (error) throw error;
+}
+
+// Pousse instantanément toute nouvelle ligne insérée dans "notifications"
+// (alertes de stock bas, retrait inhabituel, écart de caisse, pointage…),
+// sans attendre le prochain rafraîchissement périodique. Nécessite que la
+// table "notifications" soit ajoutée à la publication Realtime de Supabase
+// (voir migration_alertes_intelligentes.sql). Renvoie une fonction à
+// appeler pour se désabonner (à faire au démontage du composant).
+export function subscribeToNotifications(onInsert) {
+  const channel = supabase
+    .channel("notifications-realtime")
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "notifications" },
+      (payload) => {
+        const n = payload.new;
+        onInsert({
+          id: n.id, vendorId: n.vendor_id, message: n.message, read: n.read, createdAt: n.created_at,
+          type: n.type || "general", seenByAdmin: n.seen_by_admin,
+        });
+      }
+    )
+    .subscribe();
+  return () => { supabase.removeChannel(channel); };
 }
 
 // -----------------------------------------------------------------------------
