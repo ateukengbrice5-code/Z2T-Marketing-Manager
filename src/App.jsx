@@ -1610,6 +1610,38 @@ function AppRoot() {
     return unsubscribe;
   }, [currentUser, online, canSeeAchievements, currentVendor, soundEnabled]);
 
+  // Messagerie — pastille "non lus" sur l'onglet Messagerie, visible depuis
+  // n'importe quel onglet de l'app (comme le badge de l'icône de discussion
+  // sur WhatsApp/Messenger).
+  const [dmUnreadTotal, setDmUnreadTotal] = useState(0);
+  const refreshDmUnreadTotal = useCallback(async () => {
+    if (!currentUser) return;
+    try {
+      const counts = await store.getDMUnreadCounts();
+      setDmUnreadTotal(Object.values(counts).reduce((s, n) => s + n, 0));
+    } catch (e) { console.error("Impossible de charger les messages non lus", e); }
+  }, [currentUser]);
+  useEffect(() => { refreshDmUnreadTotal(); }, [refreshDmUnreadTotal]);
+
+  // Messages directs en temps réel, même hors de l'onglet Messagerie : la
+  // pastille se met à jour instantanément et un toast + son préviennent
+  // l'utilisateur d'un nouveau message — sauf s'il est déjà en train de
+  // discuter (l'aperçu instantané dans le fil suffit alors, pas besoin
+  // d'un doublon). Le composant Messagerie a son propre abonnement pour
+  // faire apparaître le message dans le fil ouvert et jouer le son dans ce cas.
+  useEffect(() => {
+    if (!currentUser || currentUser.blocked || !online) return;
+    const unsubscribe = store.subscribeToDMMessages((m) => {
+      if (m.senderId === currentUser.id) return; // mes propres messages envoyés
+      refreshDmUnreadTotal();
+      if (tab !== "messagerie") {
+        showToast(`Nouveau message de ${m.senderUsername} : ${m.content.slice(0, 60)}`, "info", 8000);
+        if (soundEnabled) playNotificationSound();
+      }
+    });
+    return unsubscribe;
+  }, [currentUser, online, tab, soundEnabled, refreshDmUnreadTotal]);
+
   const markNotificationSeenByAdmin = async (id) => {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, seenByAdmin: true } : n)));
     try { await store.markNotificationSeenByAdmin(id); } catch (e) { console.error("Impossible de marquer la notification comme vue", e); }
@@ -1932,6 +1964,7 @@ function AppRoot() {
         {nav.map((n) => {
           const Icon = n.icon;
           const active = tab === n.id;
+          const badgeCount = n.id === "messagerie" ? dmUnreadTotal : 0;
           return (
             <button
               key={n.id}
@@ -1946,6 +1979,14 @@ function AppRoot() {
             >
               <Icon size={16} />
               {n.label}
+              {badgeCount > 0 && (
+                <span style={{
+                  marginLeft: "auto", background: "#C1554A", color: "#fff", borderRadius: 999,
+                  fontSize: 10.5, fontWeight: 700, padding: "1px 6px", minWidth: 17, textAlign: "center",
+                }}>
+                  {badgeCount > 99 ? "99+" : badgeCount}
+                </span>
+              )}
             </button>
           );
         })}
@@ -2086,7 +2127,7 @@ function AppRoot() {
           <Caisse vendors={vendors} day={day} setDay={persistDay} withdrawals={withdrawals} setWithdrawals={persistWithdrawals} notifications={notifications} setNotifications={persistNotifications} daysList={daysList} today={today} currentUser={currentUser} />
         )}
         {tab === "messagerie" && (
-          <Messagerie currentUser={currentUser} vendors={vendors} />
+          <Messagerie currentUser={currentUser} vendors={vendors} soundEnabled={soundEnabled} onUnreadChange={refreshDmUnreadTotal} />
         )}
         {tab === "rapports" && canManage && (
           <Rapports vendors={vendors} products={products} daysList={daysList} today={today} day={day} />
@@ -5952,7 +5993,7 @@ function timeShort(iso) {
 
 const ROLE_GROUP_LABEL = { admin: "Administrateurs", manager: "Gestionnaires", vendor: "Vendeurs", messenger: "Agents messagerie" };
 
-function Messagerie({ currentUser, vendors = [] }) {
+function Messagerie({ currentUser, vendors = [], soundEnabled = true, onUnreadChange }) {
   const { showToast } = useToast();
   const [users, setUsers] = useState(null);
   const [selectedUserId, setSelectedUserId] = useState(null);
@@ -5971,6 +6012,7 @@ function Messagerie({ currentUser, vendors = [] }) {
     setUsers(u);
     setUnreadCounts(counts);
     if (!selectedUserId && u.length > 0) setSelectedUserId(u[0].id);
+    if (onUnreadChange) onUnreadChange();
   };
 
   useEffect(() => { reloadDirectory(); }, []);
@@ -5990,14 +6032,35 @@ function Messagerie({ currentUser, vendors = [] }) {
       reloadDirectory();
     };
     load();
+    // Filet de sécurité si la connexion temps réel ci-dessous venait à se
+    // couper — l'abonnement realtime fait déjà le travail dans le cas normal.
     const interval = setInterval(async () => {
       if (!conversationId) return;
       const msgs = await store.getDMMessages(conversationId);
       if (!cancelled) setMessages(msgs);
-    }, 8000);
+    }, 20000);
     return () => { cancelled = true; clearInterval(interval); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedUserId]);
+
+  // Réception en temps réel, façon WhatsApp/Messenger : le message apparaît
+  // instantanément dans le fil ouvert (sans attendre le prochain sondage),
+  // avec un petit son — et met à jour la pastille "non lus" du contact
+  // concerné dans l'annuaire, qu'il s'agisse ou non de la conversation
+  // actuellement ouverte.
+  useEffect(() => {
+    const unsubscribe = store.subscribeToDMMessages((m) => {
+      if (m.senderId === currentUser.id) return; // mes propres messages envoyés (déjà affichés à l'envoi)
+      if (m.conversationId === conversationId) {
+        setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
+        store.markDMMessagesRead(m.conversationId, currentUser.id).catch(() => {});
+      }
+      if (soundEnabled) playNotificationSound();
+      reloadDirectory();
+    });
+    return unsubscribe;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, currentUser.id, soundEnabled]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;

@@ -301,6 +301,32 @@ export async function deleteDMMessage(id) {
   if (error) throw error;
 }
 
+// Pousse instantanément tout nouveau message de messagerie directe dès son
+// insertion en base, façon WhatsApp/Messenger — sans attendre le prochain
+// sondage périodique. Nécessite que la table "dm_messages" soit ajoutée à
+// la publication Realtime de Supabase (Database > Replication), comme
+// "notifications" pour les alertes intelligentes. La RLS de "dm_messages"
+// limite déjà la lecture aux conversations de l'utilisateur connecté, donc
+// ce flux ne renvoie que les messages qui le concernent.
+export function subscribeToDMMessages(onInsert) {
+  const channel = supabase
+    .channel("dm-messages-realtime")
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "dm_messages" },
+      (payload) => {
+        const m = payload.new;
+        onInsert({
+          id: m.id, conversationId: m.conversation_id, senderId: m.sender_id, senderUsername: m.sender_username,
+          content: m.content, read: m.read, createdAt: m.created_at, editedAt: m.edited_at, deletedAt: m.deleted_at,
+          attachmentUrl: m.attachment_url, attachmentType: m.attachment_type,
+        });
+      }
+    )
+    .subscribe();
+  return () => { supabase.removeChannel(channel); };
+}
+
 // Pièce jointe : upload dans le bucket "attachments", rangée par conversation
 export async function uploadDMAttachment(conversationId, file) {
   const ext = file.name.split(".").pop();
