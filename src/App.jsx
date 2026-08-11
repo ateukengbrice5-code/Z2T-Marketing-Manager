@@ -1936,10 +1936,6 @@ function AppRoot() {
           .app-main { margin-left: 0; padding: 0 14px calc(78px) 14px !important; }
           .app-header { padding-top: 16px !important; gap: 10px !important; }
           .app-header h1 { font-size: 19px !important; }
-        }
-        @media (max-width: 420px) {
-          .app-header { flex-wrap: wrap; }
-        }
           .mobile-bottom-nav {
             display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 100;
             background: #152039; padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)) 4px;
@@ -1955,6 +1951,9 @@ function AppRoot() {
             box-shadow: 0 -4px 24px rgba(0,0,0,0.2);
           }
           [data-theme="dark"] .mobile-more-sheet { background: #1A2131; }
+        }
+        @media (max-width: 420px) {
+          .app-header { flex-wrap: wrap; }
         }
 
         /* Mode nuit — l'app est construite avec des couleurs fixes en style
