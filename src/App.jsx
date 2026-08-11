@@ -1365,14 +1365,68 @@ function AdminAchievementBell({ achievements, pointageNotifications, onMarkSeen,
 }
 
 // ---------------------------------------------------------------------------
-// Composant principal
+// Filet de sécurité : si un composant plante pendant le rendu, on affiche
+// l'erreur réelle au lieu de laisser l'écran dans un état vide/confus
+// (utile en particulier sur mobile où le diagnostic est plus difficile).
 // ---------------------------------------------------------------------------
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("Erreur applicative interceptée :", error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{
+          minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
+          padding: 24, background: "#F7F8FA", fontFamily: "Calibri, Arial, sans-serif", boxSizing: "border-box",
+        }}>
+          <div style={{ maxWidth: 480, width: "100%", background: "#fff", borderRadius: 14, padding: 28, boxShadow: "0 4px 20px rgba(0,0,0,0.06)", boxSizing: "border-box" }}>
+            <AlertTriangle size={32} color="#C1554A" style={{ marginBottom: 12 }} />
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#1B2A4A", marginBottom: 8 }}>
+              Une erreur est survenue dans l'application
+            </div>
+            <div style={{ fontSize: 13, color: "#5B6472", marginBottom: 14 }}>
+              Fais une capture d'écran de ce message et envoie-le, ça permettra de trouver la cause exacte.
+            </div>
+            <div style={{
+              fontSize: 12, fontFamily: "monospace", color: "#C1554A", background: "#FDF1EF",
+              border: "1px solid #F0CFC9", borderRadius: 8, padding: 12, marginBottom: 16,
+              whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 200, overflowY: "auto",
+            }}>
+              {String(this.state.error?.message || this.state.error)}
+            </div>
+            <button
+              onClick={() => window.location.reload()}
+              style={{
+                width: "100%", padding: "10px 16px", borderRadius: 10, border: "none", cursor: "pointer",
+                background: "#1B2A4A", color: "#fff", fontSize: 13.5, fontWeight: 600,
+              }}
+            >
+              Recharger la page
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export default function App() {
   return (
-    <ToastProvider>
-      <AppRoot />
-    </ToastProvider>
+    <ErrorBoundary>
+      <ToastProvider>
+        <AppRoot />
+      </ToastProvider>
+    </ErrorBoundary>
   );
 }
 
@@ -1926,57 +1980,153 @@ function AppRoot() {
   return (
     <div className="app-shell" data-theme={darkMode ? "dark" : "light"} style={{ display: "flex", minHeight: "100vh", fontFamily: "Calibri, Arial, sans-serif", background: "#F7F8FA" }}>
       <style>{`
-        .app-sidebar { position: fixed; top: 0; left: 0; height: 100vh; z-index: 100; overflow-y: auto; }
-        .app-main { margin-left: 220px; }
-        .mobile-bottom-nav { display: none; }
-        .mobile-more-backdrop { display: none; }
-        .mobile-more-sheet { display: none; }
-        @media (max-width: 860px) {
-          .app-sidebar { display: none; }
-          .app-main { margin-left: 0; padding: 0 14px calc(78px) 14px !important; }
-          .app-header { padding-top: 16px !important; gap: 10px !important; }
-          .app-header h1 { font-size: 19px !important; }
-          .mobile-bottom-nav {
-            display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 100;
-            background: #152039; padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)) 4px;
-            box-shadow: 0 -2px 16px rgba(0,0,0,0.18);
-          }
-          .mobile-more-backdrop.open {
-            display: block; position: fixed; inset: 0; background: rgba(21,32,57,0.5); z-index: 90;
-          }
-          .mobile-more-sheet.open {
-            display: flex; flex-direction: column; position: fixed; left: 0; right: 0; bottom: 0; z-index: 101;
-            background: #fff; border-radius: 16px 16px 0 0; max-height: 75vh; overflow-y: auto;
-            padding: 8px 10px calc(14px + env(safe-area-inset-bottom, 0px)) 10px;
-            box-shadow: 0 -4px 24px rgba(0,0,0,0.2);
-          }
-          [data-theme="dark"] .mobile-more-sheet { background: #1A2131; }
+        /* ===== Mise en page desktop (barre latérale fixe à gauche) ===== */
+        .app-sidebar {
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 220px;
+          height: 100vh;
+          z-index: 100;
+          overflow-y: auto;
         }
-        @media (max-width: 420px) {
-          .app-header { flex-wrap: wrap; }
+        .app-main {
+          margin-left: 220px;
+          padding: 0 30px 26px 30px;
+        }
+        .app-header {
+          padding: 26px 0 16px 0;
         }
 
-        /* Mode nuit — l'app est construite avec des couleurs fixes en style
-           inline (pas de variables CSS d'origine), donc on surcharge par
-           dessus avec !important plutôt que de réécrire des centaines de
-           styles. Couvre l'essentiel (fond, cartes, tableaux, champs,
-           textes) ; un recoin très spécifique peut rester en clair. */
-        [data-theme="dark"] { background: #10151F; }
-        [data-theme="dark"] .app-main { background: #10151F; }
-        [data-theme="dark"] .app-header { background: #10151F !important; border-bottom-color: #232B3D !important; }
-        [data-theme="dark"] .app-header h1 { color: #E8EAF0 !important; }
-        [data-theme="dark"] .app-date { color: #8B95AC !important; }
-        [data-theme="dark"] .card { background: #1A2131 !important; border-color: #262E42 !important; }
-        [data-theme="dark"] .card h3 { color: #E8EAF0 !important; }
-        [data-theme="dark"] h1, [data-theme="dark"] h2 { color: #E8EAF0 !important; }
-        [data-theme="dark"] label { color: #B7BECB !important; }
-        [data-theme="dark"] input, [data-theme="dark"] select, [data-theme="dark"] textarea {
-          background: #131A28 !important; border-color: #2A3348 !important; color: #E8EAF0 !important;
+        /* ===== Navigation mobile façon WhatsApp/Instagram (cachée par défaut, activée sous 860px) ===== */
+        .mobile-bottom-nav {
+          display: none;
         }
-        [data-theme="dark"] table { color: #D6DAE4 !important; }
-        [data-theme="dark"] th { color: #8B95AC !important; border-bottom-color: #262E42 !important; }
-        [data-theme="dark"] td { border-bottom-color: #212739 !important; }
-        [data-theme="dark"] tr:hover td { background: #1E2536 !important; }
+        .mobile-more-backdrop {
+          display: none;
+        }
+        .mobile-more-sheet {
+          display: none;
+        }
+
+        @media (max-width: 860px) {
+          .app-sidebar {
+            display: none;
+          }
+          .app-main {
+            margin-left: 0;
+            padding: 0 14px 78px 14px !important;
+          }
+          .app-header {
+            padding-top: 16px !important;
+            gap: 10px !important;
+          }
+          .app-header h1 {
+            font-size: 19px !important;
+          }
+
+          .mobile-bottom-nav {
+            display: flex;
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 100;
+            background: #152039;
+            padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)) 4px;
+            box-shadow: 0 -2px 16px rgba(0, 0, 0, 0.18);
+          }
+
+          .mobile-more-backdrop.open {
+            display: block;
+            position: fixed;
+            inset: 0;
+            background: rgba(21, 32, 57, 0.5);
+            z-index: 90;
+          }
+
+          .mobile-more-sheet.open {
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 101;
+            background: #fff;
+            border-radius: 16px 16px 0 0;
+            max-height: 75vh;
+            overflow-y: auto;
+            padding: 8px 10px calc(14px + env(safe-area-inset-bottom, 0px)) 10px;
+            box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.2);
+          }
+
+          [data-theme="dark"] .mobile-more-sheet {
+            background: #1A2131;
+          }
+        }
+
+        @media (max-width: 420px) {
+          .app-header {
+            flex-wrap: wrap;
+          }
+        }
+
+        /* ===== Mode nuit — l'app est construite avec des couleurs fixes en
+           style inline (pas de variables CSS d'origine), donc on surcharge
+           par-dessus avec !important plutôt que de réécrire des centaines de
+           styles. Couvre l'essentiel (fond, cartes, tableaux, champs,
+           textes) ; un recoin très spécifique peut rester en clair. ===== */
+        [data-theme="dark"] {
+          background: #10151F;
+        }
+        [data-theme="dark"] .app-main {
+          background: #10151F;
+        }
+        [data-theme="dark"] .app-header {
+          background: #10151F !important;
+          border-bottom-color: #232B3D !important;
+        }
+        [data-theme="dark"] .app-header h1 {
+          color: #E8EAF0 !important;
+        }
+        [data-theme="dark"] .app-date {
+          color: #8B95AC !important;
+        }
+        [data-theme="dark"] .card {
+          background: #1A2131 !important;
+          border-color: #262E42 !important;
+        }
+        [data-theme="dark"] .card h3 {
+          color: #E8EAF0 !important;
+        }
+        [data-theme="dark"] h1,
+        [data-theme="dark"] h2 {
+          color: #E8EAF0 !important;
+        }
+        [data-theme="dark"] label {
+          color: #B7BECB !important;
+        }
+        [data-theme="dark"] input,
+        [data-theme="dark"] select,
+        [data-theme="dark"] textarea {
+          background: #131A28 !important;
+          border-color: #2A3348 !important;
+          color: #E8EAF0 !important;
+        }
+        [data-theme="dark"] table {
+          color: #D6DAE4 !important;
+        }
+        [data-theme="dark"] th {
+          color: #8B95AC !important;
+          border-bottom-color: #262E42 !important;
+        }
+        [data-theme="dark"] td {
+          border-bottom-color: #212739 !important;
+        }
+        [data-theme="dark"] tr:hover td {
+          background: #1E2536 !important;
+        }
       `}</style>
 
       {/* Barre latérale — visible uniquement sur web/PC ; remplacée par la
