@@ -4807,6 +4807,40 @@ function VendorPicker({ vendors, selectedId, onSelect }) {
   );
 }
 
+// Variante multi-sélection de VendorPicker — utilisée par le mode
+// "Distribution groupée" pour choisir plusieurs vendeurs à la fois.
+function VendorMultiPicker({ vendors, selectedIds, onToggle }) {
+  if (vendors.length === 0) return null;
+  return (
+    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+      {vendors.map((v) => {
+        const active = selectedIds.has(v.id);
+        return (
+          <button
+            key={v.id}
+            onClick={() => onToggle(v.id)}
+            style={{
+              display: "flex", alignItems: "center", gap: 8, padding: "6px 14px 6px 6px",
+              borderRadius: 999, cursor: "pointer", fontSize: 13, fontWeight: 600,
+              border: active ? "2px solid #D9A441" : "1px solid #D8DCE3",
+              background: active ? "#FFF8EC" : "#fff", color: "#1B2A4A",
+            }}
+          >
+            <span style={{
+              width: 20, height: 20, borderRadius: 5, flexShrink: 0,
+              border: active ? "none" : "1px solid #C7CCD6", background: active ? "#D9A441" : "#fff",
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              {active && <CheckCircle2 size={13} color="#fff" />}
+            </span>
+            {vendorFullName(v)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // Navigateur jour par jour (façon calendrier) — utilisé dans Distribution,
 // Retour du soir et Caisse pour consulter/corriger une journée passée sans
 // jamais pouvoir aller dans le futur.
@@ -5080,6 +5114,160 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
 
   const setQtyFor = (productId, value) => setQtyByProduct((s) => ({ ...s, [productId]: value }));
 
+  // -----------------------------------------------------------------------
+  // "Répéter hier" — évite de retaper les quantités depuis zéro : va
+  // chercher la dernière distribution connue de ce vendeur dans les 14
+  // derniers jours (déjà chargés via carryDays pour le report de stock
+  // invendu, donc pas de requête supplémentaire) et pré-remplit la saisie.
+  // -----------------------------------------------------------------------
+  const lastDistributionForVendor = (() => {
+    if (!vendorId) return null;
+    const sorted = [...carryDays].sort((a, b) => b.date.localeCompare(a.date));
+    for (const d of sorted) {
+      const lignesVendeur = (d.lines || []).filter((l) => l.vendorId === vendorId);
+      if (lignesVendeur.length > 0) {
+        const byProduct = new Map();
+        lignesVendeur.forEach((l) => byProduct.set(l.productId, (byProduct.get(l.productId) || 0) + (l.quantiteRemise || 0)));
+        return { date: d.date, byProduct };
+      }
+    }
+    return null;
+  })();
+
+  const repeterHier = () => {
+    if (!lastDistributionForVendor) return;
+    const next = {};
+    lastDistributionForVendor.byProduct.forEach((qty, productId) => { next[productId] = String(qty); });
+    setQtyByProduct(next);
+  };
+
+  // -----------------------------------------------------------------------
+  // Modèles de distribution ("paniers types") — une composition de produits/
+  // quantités enregistrée pour ce vendeur, réutilisable en un clic.
+  // -----------------------------------------------------------------------
+  const [templates, setTemplates] = useState([]);
+  const [savingTemplate, setSavingTemplate] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState("");
+
+  useEffect(() => {
+    if (!vendorId) { setTemplates([]); return; }
+    store.getDistributionTemplates(vendorId).then(setTemplates).catch(() => setTemplates([]));
+  }, [vendorId]);
+
+  const applyTemplate = (tpl) => {
+    const next = {};
+    (tpl.items || []).forEach((it) => { next[it.productId] = String(it.quantite); });
+    setQtyByProduct(next);
+  };
+
+  const saveCurrentAsTemplate = async () => {
+    const items = Object.entries(qtyByProduct)
+      .filter(([, v]) => Number(v) > 0)
+      .map(([productId, v]) => ({ productId, quantite: Number(v) }));
+    if (items.length === 0 || !vendorId) return;
+    const nom = newTemplateName.trim() || "Panier habituel";
+    setSavingTemplate(true);
+    try {
+      const tpl = await store.createDistributionTemplate({ vendorId, nom, items });
+      setTemplates((prev) => [...prev, tpl]);
+      setNewTemplateName("");
+      showToast(`Modèle "${nom}" enregistré.`, "success");
+    } catch (e) {
+      showToast("Impossible d'enregistrer le modèle.", "error");
+    } finally {
+      setSavingTemplate(false);
+    }
+  };
+
+  const removeTemplate = async (tpl) => {
+    const ok = window.confirm(`Supprimer le modèle "${tpl.nom}" ?`);
+    if (!ok) return;
+    try {
+      await store.deleteDistributionTemplate(tpl.id);
+      setTemplates((prev) => prev.filter((t) => t.id !== tpl.id));
+    } catch (e) {
+      showToast("Impossible de supprimer le modèle.", "error");
+    }
+  };
+
+  // -----------------------------------------------------------------------
+  // Distribution groupée — applique la même saisie (produits + quantités) à
+  // plusieurs vendeurs sélectionnés en une seule action, au lieu de répéter
+  // la saisie vendeur par vendeur. Ne referme pas automatiquement les
+  // reliquats "Stock invendu à reporter" comme le fait une distribution
+  // individuelle (voir validateDistribution) : utilise d'abord "Reporter
+  // tout vers aujourd'hui" si des vendeurs du groupe ont un reliquat.
+  // -----------------------------------------------------------------------
+  const [groupMode, setGroupMode] = useState(false);
+  const [groupVendorIds, setGroupVendorIds] = useState(new Set());
+
+  const toggleGroupVendor = (id) => {
+    setGroupVendorIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const validateDistributionGroupee = async () => {
+    if (submitting) return;
+    const vendorIds = Array.from(groupVendorIds);
+    if (vendorIds.length === 0) return;
+    setSubmitting(true);
+    try {
+      setError("");
+      const items = products
+        .map((p) => ({ product: p, qty: Number(qtyByProduct[p.id]) }))
+        .filter((it) => qtyByProduct[it.product.id] && it.qty > 0);
+      if (items.length === 0) return;
+
+      // La même quantité part vers CHAQUE vendeur sélectionné : le besoin
+      // total pour un produit est donc qty × nombre de vendeurs.
+      for (const item of items) {
+        const totalNeeded = item.qty * vendorIds.length;
+        if (item.product.stock < totalNeeded) {
+          setError(`Stock insuffisant pour ${item.product.nom} : il faut ${totalNeeded} au total (${item.qty} × ${vendorIds.length} vendeurs), il ne reste que ${item.product.stock}.`);
+          return;
+        }
+      }
+
+      let nextLines = [...day.lines];
+      let nextProducts = [...products];
+      const nomsVendeurs = [];
+
+      vendorIds.forEach((vId) => {
+        const vendor = activeVendors.find((v) => v.id === vId);
+        if (!vendor) return;
+        items.forEach(({ product, qty }) => {
+          const existingLine = nextLines.find((l) => l.vendorId === vId && l.productId === product.id && l.quantiteRestante === null);
+          nextLines = existingLine
+            ? nextLines.map((l) => (l.id === existingLine.id ? { ...l, quantiteRemise: l.quantiteRemise + qty } : l))
+            : [...nextLines, {
+                id: uid(), vendorId: vId, vendorNom: vendor.nom, productId: product.id, productNom: product.nom,
+                prix: product.prix, quantiteRemise: qty, quantiteRestante: null, quantiteVendue: null, montantAttendu: null,
+              }];
+          nextProducts = nextProducts.map((p) => (p.id === product.id ? { ...p, stock: p.stock - qty } : p));
+        });
+        nomsVendeurs.push(vendor.nom);
+      });
+
+      await setDay({ ...day, lines: nextLines });
+      await setProducts(nextProducts);
+      if (viewDate === today) await ensureTodayInList(daysList);
+
+      store.logActivity(
+        currentUser, "distribute_groupe",
+        `Distribution groupée à ${nomsVendeurs.join(", ")} : ${items.map((it) => `${it.qty} ${it.product.nom}`).join(", ")}.`
+      );
+      showToast(`Distribution appliquée à ${nomsVendeurs.length} vendeur${nomsVendeurs.length > 1 ? "s" : ""}.`, "success");
+      setQtyByProduct({});
+      setGroupVendorIds(new Set());
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+
   // Boutons de quantités rapides : ajoutent à ce qui est déjà saisi plutôt
   // que de l'écraser, pour pouvoir cumuler (ex. +10 puis +5 = 15).
   const bumpQty = (productId, amount) => {
@@ -5299,8 +5487,34 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
       )}
 
       <div style={{ position: "sticky", top: 78, zIndex: 15, background: "#F7F8FA", paddingBottom: 2 }}>
-        <Card title="Vendeurs actifs">
-          <VendorPicker vendors={activeVendors} selectedId={vendorId} onSelect={selectVendor} />
+        <Card
+          title="Vendeurs actifs"
+          right={
+            activeVendors.length > 1 && (
+              <button
+                onClick={() => {
+                  setGroupMode((v) => !v);
+                  setVendorId("");
+                  setGroupVendorIds(new Set());
+                  setQtyByProduct({});
+                  setError("");
+                }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 8, cursor: "pointer",
+                  fontSize: 12.5, fontWeight: 700, border: groupMode ? "1px solid #D9A441" : "1px solid #D8DCE3",
+                  background: groupMode ? "#FFF8EC" : "#fff", color: groupMode ? "#B9860F" : "#5B6472",
+                }}
+              >
+                <Users size={14} /> {groupMode ? "Mode groupé activé" : "Distribuer à plusieurs vendeurs"}
+              </button>
+            )
+          }
+        >
+          {groupMode ? (
+            <VendorMultiPicker vendors={activeVendors} selectedIds={groupVendorIds} onToggle={toggleGroupVendor} />
+          ) : (
+            <VendorPicker vendors={activeVendors} selectedId={vendorId} onSelect={selectVendor} />
+          )}
           {activeVendors.length === 0 && (
             <div style={{ fontSize: 12.5, color: "#C1554A" }}>
               {vendors.length === 0
@@ -5311,37 +5525,56 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
         </Card>
       </div>
 
-      {selectedVendor && (
-        <Card title={`${vendorFullName(selectedVendor)} — remise et suivi des produits`}>
+      {(selectedVendor || (groupMode && groupVendorIds.size > 0)) && (
+        <Card
+          title={
+            groupMode
+              ? `Distribution groupée — ${groupVendorIds.size} vendeur${groupVendorIds.size > 1 ? "s" : ""} sélectionné${groupVendorIds.size > 1 ? "s" : ""}`
+              : `${vendorFullName(selectedVendor)} — remise et suivi des produits`
+          }
+        >
           {products.length === 0 ? (
             <EmptyState text="Aucun produit enregistré — ajoute d'abord des produits dans l'onglet Produits." />
           ) : (
             <>
+              {/* Raccourcis pour éviter de ressaisir les quantités depuis zéro
+                  — uniquement en mode vendeur unique : "répéter hier" et les
+                  modèles enregistrés sont propres à un vendeur donné. */}
+              {!groupMode && (lastDistributionForVendor || templates.length > 0) && (
+                <div style={{ marginBottom: 14, padding: "10px 12px", background: "#FAFBFC", border: "1px solid #EEF0F4", borderRadius: 10 }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    {lastDistributionForVendor && (
+                      <button
+                        onClick={repeterHier}
+                        style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 8, cursor: "pointer", fontSize: 12.5, fontWeight: 700, border: "1px solid #D8DCE3", background: "#fff", color: "#1B2A4A" }}
+                      >
+                        <RotateCcw size={13} /> Répéter la distribution du {formatDateFR(lastDistributionForVendor.date)}
+                      </button>
+                    )}
+                    {templates.map((tpl) => (
+                      <span key={tpl.id} style={{ display: "flex", alignItems: "center", gap: 4, padding: "6px 6px 6px 12px", borderRadius: 8, border: "1px solid #D8DCE3", background: "#fff" }}>
+                        <button
+                          onClick={() => applyTemplate(tpl)}
+                          style={{ border: "none", background: "none", cursor: "pointer", fontSize: 12.5, fontWeight: 700, color: "#1B2A4A", padding: 0 }}
+                        >
+                          📦 {tpl.nom}
+                        </button>
+                        <button onClick={() => removeTemplate(tpl)} title="Supprimer ce modèle" style={{ ...iconBtnStyle, padding: 3 }}><Trash2 size={12} /></button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
               {products.length > 6 && (
                 <div style={{ marginBottom: 12, maxWidth: 260 }}>
                   <TextInput placeholder="Rechercher un produit…" value={searchProduct} onChange={(e) => setSearchProduct(e.target.value)} />
                 </div>
               )}
               <Table
-                headers={["Produit", "Stock système", "Déjà remis aujourd'hui", "Ajouter"]}
+                headers={groupMode ? ["Produit", "Stock système", "Quantité (par vendeur)"] : ["Produit", "Stock système", "Déjà remis aujourd'hui", "Ajouter"]}
                 rows={produitsAffiches.map((p) => {
                   const pending = pendingByProduct[p.id];
-                  return [
-                    p.nom,
-                    p.stock,
-                    pending ? (
-                      <div key="dr" style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <TextInput
-                          type="number" style={{ width: 80 }}
-                          value={editQty[pending.id] ?? pending.quantiteRemise}
-                          onChange={(e) => setEditQty((s) => ({ ...s, [pending.id]: e.target.value }))}
-                        />
-                        <Button variant="ghost" onClick={() => saveEditedQty(pending)}>OK</Button>
-                        <button onClick={() => cancelDistribution(pending)} title="Annuler cette distribution" style={iconBtnStyle}><Trash2 size={15} /></button>
-                      </div>
-                    ) : (
-                      <span key="dr" style={{ color: "#B7BECB" }}>—</span>
-                    ),
+                  const ligneAjout = (
                     <div key="add" style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                       <TextInput
                         type="number" style={{ width: 80 }} placeholder="0"
@@ -5359,7 +5592,26 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
                           +{q}
                         </button>
                       ))}
-                    </div>,
+                    </div>
+                  );
+                  if (groupMode) return [p.nom, p.stock, ligneAjout];
+                  return [
+                    p.nom,
+                    p.stock,
+                    pending ? (
+                      <div key="dr" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <TextInput
+                          type="number" style={{ width: 80 }}
+                          value={editQty[pending.id] ?? pending.quantiteRemise}
+                          onChange={(e) => setEditQty((s) => ({ ...s, [pending.id]: e.target.value }))}
+                        />
+                        <Button variant="ghost" onClick={() => saveEditedQty(pending)}>OK</Button>
+                        <button onClick={() => cancelDistribution(pending)} title="Annuler cette distribution" style={iconBtnStyle}><Trash2 size={15} /></button>
+                      </div>
+                    ) : (
+                      <span key="dr" style={{ color: "#B7BECB" }}>—</span>
+                    ),
+                    ligneAjout,
                   ];
                 })}
               />
@@ -5369,10 +5621,31 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
               {error && (
                 <div style={{ marginTop: 10, fontSize: 12.5, color: "#C1554A" }}>{error}</div>
               )}
-              <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
-                <Button onClick={validateDistribution} disabled={nbSaisis === 0 || submitting}>
-                  <Truck size={15} /> {submitting ? "Validation…" : `Valider la remise${nbSaisis > 0 ? ` (${nbSaisis} produit${nbSaisis > 1 ? "s" : ""})` : ""}`}
-                </Button>
+              <div style={{ marginTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                {!groupMode && nbSaisis > 0 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <TextInput
+                      placeholder="Nom du modèle (ex. Panier habituel)"
+                      value={newTemplateName}
+                      onChange={(e) => setNewTemplateName(e.target.value)}
+                      style={{ width: 220 }}
+                    />
+                    <Button variant="ghost" onClick={saveCurrentAsTemplate} disabled={savingTemplate}>
+                      {savingTemplate ? "…" : "Enregistrer comme modèle"}
+                    </Button>
+                  </div>
+                )}
+                <div style={{ marginLeft: "auto" }}>
+                  {groupMode ? (
+                    <Button onClick={validateDistributionGroupee} disabled={nbSaisis === 0 || groupVendorIds.size === 0 || submitting}>
+                      <Truck size={15} /> {submitting ? "Validation…" : `Distribuer à ${groupVendorIds.size} vendeur${groupVendorIds.size > 1 ? "s" : ""}`}
+                    </Button>
+                  ) : (
+                    <Button onClick={validateDistribution} disabled={nbSaisis === 0 || submitting}>
+                      <Truck size={15} /> {submitting ? "Validation…" : `Valider la remise${nbSaisis > 0 ? ` (${nbSaisis} produit${nbSaisis > 1 ? "s" : ""})` : ""}`}
+                    </Button>
+                  )}
+                </div>
               </div>
             </>
           )}

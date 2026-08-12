@@ -301,39 +301,6 @@ export async function deleteDMMessage(id) {
   if (error) throw error;
 }
 
-// Pousse instantanément tout nouveau message de messagerie directe dès son
-// insertion en base, façon WhatsApp/Messenger — sans attendre le prochain
-// sondage périodique. Nécessite que la table "dm_messages" soit ajoutée à
-// la publication Realtime de Supabase (Database > Replication), comme
-// "notifications" pour les alertes intelligentes. La RLS de "dm_messages"
-// limite déjà la lecture aux conversations de l'utilisateur connecté, donc
-// ce flux ne renvoie que les messages qui le concernent.
-//
-// Cette fonction est appelée depuis DEUX endroits en même temps (la pastille
-// globale au niveau de l'app, ET le composant Messagerie quand il est ouvert)
-// : chaque appel doit donc avoir son propre nom de canal Supabase, sinon les
-// deux abonnements entrent en conflit sur le même topic dès que les deux
-// sont actifs simultanément.
-export function subscribeToDMMessages(onInsert) {
-  const channelName = `dm-messages-realtime-${Math.random().toString(36).slice(2, 10)}`;
-  const channel = supabase
-    .channel(channelName)
-    .on(
-      "postgres_changes",
-      { event: "INSERT", schema: "public", table: "dm_messages" },
-      (payload) => {
-        const m = payload.new;
-        onInsert({
-          id: m.id, conversationId: m.conversation_id, senderId: m.sender_id, senderUsername: m.sender_username,
-          content: m.content, read: m.read, createdAt: m.created_at, editedAt: m.edited_at, deletedAt: m.deleted_at,
-          attachmentUrl: m.attachment_url, attachmentType: m.attachment_type,
-        });
-      }
-    )
-    .subscribe();
-  return () => { supabase.removeChannel(channel); };
-}
-
 // Pièce jointe : upload dans le bucket "attachments", rangée par conversation
 export async function uploadDMAttachment(conversationId, file) {
   const ext = file.name.split(".").pop();
@@ -434,6 +401,24 @@ export async function getVendors() {
     telephone: v.telephone, photoUrl: v.photo_url,
     dateEnregistrement: v.date_enregistrement,
   }));
+}
+
+// Modèles de distribution ("paniers types") — voir migration_modeles_distribution.sql
+export async function getDistributionTemplates(vendorId) {
+  const { data, error } = await supabase.from("distribution_templates").select("*").eq("vendor_id", vendorId).order("created_at");
+  if (error) throw error;
+  return (data || []).map((t) => ({ id: t.id, vendorId: t.vendor_id, nom: t.nom, items: t.items || [] }));
+}
+
+export async function createDistributionTemplate({ vendorId, nom, items }) {
+  const { data, error } = await supabase.from("distribution_templates").insert({ vendor_id: vendorId, nom, items }).select().single();
+  if (error) throw error;
+  return { id: data.id, vendorId: data.vendor_id, nom: data.nom, items: data.items || [] };
+}
+
+export async function deleteDistributionTemplate(id) {
+  const { error } = await supabase.from("distribution_templates").delete().eq("id", id);
+  if (error) throw error;
 }
 
 export async function addVendor({ nom, prenom, numeroCni, pieceNature, dateNaissance, telephone }) {
