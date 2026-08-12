@@ -2164,7 +2164,7 @@ function AppRoot() {
           <NewsFeed currentUser={currentUser} />
         )}
         {tab === "produits" && isAdmin && <Produits products={products} setProducts={persistProducts} reloadProducts={reloadProducts} currentUser={currentUser} />}
-        {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} currentUser={currentUser} />}
+        {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} currentUser={currentUser} day={day} />}
         {tab === "vendeurs" && canManage && (
           <Vendeurs vendors={vendors} reloadVendors={reloadVendors} isAdmin={isAdmin} currentUser={currentUser} daysList={daysList} />
         )}
@@ -2977,9 +2977,22 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
 // Stock
 // ---------------------------------------------------------------------------
 
-function Stock({ products, setProducts, currentUser }) {
+function Stock({ products, setProducts, currentUser, day }) {
   const { showToast } = useToast();
   const [adjust, setAdjust] = useState({});
+
+  // Stock actuellement "chez les vendeurs" : ce qui a été remis aujourd'hui
+  // et qu'ils n'ont pas encore rendu/vendu (retour du soir pas encore fait
+  // pour cette ligne). Sert à calculer le "Stock général" ci-dessous — voir
+  // aussi la même logique côté base pour l'alerte de seuil (trigger SQL
+  // notify_stock_bas, migration_stock_general.sql).
+  const enCoursChezVendeursParProduit = (() => {
+    const map = new Map();
+    (day?.lines || []).forEach((l) => {
+      if (l.quantiteRestante === null) map.set(l.productId, (map.get(l.productId) || 0) + (l.quantiteRemise || 0));
+    });
+    return map;
+  })();
 
   const reappro = async (id) => {
     const raw = adjust[id];
@@ -3051,16 +3064,28 @@ function Stock({ products, setProducts, currentUser }) {
       </div>
 
       <Card title="Niveaux de stock">
+        <div style={{ fontSize: 12, color: "#8A93A3", marginBottom: 12 }}>
+          <strong>Stock restant</strong> = ce qu'il reste en entrepôt. <strong>Stock général</strong> = Stock restant + ce qui a
+          été remis aux vendeurs aujourd'hui et n'a pas encore été rendu/vendu. L'alerte de seuil se base sur le Stock
+          général — distribuer aux vendeurs ne la déclenche donc pas à tort.
+        </div>
         <Table
-          headers={["Produit", "Catégorie", "Stock actuel", "Statut", "Réapprovisionner"]}
-          rows={products.map((p) => [
-            p.nom, p.categorie || "Général", p.stock,
-            <Badge key="b" ok={Number(p.stock) > 5} okText="OK" warnText="Faible" />,
-            <div key="r" style={{ display: "flex", gap: 8 }}>
-              <TextInput type="number" placeholder="Qté" style={{ width: 80 }} value={adjust[p.id] || ""} onChange={(e) => setAdjust((a) => ({ ...a, [p.id]: e.target.value }))} />
-              <Button variant="gold" onClick={() => reappro(p.id)}>Ajouter</Button>
-            </div>,
-          ])}
+          headers={["Produit", "Catégorie", "Stock restant", "Chez les vendeurs", "Stock général", "Statut", "Réapprovisionner"]}
+          rows={products.map((p) => {
+            const chezVendeurs = enCoursChezVendeursParProduit.get(p.id) || 0;
+            const stockGeneral = (Number(p.stock) || 0) + chezVendeurs;
+            const seuil = Number(p.seuilAlerte ?? 5);
+            return [
+              p.nom, p.categorie || "Général", p.stock,
+              chezVendeurs > 0 ? chezVendeurs : <span style={{ color: "#B7BECB" }}>—</span>,
+              <strong key="sg">{stockGeneral}</strong>,
+              <Badge key="b" ok={stockGeneral > seuil} okText="OK" warnText="Faible" />,
+              <div key="r" style={{ display: "flex", gap: 8 }}>
+                <TextInput type="number" placeholder="Qté" style={{ width: 80 }} value={adjust[p.id] || ""} onChange={(e) => setAdjust((a) => ({ ...a, [p.id]: e.target.value }))} />
+                <Button variant="gold" onClick={() => reappro(p.id)}>Ajouter</Button>
+              </div>,
+            ];
+          })}
         />
       </Card>
 
@@ -3874,6 +3899,10 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
 // ---------------------------------------------------------------------------
 
 function AttendanceBoard({ vendors, currentUser }) {
+  // Un vendeur dont le contrat n'est plus "actif" (en pause ou clôturé) ne
+  // doit plus apparaître dans le pointage — que ce soit pour marquer sa
+  // présence ou consulter/corriger un pointage passé.
+  const activeVendors = vendors.filter((v) => v.contractStatut === "actif");
   const [date, setDate] = useState(todayISO());
   const [entries, setEntries] = useState({}); // vendorId -> { statut, notes, heure }
   const [loading, setLoading] = useState(true);
@@ -3908,12 +3937,12 @@ function AttendanceBoard({ vendors, currentUser }) {
   };
   const markAllPresent = () => {
     const map = {};
-    vendors.forEach((v) => { map[v.id] = { statut: "present", notes: entries[v.id]?.notes || "", heure: nowHHMM() }; });
+    activeVendors.forEach((v) => { map[v.id] = { statut: "present", notes: entries[v.id]?.notes || "", heure: nowHHMM() }; });
     setEntries(map);
   };
 
   const save = async () => {
-    const toSave = vendors
+    const toSave = activeVendors
       .filter((v) => entries[v.id]?.statut)
       .map((v) => ({ vendorId: v.id, statut: entries[v.id].statut, notes: entries[v.id].notes, heure: entries[v.id].heure }));
     if (toSave.length === 0) { setError("Marque au moins un vendeur avant d'enregistrer."); return; }
@@ -3927,7 +3956,7 @@ function AttendanceBoard({ vendors, currentUser }) {
       // le vendeur concerné (il voit l'heure exacte de son pointage) et pour
       // tous les admins (visible dans la cloche de notifications).
       if (date === todayISO()) {
-        for (const v of vendors) {
+        for (const v of activeVendors) {
           const e = entries[v.id];
           if (!e?.statut || !e.heure) continue;
           const message = `Pointage : ${STATUT_LABELS[e.statut]?.label || e.statut} à ${e.heure}${currentUser?.username ? ` (par ${currentUser.username})` : ""}`;
@@ -3947,7 +3976,7 @@ function AttendanceBoard({ vendors, currentUser }) {
     >
       {!open ? (
         <div style={{ fontSize: 12.5, color: "#8A93A3", fontStyle: "italic" }}>Ouvrir pour pointer présence/absence de toute l'équipe.</div>
-      ) : vendors.length === 0 ? (
+      ) : activeVendors.length === 0 ? (
         <EmptyState text="Ajoute d'abord un vendeur." />
       ) : (
         <>
@@ -3963,7 +3992,7 @@ function AttendanceBoard({ vendors, currentUser }) {
             <div style={{ fontSize: 12.5, color: "#9AA2B1" }}>Chargement…</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {vendors.map((v) => {
+              {activeVendors.map((v) => {
                 const e = entries[v.id] || { statut: null, notes: "", heure: null };
                 return (
                   <div key={v.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", paddingBottom: 10, borderBottom: "1px solid #F3F4F7" }}>
@@ -4923,7 +4952,7 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
 
   // Un vendeur au contrat clôturé ne doit plus recevoir de nouvelle
   // distribution, même saisie manuellement par l'administrateur.
-  const activeVendors = vendors.filter((v) => v.contractStatut !== "cloture");
+  const activeVendors = vendors.filter((v) => v.contractStatut === "actif");
   const selectedVendor = activeVendors.find((v) => v.id === vendorId);
 
   // ---------------------------------------------------------------------
@@ -5859,7 +5888,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
 
   // Un vendeur au contrat clôturé ne doit plus pouvoir faire l'objet d'un
   // retour du soir saisi manuellement par l'administrateur (voir Distribution).
-  const activeVendors = isAdmin ? vendors.filter((v) => v.contractStatut !== "cloture") : vendors;
+  const activeVendors = isAdmin ? vendors.filter((v) => v.contractStatut === "actif") : vendors;
   const [selectedVendorId, setSelectedVendorId] = useState(isAdmin ? (activeVendors[0]?.id || "") : (activeVendor?.id || ""));
   const [pendingInputs, setPendingInputs] = useState({});
   const [mobileOn, setMobileOn] = useState(false);
