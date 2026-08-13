@@ -8168,6 +8168,7 @@ function HistoriqueProduit({ products, allDays, today }) {
   const [periodType, setPeriodType] = useState("mois");
   const [month, setMonth] = useState(today.slice(0, 7));
   const [customRange, setCustomRange] = useState([today, today]);
+  const printRef = useRef(null);
 
   useEffect(() => {
     if (!selectedProductId && products[0]) setSelectedProductId(products[0].id);
@@ -8188,8 +8189,34 @@ function HistoriqueProduit({ products, allDays, today }) {
   // Plus récent en premier, uniquement les jours où quelque chose a été vendu.
   const rowsTable = serie.filter((d) => d.vendu > 0).slice().reverse();
 
+  // Imprime uniquement la section ciblée (même mécanisme que dans Rapports) :
+  // on marque l'élément juste avant d'appeler window.print(), de façon
+  // synchrone dans le même clic, pour éviter tout problème de timing.
+  const printSection = (ref) => {
+    if (!ref.current) return;
+    document.body.classList.add("printing-section");
+    ref.current.setAttribute("data-print-active", "true");
+    window.print();
+    const cleanup = () => {
+      ref.current?.removeAttribute("data-print-active");
+      document.body.classList.remove("printing-section");
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+  };
+
   return (
     <div>
+      <style>{`
+        @media print {
+          body.printing-section * { visibility: hidden; }
+          body.printing-section [data-print-active="true"],
+          body.printing-section [data-print-active="true"] * { visibility: visible; }
+          body.printing-section [data-print-active="true"] { position: absolute; top: 0; left: 0; width: 100%; margin: 0; padding: 0; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+
       <Card title="Choisir un produit et une période">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ maxWidth: 320 }}>
@@ -8207,56 +8234,70 @@ function HistoriqueProduit({ products, allDays, today }) {
               customRange={customRange} onCustomRangeChange={setCustomRange}
             />
           </div>
-          {periodType === "mois" && (
-            <div style={{ maxWidth: 220 }}>
-              <Label>Mois</Label>
-              <TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
-            </div>
-          )}
+          <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+            {periodType === "mois" && (
+              <div style={{ flex: "1 1 180px" }}>
+                <Label>Mois</Label>
+                <TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+              </div>
+            )}
+            <Button variant="gold" onClick={() => printSection(printRef)}>
+              <Printer size={15} /> Imprimer / Enregistrer en PDF
+            </Button>
+          </div>
         </div>
       </Card>
 
-      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
-        <StatCard label="QUANTITÉ VENDUE" value={totalVendu} />
-        <StatCard label="CHIFFRE D'AFFAIRES" value={fmtMoney(totalCa)} accent="#D9A441" />
-        <StatCard label="JOURS AVEC VENTE" value={joursAvecVente} sub={`sur ${serie.length} jour${serie.length > 1 ? "s" : ""} de la période`} />
-      </div>
-
-      <Card title={`Évolution des ventes — ${product.nom}`}>
-        {serie.length === 0 ? (
-          <EmptyState text="Aucune donnée sur cette période." />
-        ) : (
-          <div style={{ height: 220 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={serie} margin={{ left: 0, right: 10, top: 10 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#EEF0F4" />
-                <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#8A93A3" }} />
-                <YAxis tick={{ fontSize: 11, fill: "#8A93A3" }} allowDecimals={false} />
-                <Tooltip
-                  formatter={(v, name) => (name === "vendu" ? [v, "Quantité vendue"] : [fmtMoney(v), "CA"])}
-                  labelFormatter={(l) => `Jour ${l}`}
-                />
-                <Bar dataKey="vendu" fill="#1B2A4A" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+      <div ref={printRef}>
+        <Card>
+          <div style={{ textAlign: "center", marginBottom: 6 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#1B2A4A" }}>{product.nom}</div>
+            <div style={{ fontSize: 12.5, color: "#8A93A3" }}>{periodLabelFR(periodType, range, month)}</div>
           </div>
-        )}
-      </Card>
+        </Card>
 
-      <Card title="Détail jour par jour">
-        {rowsTable.length === 0 ? (
-          <EmptyState text="Aucune vente enregistrée pour ce produit sur la période choisie." />
-        ) : (
-          <Table
-            headers={["Date", "Quantité vendue", "Chiffre d'affaires"]}
-            rows={rowsTable.map((d) => [
-              formatDateFR(d.date) + (d.date === today ? " (aujourd'hui)" : ""),
-              d.vendu,
-              fmtMoney(d.ca),
-            ])}
-          />
-        )}
-      </Card>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+          <StatCard label="QUANTITÉ VENDUE" value={totalVendu} />
+          <StatCard label="CHIFFRE D'AFFAIRES" value={fmtMoney(totalCa)} accent="#D9A441" />
+          <StatCard label="JOURS AVEC VENTE" value={joursAvecVente} sub={`sur ${serie.length} jour${serie.length > 1 ? "s" : ""} de la période`} />
+        </div>
+
+        <Card title={`Évolution des ventes — ${product.nom}`}>
+          {serie.length === 0 ? (
+            <EmptyState text="Aucune donnée sur cette période." />
+          ) : (
+            <div style={{ height: 220 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={serie} margin={{ left: 0, right: 10, top: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#EEF0F4" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#8A93A3" }} />
+                  <YAxis tick={{ fontSize: 11, fill: "#8A93A3" }} allowDecimals={false} />
+                  <Tooltip
+                    formatter={(v, name) => (name === "vendu" ? [v, "Quantité vendue"] : [fmtMoney(v), "CA"])}
+                    labelFormatter={(l) => `Jour ${l}`}
+                  />
+                  <Bar dataKey="vendu" fill="#1B2A4A" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </Card>
+
+        <Card title="Détail jour par jour">
+          {rowsTable.length === 0 ? (
+            <EmptyState text="Aucune vente enregistrée pour ce produit sur la période choisie." />
+          ) : (
+            <Table
+              headers={["Date", "Quantité vendue", "Chiffre d'affaires"]}
+              rows={rowsTable.map((d) => [
+                formatDateFR(d.date) + (d.date === today ? " (aujourd'hui)" : ""),
+                d.vendu,
+                fmtMoney(d.ca),
+              ])}
+            />
+          )}
+        </Card>
+      </div>
     </div>
   );
 }
