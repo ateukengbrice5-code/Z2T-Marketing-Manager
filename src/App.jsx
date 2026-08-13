@@ -1177,6 +1177,33 @@ function aggregateProductReport(days, range, products) {
   return { rows, topVendus, maxVendu };
 }
 
+// Historique jour par jour des ventes d'UN produit précis sur une période :
+// un point par date de la plage (y compris les jours à 0, pour que le
+// graphique reste continu), avec la quantité vendue et le CA généré ce
+// jour-là (tous vendeurs confondus).
+function buildProductDailyHistory(days, range, productId) {
+  const byDate = {};
+  days.forEach((d) => { if (d) byDate[d.date] = d; });
+  const series = [];
+  let cur = range[0];
+  let guard = 0;
+  while (cur <= range[1] && guard < 3660) {
+    const d = byDate[cur];
+    let vendu = 0, ca = 0;
+    if (d) {
+      d.lines.forEach((l) => {
+        if (l.productId !== productId || l.quantiteVendue == null) return;
+        vendu += l.quantiteVendue || 0;
+        ca += l.montantAttendu || 0;
+      });
+    }
+    series.push({ date: cur, label: cur.slice(8, 10), vendu, ca });
+    cur = addDays(cur, 1);
+    guard += 1;
+  }
+  return series;
+}
+
 // Dates auxquelles un vendeur donné a fait un retour du soir (au moins une
 // ligne de sa journée a été validée), utilisées pour déterminer les jours de
 // présence payables sans dépendre uniquement du pointage manuel de l'admin.
@@ -2196,7 +2223,7 @@ function AppRoot() {
         {tab === "rapports" && canManage && (
           <Rapports vendors={vendors} products={products} daysList={daysList} today={today} day={day} />
         )}
-        {tab === "historique" && isAdmin && <Historique vendors={vendors} daysList={daysList} today={today} currentUser={currentUser} reloadVendors={reloadVendors} />}
+        {tab === "historique" && isAdmin && <Historique vendors={vendors} products={products} daysList={daysList} today={today} currentUser={currentUser} reloadVendors={reloadVendors} />}
         {tab === "journal" && isAdmin && currentUser.isPrimary && <JournalActivite />}
         {tab === "supervision" && isAdmin && currentUser.isPrimary && <Supervision currentUser={currentUser} />}
         {tab === "entreprises" && isSuperAdmin && <EntreprisesAdmin currentUser={currentUser} />}
@@ -7950,7 +7977,8 @@ function NewsFeed({ currentUser }) {
   );
 }
 
-function Historique({ vendors, daysList, today, currentUser, reloadVendors }) {
+function Historique({ vendors, products, daysList, today, currentUser, reloadVendors }) {
+  const [historiqueView, setHistoriqueView] = useState("vendeur"); // "vendeur" | "produit"
   const [selectedVendorId, setSelectedVendorId] = useState(vendors[0]?.id || "");
   const [allDays, setAllDays] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -7970,8 +7998,51 @@ function Historique({ vendors, daysList, today, currentUser, reloadVendors }) {
     if (!selectedVendorId && vendors[0]) setSelectedVendorId(vendors[0].id);
   }, [vendors]);
 
+  const historiqueTabs = (
+    <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+      <button
+        onClick={() => setHistoriqueView("vendeur")}
+        style={{
+          padding: "8px 16px", borderRadius: 8, fontSize: 13.5, fontWeight: 700, cursor: "pointer",
+          border: historiqueView === "vendeur" ? "2px solid #D9A441" : "1px solid #D8DCE3",
+          background: historiqueView === "vendeur" ? "#FFF8EC" : "#fff", color: "#1B2A4A",
+        }}
+      >
+        Par vendeur
+      </button>
+      <button
+        onClick={() => setHistoriqueView("produit")}
+        style={{
+          padding: "8px 16px", borderRadius: 8, fontSize: 13.5, fontWeight: 700, cursor: "pointer",
+          border: historiqueView === "produit" ? "2px solid #D9A441" : "1px solid #D8DCE3",
+          background: historiqueView === "produit" ? "#FFF8EC" : "#fff", color: "#1B2A4A",
+        }}
+      >
+        Par produit
+      </button>
+    </div>
+  );
+
+  if (historiqueView === "produit") {
+    return (
+      <div>
+        {historiqueTabs}
+        {loading ? (
+          <Card><EmptyState text="Chargement de l'historique…" /></Card>
+        ) : (
+          <HistoriqueProduit products={products} allDays={allDays || []} today={today} />
+        )}
+      </div>
+    );
+  }
+
   if (vendors.length === 0) {
-    return <Card title="Historique"><EmptyState text="Ajoute d'abord un vendeur dans l'onglet Vendeurs & comptes." /></Card>;
+    return (
+      <div>
+        {historiqueTabs}
+        <Card title="Historique"><EmptyState text="Ajoute d'abord un vendeur dans l'onglet Vendeurs & comptes." /></Card>
+      </div>
+    );
   }
 
   const vendor = vendors.find((v) => v.id === selectedVendorId) || vendors[0];
@@ -7997,6 +8068,7 @@ function Historique({ vendors, daysList, today, currentUser, reloadVendors }) {
 
   return (
     <div>
+      {historiqueTabs}
       <Card title="Vendeurs">
         <VendorPicker vendors={vendors} selectedId={vendor.id} onSelect={(id) => { setSelectedVendorId(id); setExpandedDate(null); }} />
         <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #F0F1F4", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -8084,6 +8156,107 @@ function Historique({ vendors, daysList, today, currentUser, reloadVendors }) {
           daysList={daysList}
         />
       )}
+    </div>
+  );
+}
+
+// Historique détaillé des ventes d'un produit, jour par jour, sur une
+// période choisie — réutilise les journées déjà chargées par Historique
+// (allDays) plutôt que de refaire un appel réseau séparé.
+function HistoriqueProduit({ products, allDays, today }) {
+  const [selectedProductId, setSelectedProductId] = useState(products[0]?.id || "");
+  const [periodType, setPeriodType] = useState("mois");
+  const [month, setMonth] = useState(today.slice(0, 7));
+  const [customRange, setCustomRange] = useState([today, today]);
+
+  useEffect(() => {
+    if (!selectedProductId && products[0]) setSelectedProductId(products[0].id);
+  }, [products]);
+
+  if (products.length === 0) {
+    return <Card title="Historique par produit"><EmptyState text="Ajoute d'abord un produit dans l'onglet Produits." /></Card>;
+  }
+
+  const product = products.find((p) => p.id === selectedProductId) || products[0];
+  const range = rangeForPeriod(periodType, today, month, customRange);
+  const serie = buildProductDailyHistory(allDays, range, product.id);
+
+  const totalVendu = serie.reduce((s, d) => s + d.vendu, 0);
+  const totalCa = serie.reduce((s, d) => s + d.ca, 0);
+  const joursAvecVente = serie.filter((d) => d.vendu > 0).length;
+
+  // Plus récent en premier, uniquement les jours où quelque chose a été vendu.
+  const rowsTable = serie.filter((d) => d.vendu > 0).slice().reverse();
+
+  return (
+    <div>
+      <Card title="Choisir un produit et une période">
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ maxWidth: 320 }}>
+            <Label>Produit</Label>
+            <Select value={product.id} onChange={(e) => setSelectedProductId(e.target.value)}>
+              {products.map((p) => (
+                <option key={p.id} value={p.id}>{p.nom}{p.categorie ? ` — ${p.categorie}` : ""}</option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <Label>Période</Label>
+            <PeriodSelector
+              value={periodType} onChange={setPeriodType}
+              customRange={customRange} onCustomRangeChange={setCustomRange}
+            />
+          </div>
+          {periodType === "mois" && (
+            <div style={{ maxWidth: 220 }}>
+              <Label>Mois</Label>
+              <TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+            </div>
+          )}
+        </div>
+      </Card>
+
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+        <StatCard label="QUANTITÉ VENDUE" value={totalVendu} />
+        <StatCard label="CHIFFRE D'AFFAIRES" value={fmtMoney(totalCa)} accent="#D9A441" />
+        <StatCard label="JOURS AVEC VENTE" value={joursAvecVente} sub={`sur ${serie.length} jour${serie.length > 1 ? "s" : ""} de la période`} />
+      </div>
+
+      <Card title={`Évolution des ventes — ${product.nom}`}>
+        {serie.length === 0 ? (
+          <EmptyState text="Aucune donnée sur cette période." />
+        ) : (
+          <div style={{ height: 220 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={serie} margin={{ left: 0, right: 10, top: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#EEF0F4" />
+                <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#8A93A3" }} />
+                <YAxis tick={{ fontSize: 11, fill: "#8A93A3" }} allowDecimals={false} />
+                <Tooltip
+                  formatter={(v, name) => (name === "vendu" ? [v, "Quantité vendue"] : [fmtMoney(v), "CA"])}
+                  labelFormatter={(l) => `Jour ${l}`}
+                />
+                <Bar dataKey="vendu" fill="#1B2A4A" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </Card>
+
+      <Card title="Détail jour par jour">
+        {rowsTable.length === 0 ? (
+          <EmptyState text="Aucune vente enregistrée pour ce produit sur la période choisie." />
+        ) : (
+          <Table
+            headers={["Date", "Quantité vendue", "Chiffre d'affaires"]}
+            rows={rowsTable.map((d) => [
+              formatDateFR(d.date) + (d.date === today ? " (aujourd'hui)" : ""),
+              d.vendu,
+              fmtMoney(d.ca),
+            ])}
+          />
+        )}
+      </Card>
     </div>
   );
 }

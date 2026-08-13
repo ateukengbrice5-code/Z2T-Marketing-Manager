@@ -743,7 +743,15 @@ export async function resolveContestation(id, { adminResponse, resolvedBy }) {
 // -----------------------------------------------------------------------------
 
 export async function getTodaysBirthdays() {
-  const { data, error } = await supabase.from("vendors_with_birthday_today").select("*");
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth?.user) return [];
+  const { data: profile, error: profileErr } = await supabase
+    .from("profiles").select("entreprise_id").eq("id", auth.user.id).single();
+  if (profileErr || !profile?.entreprise_id) return [];
+  const { data, error } = await supabase
+    .from("vendors_with_birthday_today")
+    .select("*")
+    .eq("entreprise_id", profile.entreprise_id);
   if (error) throw error;
   return (data || []).map((v) => ({ id: v.id, nom: v.nom, prenom: v.prenom, photoUrl: v.photo_url, age: v.age }));
 }

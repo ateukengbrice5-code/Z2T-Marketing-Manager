@@ -42,10 +42,20 @@ export default function VendorManagementHub() {
   const fetchVendors = async () => {
     try {
       setLoading(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setVendors([]); return; }
+      const { data: profile, error: profileErr } = await supabase
+        .from('profiles')
+        .select('entreprise_id')
+        .eq('id', user.id)
+        .single();
+      if (profileErr || !profile?.entreprise_id) { setVendors([]); return; }
+
       const { data, error } = await supabase
         .from('vendors')
         .select('*')
-        .eq('statut', 'actif')
+        .eq('entreprise_id', profile.entreprise_id)
+        .eq('contract_statut', 'actif')
         .order('nom', { ascending: true });
 
       if (error) throw error;
@@ -59,9 +69,19 @@ export default function VendorManagementHub() {
 
   const checkBirthdays = async () => {
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data: profile, error: profileErr } = await supabase
+        .from('profiles')
+        .select('entreprise_id')
+        .eq('id', user.id)
+        .single();
+      if (profileErr || !profile?.entreprise_id) return;
+
       const { data, error } = await supabase
         .from('vendors_with_birthday_today')
-        .select('*');
+        .select('*')
+        .eq('entreprise_id', profile.entreprise_id);
 
       if (error) throw error;
       setTodayBirthdays(data || []);
