@@ -2191,7 +2191,7 @@ function AppRoot() {
           <NewsFeed currentUser={currentUser} />
         )}
         {tab === "produits" && isAdmin && <Produits products={products} setProducts={persistProducts} reloadProducts={reloadProducts} currentUser={currentUser} />}
-        {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} currentUser={currentUser} day={day} />}
+        {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} currentUser={currentUser} day={day} daysList={daysList} today={today} />}
         {tab === "vendeurs" && canManage && (
           <Vendeurs vendors={vendors} reloadVendors={reloadVendors} isAdmin={isAdmin} currentUser={currentUser} daysList={daysList} />
         )}
@@ -3004,9 +3004,63 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
 // Stock
 // ---------------------------------------------------------------------------
 
-function Stock({ products, setProducts, currentUser, day }) {
+// Fenêtre glissante (en jours) utilisée pour estimer le rythme de vente
+// récent de chaque produit, et donc une date de rupture approximative.
+const RUPTURE_FENETRE_JOURS = 14;
+
+function Stock({ products, setProducts, currentUser, day, daysList, today }) {
   const { showToast } = useToast();
   const [adjust, setAdjust] = useState({});
+  const [recentDays, setRecentDays] = useState([]);
+  const [loadingVelocity, setLoadingVelocity] = useState(true);
+
+  // Charge uniquement les journées des N derniers jours (pas tout
+  // l'historique) pour calculer un rythme de vente moyen par produit.
+  useEffect(() => {
+    let cancelled = false;
+    const debut = addDays(today, -(RUPTURE_FENETRE_JOURS - 1));
+    const candidats = (daysList || []).filter((d) => d >= debut && d <= today);
+    setLoadingVelocity(true);
+    store.getDaysInRange(candidats)
+      .then((loaded) => { if (!cancelled) setRecentDays(loaded); })
+      .catch(() => { if (!cancelled) setRecentDays([]); })
+      .finally(() => { if (!cancelled) setLoadingVelocity(false); });
+    return () => { cancelled = true; };
+  }, [daysList, today]);
+
+  // Quantité vendue par produit sur la fenêtre récente (tous vendeurs confondus).
+  const venduRecentParProduit = (() => {
+    const map = new Map();
+    recentDays.forEach((d) => {
+      (d.lines || []).forEach((l) => {
+        if (l.quantiteVendue == null) return;
+        map.set(l.productId, (map.get(l.productId) || 0) + (l.quantiteVendue || 0));
+      });
+    });
+    return map;
+  })();
+
+  // Estimation du nombre de jours avant rupture = stock général disponible
+  // divisé par le rythme de vente moyen par jour sur la fenêtre. On divise
+  // par RUPTURE_FENETRE_JOURS (nombre de jours calendaires de la fenêtre)
+  // et non par le nombre de journées où il y a eu une vente, pour ne pas
+  // surestimer le rythme si le point de vente a été fermé certains jours.
+  // Retourne null quand on ne peut pas estimer (pas de vente récente).
+  const joursAvantRupture = (productId, stockGeneral) => {
+    const vendu = venduRecentParProduit.get(productId) || 0;
+    const moyenneParJour = vendu / RUPTURE_FENETRE_JOURS;
+    if (moyenneParJour <= 0) return null;
+    return stockGeneral / moyenneParJour;
+  };
+
+  const renderRupture = (jours) => {
+    if (loadingVelocity) return <span style={{ color: "#B7BECB" }}>…</span>;
+    if (jours === null) return <span style={{ color: "#B7BECB" }}>—</span>;
+    if (jours < 1) return <span style={{ color: "#C1554A", fontWeight: 700 }}>Rupture imminente</span>;
+    const arrondi = Math.round(jours);
+    const color = arrondi <= 7 ? "#C1554A" : arrondi <= 14 ? "#D9A441" : "#3F9C6D";
+    return <span style={{ color, fontWeight: 700 }}>≈ {arrondi} j</span>;
+  };
 
   // Stock actuellement "chez les vendeurs" : ce qui a été remis aujourd'hui
   // et qu'ils n'ont pas encore rendu/vendu (retour du soir pas encore fait
@@ -3094,10 +3148,12 @@ function Stock({ products, setProducts, currentUser, day }) {
         <div style={{ fontSize: 12, color: "#8A93A3", marginBottom: 12 }}>
           <strong>Stock restant</strong> = ce qu'il reste en entrepôt. <strong>Stock général</strong> = Stock restant + ce qui a
           été remis aux vendeurs aujourd'hui et n'a pas encore été rendu/vendu. L'alerte de seuil se base sur le Stock
-          général — distribuer aux vendeurs ne la déclenche donc pas à tort.
+          général — distribuer aux vendeurs ne la déclenche donc pas à tort. <strong>Rupture estimée</strong> = Stock
+          général ÷ rythme de vente moyen des {RUPTURE_FENETRE_JOURS} derniers jours — une estimation, pas une garantie
+          (« — » si le produit n'a pas eu de vente récente).
         </div>
         <Table
-          headers={["Produit", "Catégorie", "Stock restant", "Chez les vendeurs", "Stock général", "Statut", "Réapprovisionner"]}
+          headers={["Produit", "Catégorie", "Stock restant", "Chez les vendeurs", "Stock général", "Statut", "Rupture estimée", "Réapprovisionner"]}
           rows={products.map((p) => {
             const chezVendeurs = enCoursChezVendeursParProduit.get(p.id) || 0;
             const stockGeneral = (Number(p.stock) || 0) + chezVendeurs;
@@ -3107,7 +3163,8 @@ function Stock({ products, setProducts, currentUser, day }) {
               chezVendeurs > 0 ? chezVendeurs : <span style={{ color: "#B7BECB" }}>—</span>,
               <strong key="sg">{stockGeneral}</strong>,
               <Badge key="b" ok={stockGeneral > seuil} okText="OK" warnText="Faible" />,
-              <div key="r" style={{ display: "flex", gap: 8 }}>
+              <span key="r">{renderRupture(joursAvantRupture(p.id, stockGeneral))}</span>,
+              <div key="r2" style={{ display: "flex", gap: 8 }}>
                 <TextInput type="number" placeholder="Qté" style={{ width: 80 }} value={adjust[p.id] || ""} onChange={(e) => setAdjust((a) => ({ ...a, [p.id]: e.target.value }))} />
                 <Button variant="gold" onClick={() => reappro(p.id)}>Ajouter</Button>
               </div>,
@@ -3116,7 +3173,7 @@ function Stock({ products, setProducts, currentUser, day }) {
         />
       </Card>
 
-      <Inventaire products={products} currentUser={currentUser} />
+      <Inventaire products={products} currentUser={currentUser} setProducts={setProducts} />
     </div>
   );
 }
@@ -3135,7 +3192,7 @@ function prochainSamedi(todayIso) {
   return d.toISOString().slice(0, 10);
 }
 
-function Inventaire({ products, currentUser }) {
+function Inventaire({ products, currentUser, setProducts }) {
   const { showToast } = useToast();
   const today = todayISO();
   const estSamedi = new Date(today + "T00:00:00").getDay() === 6;
@@ -3144,6 +3201,8 @@ function Inventaire({ products, currentUser }) {
   const [historique, setHistorique] = useState(null);
   const [selectedDate, setSelectedDate] = useState(null); // date dépliée dans l'historique
   const [saving, setSaving] = useState(false);
+  const [alignerStock, setAlignerStock] = useState(false);
+  const [applying, setApplying] = useState(false);
 
   const reloadHistorique = async () => setHistorique(await store.getInventaires());
   useEffect(() => { reloadHistorique(); }, []);
@@ -3152,6 +3211,44 @@ function Inventaire({ products, currentUser }) {
   const ecartDe = (p) => Number(physiqueDe(p)) - Number(p.stock);
 
   const nbEcarts = products.filter((p) => ecartDe(p) !== 0).length;
+
+  // Aligne le stock système sur le comptage physique pour les lignes en
+  // écart uniquement (les lignes sans écart ne sont pas touchées). Le
+  // rapprochement était jusqu'ici une étape manuelle séparée dans l'onglet
+  // Produits/Stock, avec le risque de l'oublier — ce bouton le fait en un
+  // clic, à partir de n'importe quel jeu de lignes (celles du jour ou
+  // celles d'un inventaire passé dans l'historique).
+  const appliquerEcarts = async (lignes, dateLabel) => {
+    const ecarts = lignes.filter((l) => l.ecart !== 0);
+    if (ecarts.length === 0) {
+      showToast("Aucun écart à appliquer.", "info");
+      return;
+    }
+    const ok = window.confirm(
+      `Appliquer ${ecarts.length} écart(s) au stock système ${dateLabel ? `(inventaire du ${dateLabel})` : ""} ?\n\n` +
+      `Le stock de chaque produit concerné sera aligné sur la quantité comptée physiquement. Cette action est irréversible.`
+    );
+    if (!ok) return false;
+    setApplying(true);
+    try {
+      const next = products.map((p) => {
+        const ligne = ecarts.find((l) => l.productId === p.id);
+        return ligne ? { ...p, stock: ligne.stockPhysique } : p;
+      });
+      await setProducts(next);
+      await store.logActivity(
+        currentUser, "appliquer_ecarts_inventaire",
+        `Écarts d'inventaire${dateLabel ? ` du ${dateLabel}` : ""} appliqués au stock système pour ${ecarts.length} produit(s).`
+      );
+      showToast(`${ecarts.length} écart(s) appliqué(s) au stock.`, "success");
+      return true;
+    } catch (err) {
+      showToast("Erreur lors de l'application des écarts : " + (err.message || err), "error");
+      return false;
+    } finally {
+      setApplying(false);
+    }
+  };
 
   const enregistrer = async () => {
     setSaving(true);
@@ -3163,10 +3260,12 @@ function Inventaire({ products, currentUser }) {
       await store.saveInventaire({ date: today, lignes, createdBy: currentUser?.username });
       await store.logActivity(currentUser, "inventaire", `Inventaire du ${fmtDateFr(today)} enregistré (${lignes.filter((l) => l.ecart !== 0).length} écart(s)).`);
       showToast(`Inventaire du ${fmtDateFr(today)} enregistré.`, "success");
+      if (alignerStock) await appliquerEcarts(lignes, fmtDateFr(today));
       // Impression automatique du résultat qui vient d'être enregistré, avant
       // que le formulaire ne soit réinitialisé.
       printInventaire();
       setQtyPhysique({});
+      setAlignerStock(false);
       await reloadHistorique();
     } catch (err) {
       showToast("Erreur lors de l'enregistrement de l'inventaire : " + (err.message || err), "error");
@@ -3258,7 +3357,13 @@ function Inventaire({ products, currentUser }) {
             <div style={{ fontSize: 12.5, color: nbEcarts > 0 ? "#C1554A" : "#8A93A3" }}>
               {nbEcarts > 0 ? `${nbEcarts} produit${nbEcarts > 1 ? "s" : ""} avec écart` : "Aucun écart pour l'instant"}
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+              {nbEcarts > 0 && (
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "#1B2A4A", cursor: "pointer" }}>
+                  <input type="checkbox" checked={alignerStock} onChange={(e) => setAlignerStock(e.target.checked)} />
+                  Aligner le stock système sur le comptage
+                </label>
+              )}
               <Button onClick={enregistrer} disabled={saving}>
                 <ClipboardList size={15} /> Enregistrer et imprimer l'inventaire du {fmtDateFr(today)}
               </Button>
@@ -3290,7 +3395,16 @@ function Inventaire({ products, currentUser }) {
               if (selectedDate === inv.date) {
                 rows.push([
                   <div key="detail">
-                    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                      {nbEc > 0 && (
+                        <Button
+                          variant="ghost"
+                          disabled={applying}
+                          onClick={async () => { if (await appliquerEcarts(inv.lignes, fmtDateFr(inv.date))) await reloadHistorique(); }}
+                        >
+                          Appliquer ces écarts au stock actuel
+                        </Button>
+                      )}
                       <Button variant="gold" onClick={printHistorique}>
                         <Printer size={15} /> Imprimer / Enregistrer en PDF
                       </Button>
