@@ -625,15 +625,21 @@ function Table({ headers, rows, rowKeys, highlightedKeys }) {
           {rows.map((row, i) => {
             const isHighlighted = !!(highlightedKeys && rowKeys && highlightedKeys.has(rowKeys[i]));
             return (
-              <tr
-                key={i}
-                style={{
-                  backgroundColor: isHighlighted ? "#FDF0D5" : "transparent",
-                  transition: "background-color 0.6s ease",
-                }}
-              >
+              <tr key={i}>
                 {row.map((cell, j) => (
-                  <td key={j} style={{ padding: "10px 10px", borderBottom: "1px solid #F3F4F7", color: "#1B2A4A" }}>{cell}</td>
+                  <td
+                    key={j}
+                    style={{
+                      padding: "10px 10px",
+                      borderBottom: "1px solid #F3F4F7",
+                      color: "#1B2A4A",
+                      backgroundColor: isHighlighted ? "#FDF0D5" : "transparent",
+                      borderLeft: isHighlighted ? "3px solid #D9A441" : "3px solid transparent",
+                      transition: "background-color 0.6s ease, border-left-color 0.6s ease",
+                    }}
+                  >
+                    {cell}
+                  </td>
                 ))}
               </tr>
             );
