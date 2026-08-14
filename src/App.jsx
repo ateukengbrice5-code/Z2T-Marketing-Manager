@@ -3015,6 +3015,7 @@ function Stock({ products, setProducts, currentUser, day, setDay, daysList, toda
   const [submittingPerte, setSubmittingPerte] = useState(false);
   const [perteVendeurModal, setPerteVendeurModal] = useState(null); // productId en cours (perte chez un vendeur), ou null
   const [submittingPerteVendeur, setSubmittingPerteVendeur] = useState(false);
+  const [resettingChezVendeurs, setResettingChezVendeurs] = useState(false);
   const [recentDays, setRecentDays] = useState([]);
   const [loadingVelocity, setLoadingVelocity] = useState(true);
 
@@ -3112,7 +3113,40 @@ function Stock({ products, setProducts, currentUser, day, setDay, daysList, toda
     }
   };
 
-  // Distributions du jour encore ouvertes (pas encore reprises au retour du
+  // Réinitialise en une fois tout ce qui est marqué "chez les vendeurs"
+  // aujourd'hui (toutes les distributions du jour encore ouvertes, tous
+  // produits et vendeurs confondus) — à utiliser quand un comptage
+  // physique vient de ré-intégrer ces produits au stock entrepôt, pour ne
+  // pas les compter deux fois. Le stock entrepôt n'est jamais touché ici :
+  // seules les lignes de distribution en cours sont retirées.
+  const reinitialiserToutChezVendeurs = async () => {
+    const lignesOuvertes = (day?.lines || []).filter((l) => l.quantiteRestante === null && (l.quantiteRemise || 0) > 0);
+    if (lignesOuvertes.length === 0) {
+      showToast("Il n'y a rien à réinitialiser : aucun produit n'est actuellement marqué chez un vendeur.", "info");
+      return;
+    }
+    const recap = lignesOuvertes.map((l) => `• ${l.quantiteRemise} × ${l.productNom} — ${l.vendorNom}`).join("\n");
+    const ok = window.confirm(
+      `Réinitialiser tout ce qui est "chez les vendeurs" (${lignesOuvertes.length} ligne(s)) ?\n\n${recap}\n\n` +
+      `Le stock entrepôt ne sera PAS modifié — à utiliser seulement si ces produits ont déjà été recomptés et ajoutés au stock ` +
+      `physique. Cette action est irréversible.`
+    );
+    if (!ok) return;
+    setResettingChezVendeurs(true);
+    try {
+      const nextLines = day.lines.filter((l) => !(l.quantiteRestante === null && (l.quantiteRemise || 0) > 0));
+      await setDay({ ...day, lines: nextLines });
+      await store.logActivity(
+        currentUser, "reset_chez_vendeurs",
+        `Stock "chez les vendeurs" réinitialisé après comptage physique (${lignesOuvertes.length} ligne(s) reprises : ${lignesOuvertes.map((l) => `${l.quantiteRemise} × ${l.productNom} chez ${l.vendorNom}`).join(", ")}). Stock entrepôt inchangé.`
+      );
+      showToast(`${lignesOuvertes.length} ligne(s) réinitialisée(s).`, "success");
+    } catch (err) {
+      showToast("Erreur lors de la réinitialisation : " + (err.message || err), "error");
+    } finally {
+      setResettingChezVendeurs(false);
+    }
+  };
   // soir) pour un produit donné — c'est de là que vient le chiffre "Chez
   // les vendeurs". Une par vendeur qui détient encore ce produit.
   const lignesChezVendeursPourProduit = (productId) =>
@@ -3207,7 +3241,14 @@ function Stock({ products, setProducts, currentUser, day, setDay, daysList, toda
         </div>
       </div>
 
-      <Card title="Niveaux de stock">
+      <Card
+        title="Niveaux de stock"
+        right={
+          <Button variant="ghost" onClick={reinitialiserToutChezVendeurs} disabled={resettingChezVendeurs}>
+            <PackageX size={15} /> Réinitialiser "chez les vendeurs"
+          </Button>
+        }
+      >
         <div style={{ fontSize: 12, color: "#8A93A3", marginBottom: 12 }}>
           <strong>Stock restant</strong> = ce qu'il reste en entrepôt. <strong>Stock général</strong> = Stock restant + ce qui a
           été remis aux vendeurs aujourd'hui et n'a pas encore été rendu/vendu. L'alerte de seuil se base sur le Stock
@@ -3215,6 +3256,8 @@ function Stock({ products, setProducts, currentUser, day, setDay, daysList, toda
           général ÷ rythme de vente moyen des {RUPTURE_FENETRE_JOURS} derniers jours — une estimation, pas une garantie
           (« — » si le produit n'a pas eu de vente récente). Une icône <PackageX size={11} style={{ verticalAlign: "middle" }} />
           à côté de "Stock restant" ou "Chez les vendeurs" permet de déclarer une perte à l'endroit exact où elle a eu lieu.
+          Le bouton "Réinitialiser" ci-dessus vide d'un coup tout ce qui est chez les vendeurs, sans toucher au stock entrepôt
+          — à utiliser seulement après un comptage physique qui a déjà réintégré ces produits.
         </div>
         <Table
           headers={["Produit", "Catégorie", "Stock restant", "Chez les vendeurs", "Stock général", "Statut", "Rupture estimée", "Réapprovisionner"]}
