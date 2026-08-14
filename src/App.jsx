@@ -3011,6 +3011,8 @@ const RUPTURE_FENETRE_JOURS = 14;
 function Stock({ products, setProducts, currentUser, day, daysList, today }) {
   const { showToast } = useToast();
   const [adjust, setAdjust] = useState({});
+  const [perteModal, setPerteModal] = useState(null); // productId en cours, ou null
+  const [submittingPerte, setSubmittingPerte] = useState(false);
   const [recentDays, setRecentDays] = useState([]);
   const [loadingVelocity, setLoadingVelocity] = useState(true);
 
@@ -3080,12 +3082,32 @@ function Stock({ products, setProducts, currentUser, day, daysList, today }) {
     const qty = Number(raw);
     if (!raw || Number.isNaN(qty)) return;
     if (qty <= 0) {
-      showToast("La quantité réapprovisionnée doit être un nombre positif. Pour corriger un stock à la baisse, utilise l'onglet Produits.", "error");
+      showToast("La quantité réapprovisionnée doit être un nombre positif. Pour retirer du stock (casse, vol, péremption…), utilise « Déclarer une perte ».", "error");
       return;
     }
     const next = products.map((p) => (p.id === id ? { ...p, stock: Number(p.stock) + qty } : p));
     await setProducts(next);
     setAdjust((a) => ({ ...a, [id]: "" }));
+  };
+
+  // Retire une quantité du stock pour une raison hors circuit normal
+  // (casse, vol, péremption, erreur de comptage…) — utile pour corriger
+  // immédiatement un seul produit, sans passer par tout le formulaire
+  // d'Inventaire hebdomadaire.
+  const declarerPerte = async (productId, qty, motif) => {
+    setSubmittingPerte(true);
+    try {
+      const p = products.find((pp) => pp.id === productId);
+      const next = products.map((pp) => (pp.id === productId ? { ...pp, stock: Number(pp.stock) - qty } : pp));
+      await setProducts(next);
+      await store.logActivity(currentUser, "declarer_perte_stock", `Perte déclarée : ${qty} × ${p ? p.nom : productId} (motif : ${motif}).`);
+      showToast(`Perte de ${qty} ${p ? p.nom : ""} enregistrée.`, "success");
+      setPerteModal(null);
+    } catch (err) {
+      showToast("Erreur lors de la déclaration de la perte : " + (err.message || err), "error");
+    } finally {
+      setSubmittingPerte(false);
+    }
   };
 
   if (products.length === 0) {
@@ -3164,9 +3186,16 @@ function Stock({ products, setProducts, currentUser, day, daysList, today }) {
               <strong key="sg">{stockGeneral}</strong>,
               <Badge key="b" ok={stockGeneral > seuil} okText="OK" warnText="Faible" />,
               <span key="r">{renderRupture(joursAvantRupture(p.id, stockGeneral))}</span>,
-              <div key="r2" style={{ display: "flex", gap: 8 }}>
+              <div key="r2" style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <TextInput type="number" placeholder="Qté" style={{ width: 80 }} value={adjust[p.id] || ""} onChange={(e) => setAdjust((a) => ({ ...a, [p.id]: e.target.value }))} />
                 <Button variant="gold" onClick={() => reappro(p.id)}>Ajouter</Button>
+                <button
+                  onClick={() => setPerteModal(p.id)}
+                  title="Déclarer une perte"
+                  style={{ ...iconBtnStyle, color: "#C1554A" }}
+                >
+                  <PackageX size={15} />
+                </button>
               </div>,
             ];
           })}
@@ -3174,15 +3203,87 @@ function Stock({ products, setProducts, currentUser, day, daysList, today }) {
       </Card>
 
       <Inventaire products={products} currentUser={currentUser} setProducts={setProducts} />
+
+      {perteModal && (
+        <DeclarerPerteModal
+          product={products.find((p) => p.id === perteModal)}
+          submitting={submittingPerte}
+          onClose={() => setPerteModal(null)}
+          onConfirm={(qty, motif) => declarerPerte(perteModal, qty, motif)}
+        />
+      )}
+    </div>
+  );
+}
+
+const MOTIFS_PERTE = ["Casse", "Vol", "Péremption", "Erreur de comptage", "Autre"];
+
+// Petite modale pour retirer une quantité du stock hors circuit normal
+// (casse, vol, péremption…), avec un motif obligatoire pour garder une
+// trace exploitable dans le journal d'activité.
+function DeclarerPerteModal({ product, onClose, onConfirm, submitting }) {
+  const [qty, setQty] = useState("");
+  const [motif, setMotif] = useState(MOTIFS_PERTE[0]);
+  const [error, setError] = useState("");
+
+  if (!product) return null;
+
+  const submit = () => {
+    const n = Number(qty);
+    if (!qty || Number.isNaN(n) || n <= 0) {
+      setError("Indique une quantité positive.");
+      return;
+    }
+    if (n > Number(product.stock)) {
+      setError(`Stock insuffisant : il ne reste que ${product.stock} en stock.`);
+      return;
+    }
+    setError("");
+    onConfirm(n, motif);
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(27,42,74,0.55)", zIndex: 200,
+      display: "flex", alignItems: "flex-start", justifyContent: "center", overflowY: "auto", padding: "40px 16px",
+    }}>
+      <div style={{ background: "#fff", borderRadius: 16, maxWidth: 420, width: "100%", padding: 24, position: "relative" }}>
+        <button onClick={onClose} style={{ position: "absolute", top: 16, right: 16, background: "none", border: "none", cursor: "pointer", color: "#8A93A3" }}>
+          <X size={20} />
+        </button>
+        <h3 style={{ margin: "0 0 4px", fontFamily: "Cambria, Georgia, serif", fontSize: 18, color: "#1B2A4A" }}>Déclarer une perte</h3>
+        <div style={{ fontSize: 12.5, color: "#8A93A3", marginBottom: 18 }}>{product.nom} — stock actuel : {product.stock}</div>
+
+        <Label>Quantité perdue</Label>
+        <TextInput
+          type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Ex. 3"
+          style={{ width: "100%", marginBottom: 12 }}
+        />
+
+        <Label>Motif</Label>
+        <Select value={motif} onChange={(e) => setMotif(e.target.value)} style={{ width: "100%", marginBottom: 18 }}>
+          {MOTIFS_PERTE.map((m) => <option key={m} value={m}>{m}</option>)}
+        </Select>
+
+        {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <Button variant="ghost" onClick={onClose} disabled={submitting}>Annuler</Button>
+          <Button variant="primary" onClick={submit} disabled={submitting}>Confirmer la perte</Button>
+        </div>
+      </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
 // Inventaire physique hebdomadaire (recommandé chaque samedi) — compare le
-// stock système à un comptage réel, et n'enregistre que l'écart : on ne
-// touche jamais au stock système ici, l'ajustement reste une action
-// manuelle séparée (via "Réapprovisionner" ci-dessus si besoin).
+// stock système à un comptage réel et n'enregistre que l'écart. L'ajustement
+// du stock système reste optionnel au moment de l'enregistrement (case
+// "Aligner le stock système sur le comptage") ou peut être appliqué plus
+// tard depuis l'historique — voir appliquerEcarts ci-dessous. Pour une
+// correction ponctuelle sur un seul produit (casse, vol…), voir plutôt
+// "Déclarer une perte" dans l'onglet Stock.
 // ---------------------------------------------------------------------------
 
 function prochainSamedi(todayIso) {
