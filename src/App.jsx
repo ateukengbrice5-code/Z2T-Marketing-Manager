@@ -5411,6 +5411,27 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
       });
     }, 900);
   };
+  // Surbrillance "au focus" : s'allume dès qu'on clique/tabule dans un champ
+  // de saisie de la ligne (avant même de taper), pour repérer tout de suite
+  // la bonne ligne sans avoir à comparer visuellement les lignes du tableau —
+  // limite les erreurs de saisie sur la mauvaise ligne. Reste allumée tant
+  // que le champ garde le focus, puis s'éteint en douceur à la sortie.
+  const focusProductRow = (productId) => {
+    if (highlightTimers.current[productId]) {
+      clearTimeout(highlightTimers.current[productId]);
+      delete highlightTimers.current[productId];
+    }
+    setHighlightedProducts((prev) => new Set(prev).add(productId));
+  };
+  const blurProductRow = (productId) => {
+    highlightTimers.current[productId] = setTimeout(() => {
+      setHighlightedProducts((prev) => {
+        const next = new Set(prev);
+        next.delete(productId);
+        return next;
+      });
+    }, 900);
+  };
   const [error, setError] = useState("");
   const [editQty, setEditQty] = useState({}); // lineId -> valeur en cours d'édition
   const [filterStatutJour, setFilterStatutJour] = useState("tous"); // "tous" | "encours" — filtre du tableau "Distributions du jour"
@@ -5611,7 +5632,7 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
 
   const setQtyFor = (productId, value) => {
     setQtyByProduct((s) => ({ ...s, [productId]: value }));
-    flashProductRow(productId);
+    focusProductRow(productId);
   };
 
   // -----------------------------------------------------------------------
@@ -6083,6 +6104,8 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
                         type="number" style={{ width: 80 }} placeholder="0"
                         value={qtyByProduct[p.id] ?? ""}
                         onChange={(e) => setQtyFor(p.id, e.target.value)}
+                        onFocus={() => focusProductRow(p.id)}
+                        onBlur={() => blurProductRow(p.id)}
                       />
                       {QUICK_QTYS.map((q) => (
                         <button
@@ -6106,7 +6129,12 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
                         <TextInput
                           type="number" style={{ width: 80 }}
                           value={editQty[pending.id] ?? pending.quantiteRemise}
-                          onChange={(e) => setEditQty((s) => ({ ...s, [pending.id]: e.target.value }))}
+                          onChange={(e) => {
+                            setEditQty((s) => ({ ...s, [pending.id]: e.target.value }));
+                            focusProductRow(p.id);
+                          }}
+                          onFocus={() => focusProductRow(p.id)}
+                          onBlur={() => blurProductRow(p.id)}
                         />
                         <Button variant="ghost" onClick={() => saveEditedQty(pending)}>OK</Button>
                         <button onClick={() => cancelDistribution(pending)} title="Annuler cette distribution" style={iconBtnStyle}><Trash2 size={15} /></button>
