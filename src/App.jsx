@@ -2191,7 +2191,7 @@ function AppRoot() {
           <NewsFeed currentUser={currentUser} />
         )}
         {tab === "produits" && isAdmin && <Produits products={products} setProducts={persistProducts} reloadProducts={reloadProducts} currentUser={currentUser} />}
-        {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} currentUser={currentUser} day={day} daysList={daysList} today={today} />}
+        {tab === "stock" && canManage && <Stock products={products} setProducts={persistProducts} currentUser={currentUser} day={day} setDay={persistDay} daysList={daysList} today={today} />}
         {tab === "vendeurs" && canManage && (
           <Vendeurs vendors={vendors} reloadVendors={reloadVendors} isAdmin={isAdmin} currentUser={currentUser} daysList={daysList} />
         )}
@@ -3008,11 +3008,13 @@ function Produits({ products, setProducts, reloadProducts, currentUser }) {
 // récent de chaque produit, et donc une date de rupture approximative.
 const RUPTURE_FENETRE_JOURS = 14;
 
-function Stock({ products, setProducts, currentUser, day, daysList, today }) {
+function Stock({ products, setProducts, currentUser, day, setDay, daysList, today }) {
   const { showToast } = useToast();
   const [adjust, setAdjust] = useState({});
-  const [perteModal, setPerteModal] = useState(null); // productId en cours, ou null
+  const [perteModal, setPerteModal] = useState(null); // productId en cours (perte entrepôt), ou null
   const [submittingPerte, setSubmittingPerte] = useState(false);
+  const [perteVendeurModal, setPerteVendeurModal] = useState(null); // productId en cours (perte chez un vendeur), ou null
+  const [submittingPerteVendeur, setSubmittingPerteVendeur] = useState(false);
   const [recentDays, setRecentDays] = useState([]);
   const [loadingVelocity, setLoadingVelocity] = useState(true);
 
@@ -3110,6 +3112,45 @@ function Stock({ products, setProducts, currentUser, day, daysList, today }) {
     }
   };
 
+  // Distributions du jour encore ouvertes (pas encore reprises au retour du
+  // soir) pour un produit donné — c'est de là que vient le chiffre "Chez
+  // les vendeurs". Une par vendeur qui détient encore ce produit.
+  const lignesChezVendeursPourProduit = (productId) =>
+    (day?.lines || []).filter((l) => l.productId === productId && l.quantiteRestante === null && (l.quantiteRemise || 0) > 0);
+
+  // Déclare la perte d'une quantité que le système croit encore "chez un
+  // vendeur" (distribution du jour non reprise), alors qu'elle est en
+  // réalité introuvable — ni en stock, ni vendue. On réduit la quantité
+  // remise sur CETTE ligne de distribution précise, sans jamais recréditer
+  // le stock entrepôt (contrairement à une annulation de distribution
+  // classique) puisque le produit est réellement perdu, pas de retour à
+  // l'entrepôt. Si la ligne tombe à 0, elle est simplement retirée.
+  const declarerPerteVendeur = async (lineId, qty, motif) => {
+    setSubmittingPerteVendeur(true);
+    try {
+      const ligne = (day?.lines || []).find((l) => l.id === lineId);
+      if (!ligne) {
+        showToast("Cette distribution n'existe plus (elle a peut-être déjà été reprise entre-temps).", "error");
+        return;
+      }
+      const nextQty = ligne.quantiteRemise - qty;
+      const nextLines = nextQty <= 0
+        ? day.lines.filter((l) => l.id !== lineId)
+        : day.lines.map((l) => (l.id === lineId ? { ...l, quantiteRemise: nextQty } : l));
+      await setDay({ ...day, lines: nextLines });
+      await store.logActivity(
+        currentUser, "declarer_perte_vendeur",
+        `Perte déclarée chez ${ligne.vendorNom} : ${qty} × ${ligne.productNom} (motif : ${motif}). Stock entrepôt non recrédité.`
+      );
+      showToast(`Perte de ${qty} ${ligne.productNom} chez ${ligne.vendorNom} enregistrée.`, "success");
+      setPerteVendeurModal(null);
+    } catch (err) {
+      showToast("Erreur lors de la déclaration de la perte : " + (err.message || err), "error");
+    } finally {
+      setSubmittingPerteVendeur(false);
+    }
+  };
+
   if (products.length === 0) {
     return (
       <Card title="Niveaux de stock">
@@ -3172,7 +3213,8 @@ function Stock({ products, setProducts, currentUser, day, daysList, today }) {
           été remis aux vendeurs aujourd'hui et n'a pas encore été rendu/vendu. L'alerte de seuil se base sur le Stock
           général — distribuer aux vendeurs ne la déclenche donc pas à tort. <strong>Rupture estimée</strong> = Stock
           général ÷ rythme de vente moyen des {RUPTURE_FENETRE_JOURS} derniers jours — une estimation, pas une garantie
-          (« — » si le produit n'a pas eu de vente récente).
+          (« — » si le produit n'a pas eu de vente récente). Une icône <PackageX size={11} style={{ verticalAlign: "middle" }} />
+          à côté de "Stock restant" ou "Chez les vendeurs" permet de déclarer une perte à l'endroit exact où elle a eu lieu.
         </div>
         <Table
           headers={["Produit", "Catégorie", "Stock restant", "Chez les vendeurs", "Stock général", "Statut", "Rupture estimée", "Réapprovisionner"]}
@@ -3182,7 +3224,18 @@ function Stock({ products, setProducts, currentUser, day, daysList, today }) {
             const seuil = Number(p.seuilAlerte ?? 5);
             return [
               p.nom, p.categorie || "Général", p.stock,
-              chezVendeurs > 0 ? chezVendeurs : <span style={{ color: "#B7BECB" }}>—</span>,
+              chezVendeurs > 0 ? (
+                <div key="cv" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                  <span>{chezVendeurs}</span>
+                  <button
+                    onClick={() => setPerteVendeurModal(p.id)}
+                    title="Déclarer une perte chez un vendeur"
+                    style={{ ...iconBtnStyle, color: "#C1554A" }}
+                  >
+                    <PackageX size={13} />
+                  </button>
+                </div>
+              ) : <span style={{ color: "#B7BECB" }}>—</span>,
               <strong key="sg">{stockGeneral}</strong>,
               <Badge key="b" ok={stockGeneral > seuil} okText="OK" warnText="Faible" />,
               <span key="r">{renderRupture(joursAvantRupture(p.id, stockGeneral))}</span>,
@@ -3210,6 +3263,16 @@ function Stock({ products, setProducts, currentUser, day, daysList, today }) {
           submitting={submittingPerte}
           onClose={() => setPerteModal(null)}
           onConfirm={(qty, motif) => declarerPerte(perteModal, qty, motif)}
+        />
+      )}
+
+      {perteVendeurModal && (
+        <DeclarerPerteVendeurModal
+          product={products.find((p) => p.id === perteVendeurModal)}
+          lignes={lignesChezVendeursPourProduit(perteVendeurModal)}
+          submitting={submittingPerteVendeur}
+          onClose={() => setPerteVendeurModal(null)}
+          onConfirm={(lineId, qty, motif) => declarerPerteVendeur(lineId, qty, motif)}
         />
       )}
     </div>
@@ -3257,6 +3320,82 @@ function DeclarerPerteModal({ product, onClose, onConfirm, submitting }) {
         <Label>Quantité perdue</Label>
         <TextInput
           type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Ex. 3"
+          style={{ width: "100%", marginBottom: 12 }}
+        />
+
+        <Label>Motif</Label>
+        <Select value={motif} onChange={(e) => setMotif(e.target.value)} style={{ width: "100%", marginBottom: 18 }}>
+          {MOTIFS_PERTE.map((m) => <option key={m} value={m}>{m}</option>)}
+        </Select>
+
+        {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <Button variant="ghost" onClick={onClose} disabled={submitting}>Annuler</Button>
+          <Button variant="primary" onClick={submit} disabled={submitting}>Confirmer la perte</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Même principe que DeclarerPerteModal, mais pour une quantité que le
+// système croit encore "chez un vendeur" (distribution du jour non
+// reprise). Si plusieurs vendeurs détiennent ce produit aujourd'hui, on
+// choisit lequel est concerné.
+function DeclarerPerteVendeurModal({ product, lignes, onClose, onConfirm, submitting }) {
+  const [lineId, setLineId] = useState(lignes[0]?.id || "");
+  const [qty, setQty] = useState("");
+  const [motif, setMotif] = useState(MOTIFS_PERTE[0]);
+  const [error, setError] = useState("");
+
+  if (!product || lignes.length === 0) return null;
+  const ligne = lignes.find((l) => l.id === lineId) || lignes[0];
+
+  const submit = () => {
+    const n = Number(qty);
+    if (!qty || Number.isNaN(n) || n <= 0) {
+      setError("Indique une quantité positive.");
+      return;
+    }
+    if (n > ligne.quantiteRemise) {
+      setError(`${ligne.vendorNom} n'a que ${ligne.quantiteRemise} unité(s) de ce produit en main.`);
+      return;
+    }
+    setError("");
+    onConfirm(ligne.id, n, motif);
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(27,42,74,0.55)", zIndex: 200,
+      display: "flex", alignItems: "flex-start", justifyContent: "center", overflowY: "auto", padding: "40px 16px",
+    }}>
+      <div style={{ background: "#fff", borderRadius: 16, maxWidth: 420, width: "100%", padding: 24, position: "relative" }}>
+        <button onClick={onClose} style={{ position: "absolute", top: 16, right: 16, background: "none", border: "none", cursor: "pointer", color: "#8A93A3" }}>
+          <X size={20} />
+        </button>
+        <h3 style={{ margin: "0 0 4px", fontFamily: "Cambria, Georgia, serif", fontSize: 18, color: "#1B2A4A" }}>Déclarer une perte chez un vendeur</h3>
+        <div style={{ fontSize: 12.5, color: "#8A93A3", marginBottom: 18 }}>
+          {product.nom} — ce produit ne sera ni recrédité au stock entrepôt, ni compté comme une vente pour ce vendeur.
+        </div>
+
+        {lignes.length > 1 ? (
+          <>
+            <Label>Vendeur concerné</Label>
+            <Select value={ligne.id} onChange={(e) => setLineId(e.target.value)} style={{ width: "100%", marginBottom: 12 }}>
+              {lignes.map((l) => <option key={l.id} value={l.id}>{l.vendorNom} — {l.quantiteRemise} en main</option>)}
+            </Select>
+          </>
+        ) : (
+          <div style={{ fontSize: 13, color: "#1B2A4A", marginBottom: 12 }}>
+            Vendeur : <strong>{ligne.vendorNom}</strong> — {ligne.quantiteRemise} unité(s) en main.
+          </div>
+        )}
+
+        <Label>Quantité perdue</Label>
+        <TextInput
+          type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Ex. 2"
           style={{ width: "100%", marginBottom: 12 }}
         />
 
