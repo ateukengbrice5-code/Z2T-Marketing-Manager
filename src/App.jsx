@@ -603,7 +603,12 @@ function EmptyState({ text }) {
   return <div style={{ padding: "24px 10px", textAlign: "center", color: "#9AA2B1", fontSize: 13.5, fontStyle: "italic" }}>{text}</div>;
 }
 
-function Table({ headers, rows }) {
+// rowKeys (optionnel) : identifiant stable pour chaque ligne (ex. l'id du
+// produit), dans le même ordre que `rows`. highlightedKeys (optionnel) :
+// Set des clés à mettre en surbrillance — sert par ex. dans Distribution à
+// mettre en évidence toute la ligne d'un produit quand on clique pour
+// l'ajouter, vu que le contrôle d'ajout est loin du nom du produit.
+function Table({ headers, rows, rowKeys, highlightedKeys }) {
   return (
     <div style={{ overflowX: "auto" }}>
       <table className="data-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
@@ -617,13 +622,22 @@ function Table({ headers, rows }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, i) => (
-            <tr key={i}>
-              {row.map((cell, j) => (
-                <td key={j} style={{ padding: "10px 10px", borderBottom: "1px solid #F3F4F7", color: "#1B2A4A" }}>{cell}</td>
-              ))}
-            </tr>
-          ))}
+          {rows.map((row, i) => {
+            const isHighlighted = !!(highlightedKeys && rowKeys && highlightedKeys.has(rowKeys[i]));
+            return (
+              <tr
+                key={i}
+                style={{
+                  backgroundColor: isHighlighted ? "#FDF0D5" : "transparent",
+                  transition: "background-color 0.6s ease",
+                }}
+              >
+                {row.map((cell, j) => (
+                  <td key={j} style={{ padding: "10px 10px", borderBottom: "1px solid #F3F4F7", color: "#1B2A4A" }}>{cell}</td>
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -2267,6 +2281,7 @@ function Dashboard({ products, vendors, day, daysList, today, objectives, setObj
 
   const lowStock = products.filter((p) => Number(p.stock) <= 5);
   const stockValue = products.reduce((s, p) => s + Number(p.stock || 0) * Number(p.prix || 0), 0);
+  const stockTotalUnites = products.reduce((s, p) => s + Number(p.stock || 0), 0);
 
   useEffect(() => {
     (async () => {
@@ -2466,6 +2481,10 @@ function Dashboard({ products, vendors, day, daysList, today, objectives, setObj
           <Card title="Valeur du stock">
             <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 24, fontWeight: 700, color: "#1B2A4A" }}>{fmtMoney(stockValue)}</div>
             <div style={{ fontSize: 12.5, color: "#8A93A3", marginTop: 4 }}>Sur la base du stock actuel et des prix unitaires</div>
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #F0F1F4", display: "flex", alignItems: "baseline", gap: 6 }}>
+              <span style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 18, fontWeight: 700, color: "#1B2A4A" }}>{stockTotalUnites}</span>
+              <span style={{ fontSize: 12, color: "#8A93A3" }}>unité{stockTotalUnites > 1 ? "s" : ""} en stock (toutes références confondues)</span>
+            </div>
           </Card>
 
           {totalDepenses > 0 && (
@@ -5367,6 +5386,25 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
 
   const [vendorId, setVendorId] = useState("");
   const [qtyByProduct, setQtyByProduct] = useState({}); // productId -> quantité saisie (texte)
+  // Surbrillance temporaire de la ligne d'un produit quand on clique sur un
+  // bouton "+N" : le contrôle d'ajout est loin du nom du produit dans le
+  // tableau, la surbrillance donne un repère visuel immédiat sur la bonne ligne.
+  const [highlightedProducts, setHighlightedProducts] = useState(new Set());
+  const highlightTimers = useRef({});
+  useEffect(() => {
+    return () => { Object.values(highlightTimers.current).forEach(clearTimeout); };
+  }, []);
+  const flashProductRow = (productId) => {
+    setHighlightedProducts((prev) => new Set(prev).add(productId));
+    if (highlightTimers.current[productId]) clearTimeout(highlightTimers.current[productId]);
+    highlightTimers.current[productId] = setTimeout(() => {
+      setHighlightedProducts((prev) => {
+        const next = new Set(prev);
+        next.delete(productId);
+        return next;
+      });
+    }, 900);
+  };
   const [error, setError] = useState("");
   const [editQty, setEditQty] = useState({}); // lineId -> valeur en cours d'édition
   const [filterStatutJour, setFilterStatutJour] = useState("tous"); // "tous" | "encours" — filtre du tableau "Distributions du jour"
@@ -5565,7 +5603,10 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
     setQtyByProduct({});
   };
 
-  const setQtyFor = (productId, value) => setQtyByProduct((s) => ({ ...s, [productId]: value }));
+  const setQtyFor = (productId, value) => {
+    setQtyByProduct((s) => ({ ...s, [productId]: value }));
+    flashProductRow(productId);
+  };
 
   // -----------------------------------------------------------------------
   // "Répéter hier" — évite de retaper les quantités depuis zéro : va
@@ -5725,6 +5766,7 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
   // que de l'écraser, pour pouvoir cumuler (ex. +10 puis +5 = 15).
   const bumpQty = (productId, amount) => {
     setQtyByProduct((s) => ({ ...s, [productId]: String((Number(s[productId]) || 0) + amount) }));
+    flashProductRow(productId);
   };
 
   // Valide en une seule fois toutes les quantités saisies dans la liste :
@@ -6025,6 +6067,8 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
               )}
               <Table
                 headers={groupMode ? ["Produit", "Stock système", "Quantité (par vendeur)"] : ["Produit", "Stock système", "Déjà remis aujourd'hui", "Ajouter"]}
+                rowKeys={produitsAffiches.map((p) => p.id)}
+                highlightedKeys={highlightedProducts}
                 rows={produitsAffiches.map((p) => {
                   const pending = pendingByProduct[p.id];
                   const ligneAjout = (
