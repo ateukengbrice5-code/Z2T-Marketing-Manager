@@ -1126,7 +1126,8 @@ function buildDailyTotalSeries(days, range) {
 
 // Série jour par jour de toutes les grandeurs suivies dans l'onglet Caisse
 // (chiffre d'affaires, écart de caisse, dépenses, paiement mobile, espèces
-// nettes) sur une période — utilisée par le détail dépliable de chaque carte.
+// nettes, montant perçu brut, montant déposé net) sur une période — utilisée
+// par le détail dépliable de chaque carte.
 function buildCaisseDailySeries(days, range, vendors) {
   const byDate = {};
   days.forEach((d) => { if (d) byDate[d.date] = d; });
@@ -1144,7 +1145,9 @@ function buildCaisseDailySeries(days, range, vendors) {
         if (summary.finalise) { especesBrutes += summary.montantVerseEspeces; ecart += summary.ecart; }
       });
     }
-    series.push({ date: cur, label: cur.slice(8, 10), ca, ecart, depenses, mobile, especes: especesBrutes - depenses });
+    const brut = especesBrutes + mobile; // montant perçu à l'état brut (avant toute dépense)
+    const net = brut - depenses; // montant restant à déposer une fois toutes les dépenses retirées
+    series.push({ date: cur, label: cur.slice(8, 10), ca, ecart, depenses, mobile, especes: especesBrutes - depenses, brut, net });
     cur = addDays(cur, 1);
   }
   return series;
@@ -7130,11 +7133,13 @@ function caisseMetricLabel(metric) {
   return {
     ca: "Chiffre d'affaires", ecart: "Écart de caisse", depenses: "Dépenses",
     mobile: "Paiement mobile", especes: "Espèces nettes",
+    brut: "Montant perçu (brut)", net: "Montant à déposer (net des dépenses)",
   }[metric] || "";
 }
 function caisseMetricAccent(metric) {
   return {
     ca: "#D9A441", ecart: "#C1554A", depenses: "#C1554A", mobile: "#1B2A4A", especes: "#3F8361",
+    brut: "#4A7FC7", net: "#3F8361",
   }[metric] || "#1B2A4A";
 }
 function caisseVendorColumns(metric) {
@@ -7145,6 +7150,11 @@ function caisseVendorColumns(metric) {
       return { headers: ["Vendeur", "Paiement mobile"], row: (r) => [r.nom, fmtMoney(r.mobile)] };
     case "especes":
       return { headers: ["Vendeur", "Espèces versées"], row: (r) => [r.nom, fmtMoney(r.especes)] };
+    case "brut":
+      return {
+        headers: ["Vendeur", "Espèces", "Mobile", "Total perçu"],
+        row: (r) => [r.nom, fmtMoney(r.especes), fmtMoney(r.mobile), fmtMoney(r.especes + r.mobile)],
+      };
     case "ecart":
       return {
         headers: ["Vendeur", "Écart cumulé", "Jours avec écart", "Jours versés"],
@@ -7255,6 +7265,12 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
   const totalMobile = summaries.reduce((s, x) => s + x.summary.totalMobile, 0);
   const totalDepenses = (day.expenses || []).reduce((s, e) => s + (Number(e.montant) || 0), 0);
   const especesNettes = totalEspeces - totalDepenses;
+  // Montant perçu à l'état brut (espèces + mobile, avant toute dépense) et
+  // montant qui reste réellement à déposer une fois toutes les dépenses du
+  // jour retirées — la différence entre les deux correspond exactement au
+  // total des dépenses.
+  const totalBrut = totalEspeces + totalMobile;
+  const totalNetADeposer = totalBrut - totalDepenses;
 
   const daysWithToday = allDays ? (allDays.some((d) => d.date === today) ? allDays : [...allDays, dayProp]) : [dayProp];
   const depensesSemaine = sumExpensesOverRange(daysWithToday, getCurrentWeekRange(today));
@@ -7460,6 +7476,16 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
         <StatCard
           label="DÉPENSES — AUJOURD'HUI" value={fmtMoney(totalDepenses)} accent="#C1554A"
           onClick={() => toggleCaisseDetail("depenses")} active={caisseDetailMetric === "depenses"}
+        />
+        <StatCard
+          label="MONTANT PERÇU (BRUT)" value={fmtMoney(totalBrut)} accent="#4A7FC7"
+          sub="Espèces + mobile, avant dépenses"
+          onClick={() => toggleCaisseDetail("brut")} active={caisseDetailMetric === "brut"}
+        />
+        <StatCard
+          label="MONTANT À DÉPOSER (NET)" value={fmtMoney(totalNetADeposer)} accent="#3F8361"
+          sub="Une fois les dépenses retirées"
+          onClick={() => toggleCaisseDetail("net")} active={caisseDetailMetric === "net"}
         />
         <StatCard
           label="TOTAL PAIEMENT MOBILE" value={fmtMoney(totalMobile)} accent="#1B2A4A"
@@ -7792,6 +7818,11 @@ function Rapports({ vendors, products, daysList, today, day }) {
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState(null);
   const [reportError, setReportError] = useState("");
+  // Détail dépliable d'une carte du rapport principal (CA, espèces, mobile,
+  // dépenses, brut/net) — même principe que les cartes de l'onglet Caisse :
+  // un clic affiche le détail jour par jour sur la période déjà générée,
+  // avec ventilation par vendeur (ou liste des dépenses) en dessous.
+  const [reportDetailMetric, setReportDetailMetric] = useState(null);
 
   const [produitPeriodType, setProduitPeriodType] = useState("mois");
   const [produitMonth, setProduitMonth] = useState(today.slice(0, 7));
@@ -7906,9 +7937,16 @@ function Rapports({ vendors, products, daysList, today, day }) {
       setReport({
         range,
         totalCa, totalVendu, totalEspeces, totalMobile, totalDepenses,
+        totalBrut: totalEspeces + totalMobile,
+        totalNetADeposer: totalEspeces + totalMobile - totalDepenses,
         ranking: aggregateVendorRanking(loaded, range, vendors),
+        vendorRows: aggregateVendorFullReport(loaded, range, vendors).rows,
         byCategory: aggregateRangeByCategory(loaded, range, productsById),
-        dailySeries: buildDailyTotalSeries(loaded, range),
+        dailySeries: buildCaisseDailySeries(loaded, range, vendors),
+        expensesList: loaded
+          .filter((d) => d && inRange(d.date, range))
+          .flatMap((d) => (d.expenses || []).map((e) => ({ ...e, date: d.date })))
+          .sort((a, b) => (a.date < b.date ? 1 : -1)),
         joursActifs: loaded.filter((d) => d.lines.length > 0).length,
       });
     } catch (err) {
@@ -8008,12 +8046,108 @@ function Rapports({ vendors, products, daysList, today, day }) {
           </Card>
 
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
-            <StatCard label="CHIFFRE D'AFFAIRES SUR LA PÉRIODE" value={fmtMoney(report.totalCa)} accent="#D9A441" />
+            <StatCard
+              label="CHIFFRE D'AFFAIRES SUR LA PÉRIODE" value={fmtMoney(report.totalCa)} accent="#D9A441"
+              onClick={() => setReportDetailMetric(reportDetailMetric === "ca" ? null : "ca")} active={reportDetailMetric === "ca"}
+            />
             <StatCard label="ARTICLES VENDUS" value={report.totalVendu} />
-            <StatCard label="ESPÈCES ENCAISSÉES" value={fmtMoney(report.totalEspeces)} />
-            <StatCard label="PAIEMENTS MOBILES" value={fmtMoney(report.totalMobile)} />
-            <StatCard label="DÉPENSES SUR LA PÉRIODE" value={fmtMoney(report.totalDepenses)} accent="#C1554A" />
+            <StatCard
+              label="MONTANT PERÇU (BRUT)" value={fmtMoney(report.totalBrut)} accent="#4A7FC7"
+              sub="Espèces + mobile, avant dépenses"
+              onClick={() => setReportDetailMetric(reportDetailMetric === "brut" ? null : "brut")} active={reportDetailMetric === "brut"}
+            />
+            <StatCard
+              label="MONTANT À DÉPOSER (NET)" value={fmtMoney(report.totalNetADeposer)} accent="#3F8361"
+              sub="Une fois les dépenses retirées"
+              onClick={() => setReportDetailMetric(reportDetailMetric === "net" ? null : "net")} active={reportDetailMetric === "net"}
+            />
+            <StatCard
+              label="ESPÈCES ENCAISSÉES" value={fmtMoney(report.totalEspeces)}
+              onClick={() => setReportDetailMetric(reportDetailMetric === "especes" ? null : "especes")} active={reportDetailMetric === "especes"}
+            />
+            <StatCard
+              label="PAIEMENTS MOBILES" value={fmtMoney(report.totalMobile)}
+              onClick={() => setReportDetailMetric(reportDetailMetric === "mobile" ? null : "mobile")} active={reportDetailMetric === "mobile"}
+            />
+            <StatCard
+              label="DÉPENSES SUR LA PÉRIODE" value={fmtMoney(report.totalDepenses)} accent="#C1554A"
+              onClick={() => setReportDetailMetric(reportDetailMetric === "depenses" ? null : "depenses")} active={reportDetailMetric === "depenses"}
+            />
           </div>
+
+          {reportDetailMetric && (() => {
+            const total = report.dailySeries.reduce((s, d) => s + (d[reportDetailMetric] || 0), 0);
+            const vendorCols = caisseVendorColumns(reportDetailMetric);
+            return (
+              <Card
+                title={`Détail — ${caisseMetricLabel(reportDetailMetric)}`}
+                right={
+                  <button onClick={() => setReportDetailMetric(null)} title="Fermer le détail" style={iconBtnStyle}>
+                    <X size={16} />
+                  </button>
+                }
+              >
+                <div style={{ fontSize: 12.5, color: "#8A93A3", marginBottom: 16 }}>
+                  Total sur la période : <strong style={{ color: caisseMetricAccent(reportDetailMetric) }}>{fmtMoney(total)}</strong>
+                </div>
+
+                <div style={{ height: 200, marginBottom: 20 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={report.dailySeries} margin={{ left: 0, right: 10, top: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#EEF0F4" />
+                      <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#8A93A3" }} />
+                      <YAxis tick={{ fontSize: 11, fill: "#8A93A3" }} />
+                      <Tooltip formatter={(v) => fmtMoney(v)} labelFormatter={(l) => `Jour ${l}`} />
+                      <Line type="monotone" dataKey={reportDetailMetric} stroke={caisseMetricAccent(reportDetailMetric)} strokeWidth={2} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <Table
+                  headers={["Date", caisseMetricLabel(reportDetailMetric)]}
+                  rows={report.dailySeries.filter((d) => d[reportDetailMetric] !== 0).map((d) => [formatDateFR(d.date), fmtMoney(d[reportDetailMetric])])}
+                />
+                {report.dailySeries.every((d) => d[reportDetailMetric] === 0) && (
+                  <EmptyState text="Aucun mouvement sur cette période." />
+                )}
+
+                {vendorCols ? (
+                  <div style={{ marginTop: 24 }}>
+                    <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 15, fontWeight: 700, color: "#1B2A4A", marginBottom: 10 }}>
+                      Détail par vendeur
+                    </div>
+                    {report.vendorRows.filter((r) => r.joursActifs > 0 || r.joursFinalises > 0).length === 0 ? (
+                      <EmptyState text="Aucune activité de vendeur sur cette période." />
+                    ) : (
+                      <Table
+                        headers={vendorCols.headers}
+                        rows={report.vendorRows.filter((r) => r.joursActifs > 0 || r.joursFinalises > 0).map(vendorCols.row)}
+                      />
+                    )}
+                  </div>
+                ) : (reportDetailMetric === "depenses" || reportDetailMetric === "net") ? (
+                  <div style={{ marginTop: 24 }}>
+                    <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 15, fontWeight: 700, color: "#1B2A4A", marginBottom: 6 }}>
+                      Dépenses de la période
+                    </div>
+                    <div style={{ fontSize: 12, color: "#8A93A3", marginBottom: 10 }}>
+                      {reportDetailMetric === "net"
+                        ? "Ce sont ces dépenses qui expliquent l'écart entre le montant perçu brut et le montant net à déposer."
+                        : "Les dépenses ne sont pas rattachées à un vendeur en particulier — voici chaque dépense individuelle."}
+                    </div>
+                    {report.expensesList.length === 0 ? (
+                      <EmptyState text="Aucune dépense sur cette période." />
+                    ) : (
+                      <Table
+                        headers={["Date", "Libellé", "Montant"]}
+                        rows={report.expensesList.map((e) => [formatDateFR(e.date), e.label, fmtMoney(e.montant)])}
+                      />
+                    )}
+                  </div>
+                ) : null}
+              </Card>
+            );
+          })()}
 
           <Card title="Évolution du chiffre d'affaires sur la période">
             <div style={{ height: 220 }}>
