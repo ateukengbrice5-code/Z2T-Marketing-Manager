@@ -1145,9 +1145,12 @@ function buildCaisseDailySeries(days, range, vendors) {
         if (summary.finalise) { especesBrutes += summary.montantVerseEspeces; ecart += summary.ecart; }
       });
     }
-    const brut = especesBrutes + mobile; // montant perçu à l'état brut (avant toute dépense)
-    const net = brut - depenses; // montant restant à déposer une fois toutes les dépenses retirées
-    series.push({ date: cur, label: cur.slice(8, 10), ca, ecart, depenses, mobile, especes: especesBrutes - depenses, brut, net });
+    // Le paiement mobile n'est pas un dépôt physique en espèces : le brut/net
+    // ne porte donc que sur les espèces (ce qui part réellement à la banque).
+    // Le mobile reste tracé séparément (champ "mobile") pour la traçabilité.
+    const brut = especesBrutes; // espèces perçues à l'état brut, avant toute dépense
+    const net = especesBrutes - depenses; // ce qu'il reste réellement à déposer, en espèces
+    series.push({ date: cur, label: cur.slice(8, 10), ca, ecart, depenses, mobile, especes: net, brut, net });
     cur = addDays(cur, 1);
   }
   return series;
@@ -7132,8 +7135,8 @@ function Messagerie({ currentUser, vendors = [] }) {
 function caisseMetricLabel(metric) {
   return {
     ca: "Chiffre d'affaires", ecart: "Écart de caisse", depenses: "Dépenses",
-    mobile: "Paiement mobile", especes: "Espèces nettes",
-    brut: "Montant perçu (brut)", net: "Montant à déposer (net des dépenses)",
+    mobile: "Paiement mobile (tracé à part, non déposé en espèces)", especes: "Espèces nettes",
+    brut: "Espèces perçues (brut, avant dépenses)", net: "Montant à déposer (espèces, net des dépenses)",
   }[metric] || "";
 }
 function caisseMetricAccent(metric) {
@@ -7149,12 +7152,8 @@ function caisseVendorColumns(metric) {
     case "mobile":
       return { headers: ["Vendeur", "Paiement mobile"], row: (r) => [r.nom, fmtMoney(r.mobile)] };
     case "especes":
-      return { headers: ["Vendeur", "Espèces versées"], row: (r) => [r.nom, fmtMoney(r.especes)] };
     case "brut":
-      return {
-        headers: ["Vendeur", "Espèces", "Mobile", "Total perçu"],
-        row: (r) => [r.nom, fmtMoney(r.especes), fmtMoney(r.mobile), fmtMoney(r.especes + r.mobile)],
-      };
+      return { headers: ["Vendeur", "Espèces versées"], row: (r) => [r.nom, fmtMoney(r.especes)] };
     case "ecart":
       return {
         headers: ["Vendeur", "Écart cumulé", "Jours avec écart", "Jours versés"],
@@ -7264,13 +7263,15 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
   const totalEspeces = summaries.reduce((s, x) => s + (x.summary.finalise ? x.summary.montantVerseEspeces : 0), 0);
   const totalMobile = summaries.reduce((s, x) => s + x.summary.totalMobile, 0);
   const totalDepenses = (day.expenses || []).reduce((s, e) => s + (Number(e.montant) || 0), 0);
-  const especesNettes = totalEspeces - totalDepenses;
-  // Montant perçu à l'état brut (espèces + mobile, avant toute dépense) et
-  // montant qui reste réellement à déposer une fois toutes les dépenses du
-  // jour retirées — la différence entre les deux correspond exactement au
-  // total des dépenses.
-  const totalBrut = totalEspeces + totalMobile;
-  const totalNetADeposer = totalBrut - totalDepenses;
+  // Montant perçu en espèces à l'état brut (avant toute dépense) et montant
+  // qui reste réellement à déposer une fois les dépenses du jour retirées —
+  // la différence entre les deux correspond exactement au total des
+  // dépenses. Le paiement mobile n'entre pas dans ce calcul : ce n'est pas
+  // un dépôt physique en espèces. Son montant reste affiché séparément
+  // (carte "Paiement mobile") pour que rien ne soit perdu de vue.
+  const totalBrut = totalEspeces;
+  const totalNetADeposer = totalEspeces - totalDepenses;
+  const especesNettes = totalNetADeposer;
 
   const daysWithToday = allDays ? (allDays.some((d) => d.date === today) ? allDays : [...allDays, dayProp]) : [dayProp];
   const depensesSemaine = sumExpensesOverRange(daysWithToday, getCurrentWeekRange(today));
@@ -7478,22 +7479,19 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
           onClick={() => toggleCaisseDetail("depenses")} active={caisseDetailMetric === "depenses"}
         />
         <StatCard
-          label="MONTANT PERÇU (BRUT)" value={fmtMoney(totalBrut)} accent="#4A7FC7"
-          sub="Espèces + mobile, avant dépenses"
+          label="ESPÈCES PERÇUES (BRUT)" value={fmtMoney(totalBrut)} accent="#4A7FC7"
+          sub="Avant dépenses"
           onClick={() => toggleCaisseDetail("brut")} active={caisseDetailMetric === "brut"}
         />
         <StatCard
           label="MONTANT À DÉPOSER (NET)" value={fmtMoney(totalNetADeposer)} accent="#3F8361"
-          sub="Une fois les dépenses retirées"
+          sub="Espèces, une fois les dépenses retirées"
           onClick={() => toggleCaisseDetail("net")} active={caisseDetailMetric === "net"}
         />
         <StatCard
-          label="TOTAL PAIEMENT MOBILE" value={fmtMoney(totalMobile)} accent="#1B2A4A"
+          label="PAIEMENT MOBILE" value={fmtMoney(totalMobile)} accent="#1B2A4A"
+          sub="Tracé à part — non déposé en espèces"
           onClick={() => toggleCaisseDetail("mobile")} active={caisseDetailMetric === "mobile"}
-        />
-        <StatCard
-          label="TOTAL ESPÈCES (net des dépenses)" value={fmtMoney(especesNettes)} accent="#3F8361"
-          onClick={() => toggleCaisseDetail("especes")} active={caisseDetailMetric === "especes"}
         />
       </div>
 
@@ -7937,8 +7935,11 @@ function Rapports({ vendors, products, daysList, today, day }) {
       setReport({
         range,
         totalCa, totalVendu, totalEspeces, totalMobile, totalDepenses,
-        totalBrut: totalEspeces + totalMobile,
-        totalNetADeposer: totalEspeces + totalMobile - totalDepenses,
+        // Le brut/net ne porte que sur les espèces (seul montant réellement
+        // déposé physiquement) ; le paiement mobile reste affiché à part
+        // (totalMobile) pour la traçabilité, sans être mélangé dedans.
+        totalBrut: totalEspeces,
+        totalNetADeposer: totalEspeces - totalDepenses,
         ranking: aggregateVendorRanking(loaded, range, vendors),
         vendorRows: aggregateVendorFullReport(loaded, range, vendors).rows,
         byCategory: aggregateRangeByCategory(loaded, range, productsById),
@@ -8052,21 +8053,18 @@ function Rapports({ vendors, products, daysList, today, day }) {
             />
             <StatCard label="ARTICLES VENDUS" value={report.totalVendu} />
             <StatCard
-              label="MONTANT PERÇU (BRUT)" value={fmtMoney(report.totalBrut)} accent="#4A7FC7"
-              sub="Espèces + mobile, avant dépenses"
+              label="ESPÈCES PERÇUES (BRUT)" value={fmtMoney(report.totalBrut)} accent="#4A7FC7"
+              sub="Avant dépenses"
               onClick={() => setReportDetailMetric(reportDetailMetric === "brut" ? null : "brut")} active={reportDetailMetric === "brut"}
             />
             <StatCard
               label="MONTANT À DÉPOSER (NET)" value={fmtMoney(report.totalNetADeposer)} accent="#3F8361"
-              sub="Une fois les dépenses retirées"
+              sub="Espèces, une fois les dépenses retirées"
               onClick={() => setReportDetailMetric(reportDetailMetric === "net" ? null : "net")} active={reportDetailMetric === "net"}
             />
             <StatCard
-              label="ESPÈCES ENCAISSÉES" value={fmtMoney(report.totalEspeces)}
-              onClick={() => setReportDetailMetric(reportDetailMetric === "especes" ? null : "especes")} active={reportDetailMetric === "especes"}
-            />
-            <StatCard
-              label="PAIEMENTS MOBILES" value={fmtMoney(report.totalMobile)}
+              label="PAIEMENT MOBILE" value={fmtMoney(report.totalMobile)}
+              sub="Tracé à part — non déposé en espèces"
               onClick={() => setReportDetailMetric(reportDetailMetric === "mobile" ? null : "mobile")} active={reportDetailMetric === "mobile"}
             />
             <StatCard
@@ -8074,6 +8072,7 @@ function Rapports({ vendors, products, daysList, today, day }) {
               onClick={() => setReportDetailMetric(reportDetailMetric === "depenses" ? null : "depenses")} active={reportDetailMetric === "depenses"}
             />
           </div>
+
 
           {reportDetailMetric && (() => {
             const total = report.dailySeries.reduce((s, d) => s + (d[reportDetailMetric] || 0), 0);
