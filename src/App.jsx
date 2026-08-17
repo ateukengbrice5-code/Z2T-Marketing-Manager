@@ -2506,7 +2506,169 @@ function Dashboard({ products, vendors, day, daysList, today, objectives, setObj
           )}
         </div>
       </div>
+
+      <AgentAnomalies vendors={vendors} daysList={daysList} today={today} />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Agent IA — détection d'anomalies (écarts de caisse suspects, absences
+// répétées, versements jamais finalisés…) sur une période récente. Analyse
+// à la demande (bouton "Analyser") pour ne pas consommer d'appels API à
+// chaque ouverture du tableau de bord — l'agent lit un résumé déjà agrégé
+// par vendeur (pas les transactions brutes) et répond en JSON structuré.
+// ---------------------------------------------------------------------------
+
+const ANOMALIE_GRAVITE_STYLE = {
+  elevee: { label: "Élevée", color: "#C1554A", bg: "#FBEAE8" },
+  moyenne: { label: "Moyenne", color: "#C79A3A", bg: "#FDF3E0" },
+  faible: { label: "Faible", color: "#5B6472", bg: "#F3F4F7" },
+};
+
+async function buildAnomalyPayload(daysList, vendors, todayIso, lookbackDays) {
+  const range = [addDays(todayIso, -(lookbackDays - 1)), todayIso];
+  const dates = (daysList || []).filter((d) => inRange(d, range));
+  const loadedDays = await store.getDaysInRange(dates);
+  const activeVendors = vendors.filter((v) => v.contractStatut === "actif");
+
+  const vendeurs = await Promise.all(activeVendors.map(async (v) => {
+    let history = [];
+    try { history = await store.getVendorAttendanceHistory(v.id, lookbackDays + 15); } catch { /* pas bloquant */ }
+    const attInRange = (history || []).filter((a) => inRange(a.date, range));
+    const absencesNonAutorisees = attInRange.filter((a) => a.statut === "absent_non_autorise").length;
+    const absencesAutorisees = attInRange.filter((a) => a.statut === "absent_autorise").length;
+
+    const jours = [];
+    loadedDays.forEach((day) => {
+      if (!day) return;
+      const summary = computeVersementSummary(day, v.id);
+      if (summary.lines.length === 0) return; // aucune activité de ce vendeur ce jour-là
+      jours.push({
+        date: day.date,
+        montantAttendu: summary.montantAttendu,
+        montantVerse: summary.finalise ? summary.montantVerseEspeces : null,
+        ecart: summary.finalise ? Math.round(summary.ecart) : null,
+        finalise: summary.finalise,
+      });
+    });
+
+    return { vendeur: vendorFullName(v), absencesNonAutorisees, absencesAutorisees, jours };
+  }));
+
+  return { periode: `${range[0]} au ${range[1]}`, vendeurs };
+}
+
+function AgentAnomalies({ vendors, daysList, today }) {
+  const [lookbackDays, setLookbackDays] = useState(30);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [results, setResults] = useState(null);
+  const [periodeAnalysee, setPeriodeAnalysee] = useState("");
+
+  const analyser = async () => {
+    setLoading(true);
+    setError("");
+    setResults(null);
+    try {
+      const payload = await buildAnomalyPayload(daysList, vendors, today, lookbackDays);
+      setPeriodeAnalysee(payload.periode);
+
+      if (payload.vendeurs.every((v) => v.jours.length === 0)) {
+        setResults([]);
+        return;
+      }
+
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1200,
+          messages: [{
+            role: "user",
+            content:
+              "Tu es un contrôleur interne pour une petite entreprise de vente ambulante (chaque vendeur reçoit du stock, vend, puis verse la recette en espèces le soir). " +
+              `Voici, au format JSON, l'historique agrégé de chaque vendeur sur la période ${payload.periode} : montant attendu / montant versé / écart de caisse par jour, plus le nombre d'absences.\n\n` +
+              JSON.stringify(payload.vendeurs) +
+              "\n\nDétecte les anomalies qui méritent l'attention d'un responsable : écarts de caisse répétés ou inhabituellement élevés, écarts toujours dans le même sens (manque récurrent = signal fort), absences fréquentes (surtout non autorisées), versements jamais finalisés, ou tout autre schéma suspect. Ignore les écarts isolés de faible montant (variations normales de rendu de monnaie).\n\n" +
+              "Réponds UNIQUEMENT avec un tableau JSON valide, sans texte autour, sans balises markdown, sous la forme : " +
+              '[{"vendeur":"...","type":"...","gravite":"faible"|"moyenne"|"elevee","description":"..."}]. Si aucune anomalie notable, réponds [].',
+          }],
+        }),
+      });
+      const data = await response.json();
+      const textBlock = (data.content || []).find((b) => b.type === "text");
+      const raw = (textBlock?.text || "[]").replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(raw);
+      setResults(Array.isArray(parsed) ? parsed : []);
+    } catch (err) {
+      console.error("Erreur de détection d'anomalies :", err);
+      setError("Impossible d'analyser les données pour le moment. Réessaie dans un instant.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const graviteOrdre = { elevee: 0, moyenne: 1, faible: 2 };
+  const resultsSorted = results ? [...results].sort((a, b) => (graviteOrdre[a.gravite] ?? 3) - (graviteOrdre[b.gravite] ?? 3)) : null;
+
+  return (
+    <Card title="Agent IA — Détection d'anomalies">
+      <div style={{ fontSize: 12.5, color: "#8A93A3", marginBottom: 14 }}>
+        Analyse les écarts de caisse et la présence de chaque vendeur sur la période choisie, et signale ce qui sort de l'ordinaire.
+      </div>
+
+      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[30, 60, 90].map((n) => (
+            <button
+              key={n}
+              onClick={() => setLookbackDays(n)}
+              style={{
+                padding: "7px 12px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+                border: lookbackDays === n ? "2px solid #D9A441" : "1px solid #D8DCE3",
+                background: lookbackDays === n ? "#FFF8EC" : "#fff", color: "#1B2A4A",
+              }}
+            >
+              {n} derniers jours
+            </button>
+          ))}
+        </div>
+        <Button variant="primary" onClick={analyser} disabled={loading}>
+          {loading ? "Analyse en cours…" : "Analyser"}
+        </Button>
+      </div>
+
+      {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+
+      {results && (
+        <>
+          <div style={{ fontSize: 12, color: "#8A93A3", marginBottom: 12 }}>Période analysée : {periodeAnalysee}</div>
+          {resultsSorted.length === 0 ? (
+            <EmptyState text="Aucune anomalie notable détectée sur cette période." />
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {resultsSorted.map((a, i) => {
+                const style = ANOMALIE_GRAVITE_STYLE[a.gravite] || ANOMALIE_GRAVITE_STYLE.faible;
+                return (
+                  <div key={i} style={{ padding: "12px 14px", borderRadius: 10, background: style.bg, border: `1px solid ${style.color}33` }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, flexWrap: "wrap", gap: 8 }}>
+                      <span style={{ fontWeight: 700, fontSize: 13.5, color: "#1B2A4A" }}>{a.vendeur || "—"}</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: style.color, padding: "2px 8px", borderRadius: 6, background: "#fff" }}>
+                        Gravité {style.label}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12.5, color: "#5B6472", fontWeight: 600, marginBottom: 2 }}>{a.type}</div>
+                    <div style={{ fontSize: 12.5, color: "#1B2A4A" }}>{a.description}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
   );
 }
 
