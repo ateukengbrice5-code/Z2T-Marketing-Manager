@@ -4069,6 +4069,7 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
   return (
     <div>
       <AttendanceBoard vendors={vendors} currentUser={currentUser} />
+      <PresenceHistory vendors={vendors} currentUser={currentUser} />
 
       <Card title="Ajouter un vendeur">
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
@@ -4345,6 +4346,103 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
         </Card>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Historique de présence — consultable jour par jour : présence (pointage),
+// retour du soir fait ou non, montant attendu et montant réellement versé
+// (espèces + mobile) pour chaque vendeur actif. Simple sélecteur de date
+// (par défaut aujourd'hui, jusqu'à n'importe quel jour passé) pour naviguer —
+// en lecture seule ; la correction se fait depuis "Pointage du jour" ou
+// "Retour du soir".
+// ---------------------------------------------------------------------------
+function PresenceHistory({ vendors, currentUser }) {
+  const activeVendors = vendors.filter((v) => v.contractStatut === "actif");
+  const [date, setDate] = useState(todayISO());
+  const [loading, setLoading] = useState(true);
+  const [attendanceRows, setAttendanceRows] = useState([]);
+  const [dayData, setDayData] = useState(null);
+  const [error, setError] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const [attendance, day] = await Promise.all([
+        store.getAttendanceForDate(date),
+        store.getDay(date),
+      ]);
+      setAttendanceRows(attendance);
+      setDayData(day);
+    } catch (e) {
+      setError(e.message || "Erreur lors du chargement.");
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { if (open) load(); }, [date, open]);
+
+  const attendanceByVendor = {};
+  attendanceRows.forEach((r) => { attendanceByVendor[r.vendorId] = r; });
+
+  const rows = activeVendors.map((v) => {
+    const att = attendanceByVendor[v.id];
+    const summary = computeVersementSummary(dayData, v.id);
+    const retourFait = summary.lines.length > 0; // au moins une ligne validée = retour du soir fait
+    return { vendor: v, att, summary, retourFait };
+  });
+
+  return (
+    <Card
+      title="Présence & versements — historique"
+      right={<button onClick={() => setOpen((o) => !o)} style={{ ...iconBtnStyle, color: "#5B6472" }}>{open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</button>}
+    >
+      {!open ? (
+        <div style={{ fontSize: 12.5, color: "#8A93A3", fontStyle: "italic" }}>Ouvrir pour consulter la présence et les versements d'une journée (aujourd'hui ou passée).</div>
+      ) : activeVendors.length === 0 ? (
+        <EmptyState text="Ajoute d'abord un vendeur." />
+      ) : (
+        <>
+          <div style={{ marginBottom: 16, flex: "0 1 180px" }}>
+            <Label>Date</Label>
+            <TextInput type="date" max={todayISO()} value={date} onChange={(e) => setDate(e.target.value)} />
+          </div>
+
+          {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+
+          {loading ? (
+            <div style={{ fontSize: 12.5, color: "#9AA2B1" }}>Chargement…</div>
+          ) : (
+            <Table
+              headers={["Vendeur", "Présence", "Retour du soir", "Montant attendu", "Montant versé (espèces)", "Paiement mobile", "Écart"]}
+              rows={rows.map(({ vendor, att, summary, retourFait }) => [
+                vendorFullName(vendor),
+                att ? (
+                  <span key="p" style={{ color: STATUT_LABELS[att.statut]?.color || "#5B6472", fontWeight: 600 }}>
+                    {STATUT_LABELS[att.statut]?.label || att.statut}{att.heure ? ` — ${att.heure}` : ""}
+                  </span>
+                ) : <span key="p" style={{ color: "#B7BDC9" }}>—</span>,
+                retourFait
+                  ? <span key="r" style={{ color: "#3F9C6D", fontWeight: 600 }}>Fait</span>
+                  : <span key="r" style={{ color: "#B7BDC9" }}>—</span>,
+                fmtMoney(summary.montantAttendu),
+                summary.finalise
+                  ? fmtMoney(summary.montantVerseEspeces)
+                  : <span key="v" style={{ color: "#B7BDC9" }}>En attente</span>,
+                fmtMoney(summary.totalMobile),
+                summary.finalise ? (
+                  <span key="e" style={{ color: Math.abs(summary.ecart) < 1 ? "#3F8361" : summary.ecart > 0 ? "#3F9C6D" : "#C1554A", fontWeight: 600 }}>
+                    {Math.abs(summary.ecart) < 1 ? "Équilibré" : `${summary.ecart > 0 ? "+" : ""}${fmtMoney(summary.ecart)}`}
+                  </span>
+                ) : <span key="e" style={{ color: "#B7BDC9" }}>—</span>,
+              ])}
+            />
+          )}
+        </>
+      )}
+    </Card>
   );
 }
 
