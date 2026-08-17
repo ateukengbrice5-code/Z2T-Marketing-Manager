@@ -5,7 +5,20 @@ import { supabase } from "./supabase.js";
 // d'utilisateur (aucun vrai e-mail requis, pour rester simple). En coulisses,
 // on fabrique une adresse technique invisible pour Supabase.
 // -----------------------------------------------------------------------------
-
+/ Ce petit wrapper appelle l'Edge Function "detect-anomalies" via le client
+// Supabase déjà utilisé dans le reste du fichier (celui créé par
+// createClient(...) — souvent nommé `supabase`). Il n'y a rien à modifier
+// ailleurs : `supabase.functions.invoke` attache automatiquement le jeton
+// de la session en cours, donc la clé Anthropic reste bien côté serveur.
+// ---------------------------------------------------------------------------
+ 
+export async function detectAnomalies(payload) {
+  const { data, error } = await supabase.functions.invoke("detect-anomalies", {
+    body: payload,
+  });
+  if (error) throw error;
+  return data;
+}
 function usernameToEmail(username) {
   return `${username.trim().toLowerCase()}@z2t.local`;
 }

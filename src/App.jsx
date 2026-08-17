@@ -411,7 +411,7 @@ function isValidCameroonPhone(raw) {
 }
 
 function emptyDay(date) {
-  return { date, lines: [], versements: {}, expenses: [] };
+  return { date, lines: [], versements: {}, expenses: [], cloture: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -2526,15 +2526,14 @@ const ANOMALIE_GRAVITE_STYLE = {
   faible: { label: "Faible", color: "#5B6472", bg: "#F3F4F7" },
 };
 
-async function buildAnomalyPayload(daysList, vendors, todayIso, lookbackDays) {
-  const range = [addDays(todayIso, -(lookbackDays - 1)), todayIso];
+async function buildAnomalyPayload(daysList, vendors, range, attendanceLookbackDays) {
   const dates = (daysList || []).filter((d) => inRange(d, range));
   const loadedDays = await store.getDaysInRange(dates);
   const activeVendors = vendors.filter((v) => v.contractStatut === "actif");
 
   const vendeurs = await Promise.all(activeVendors.map(async (v) => {
     let history = [];
-    try { history = await store.getVendorAttendanceHistory(v.id, lookbackDays + 15); } catch { /* pas bloquant */ }
+    try { history = await store.getVendorAttendanceHistory(v.id, attendanceLookbackDays); } catch { /* pas bloquant */ }
     const attInRange = (history || []).filter((a) => inRange(a.date, range));
     const absencesNonAutorisees = attInRange.filter((a) => a.statut === "absent_non_autorise").length;
     const absencesAutorisees = attInRange.filter((a) => a.statut === "absent_autorise").length;
@@ -2560,18 +2559,26 @@ async function buildAnomalyPayload(daysList, vendors, todayIso, lookbackDays) {
 }
 
 function AgentAnomalies({ vendors, daysList, today }) {
-  const [lookbackDays, setLookbackDays] = useState(30);
+  const [periodMode, setPeriodMode] = useState("30"); // "30" | "60" | "90" | "personnalise"
+  const [customRange, setCustomRange] = useState([addDays(today, -29), today]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [results, setResults] = useState(null);
   const [periodeAnalysee, setPeriodeAnalysee] = useState("");
+
+  const range = periodMode === "personnalise"
+    ? (customRange[0] && customRange[1]
+        ? (customRange[0] <= customRange[1] ? customRange : [customRange[1], customRange[0]])
+        : [addDays(today, -29), today])
+    : [addDays(today, -(Number(periodMode) - 1)), today];
 
   const analyser = async () => {
     setLoading(true);
     setError("");
     setResults(null);
     try {
-      const payload = await buildAnomalyPayload(daysList, vendors, today, lookbackDays);
+      const nbJours = Math.round((new Date(range[1]) - new Date(range[0])) / 86400000) + 1;
+      const payload = await buildAnomalyPayload(daysList, vendors, range, nbJours + 15);
       setPeriodeAnalysee(payload.periode);
 
       if (payload.vendeurs.every((v) => v.jours.length === 0)) {
@@ -2579,29 +2586,11 @@ function AgentAnomalies({ vendors, daysList, today }) {
         return;
       }
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1200,
-          messages: [{
-            role: "user",
-            content:
-              "Tu es un contrôleur interne pour une petite entreprise de vente ambulante (chaque vendeur reçoit du stock, vend, puis verse la recette en espèces le soir). " +
-              `Voici, au format JSON, l'historique agrégé de chaque vendeur sur la période ${payload.periode} : montant attendu / montant versé / écart de caisse par jour, plus le nombre d'absences.\n\n` +
-              JSON.stringify(payload.vendeurs) +
-              "\n\nDétecte les anomalies qui méritent l'attention d'un responsable : écarts de caisse répétés ou inhabituellement élevés, écarts toujours dans le même sens (manque récurrent = signal fort), absences fréquentes (surtout non autorisées), versements jamais finalisés, ou tout autre schéma suspect. Ignore les écarts isolés de faible montant (variations normales de rendu de monnaie).\n\n" +
-              "Réponds UNIQUEMENT avec un tableau JSON valide, sans texte autour, sans balises markdown, sous la forme : " +
-              '[{"vendeur":"...","type":"...","gravite":"faible"|"moyenne"|"elevee","description":"..."}]. Si aucune anomalie notable, réponds [].',
-          }],
-        }),
-      });
-      const data = await response.json();
-      const textBlock = (data.content || []).find((b) => b.type === "text");
-      const raw = (textBlock?.text || "[]").replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(raw);
-      setResults(Array.isArray(parsed) ? parsed : []);
+      // L'analyse passe désormais par l'Edge Function "detect-anomalies" :
+      // la clé de l'API Anthropic reste côté serveur (secret Supabase),
+      // jamais exposée au navigateur.
+      const data = await store.detectAnomalies(payload);
+      setResults(Array.isArray(data?.anomalies) ? data.anomalies : []);
     } catch (err) {
       console.error("Erreur de détection d'anomalies :", err);
       setError("Impossible d'analyser les données pour le moment. Réessaie dans un instant.");
@@ -2619,22 +2608,39 @@ function AgentAnomalies({ vendors, daysList, today }) {
         Analyse les écarts de caisse et la présence de chaque vendeur sur la période choisie, et signale ce qui sort de l'ordinaire.
       </div>
 
-      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
-        <div style={{ display: "flex", gap: 6 }}>
-          {[30, 60, 90].map((n) => (
-            <button
-              key={n}
-              onClick={() => setLookbackDays(n)}
-              style={{
-                padding: "7px 12px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer",
-                border: lookbackDays === n ? "2px solid #D9A441" : "1px solid #D8DCE3",
-                background: lookbackDays === n ? "#FFF8EC" : "#fff", color: "#1B2A4A",
-              }}
-            >
-              {n} derniers jours
-            </button>
-          ))}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {[["30", "30 derniers jours"], ["60", "60 derniers jours"], ["90", "90 derniers jours"], ["personnalise", "Personnalisé"]].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setPeriodMode(key)}
+            style={{
+              padding: "7px 12px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+              border: periodMode === key ? "2px solid #D9A441" : "1px solid #D8DCE3",
+              background: periodMode === key ? "#FFF8EC" : "#fff", color: "#1B2A4A",
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {periodMode === "personnalise" && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+          <input
+            type="date" value={customRange[0] || ""} max={today}
+            onChange={(e) => setCustomRange([e.target.value, customRange[1]])}
+            style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #D8DCE3", fontSize: 13, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A" }}
+          />
+          <span style={{ fontSize: 12.5, color: "#8A93A3" }}>au</span>
+          <input
+            type="date" value={customRange[1] || ""} max={today}
+            onChange={(e) => setCustomRange([customRange[0], e.target.value])}
+            style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #D8DCE3", fontSize: 13, fontFamily: "Calibri, Arial, sans-serif", color: "#1B2A4A" }}
+          />
         </div>
+      )}
+
+      <div style={{ marginBottom: 16 }}>
         <Button variant="primary" onClick={analyser} disabled={loading}>
           {loading ? "Analyse en cours…" : "Analyser"}
         </Button>
@@ -6626,6 +6632,115 @@ function Distribution({ products, setProducts, vendors, day: dayProp, setDay: se
 // Retour du soir — tous les produits d'un vendeur d'un coup, + versement
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Double vérification du versement du soir : 1) l'administrateur confirme
+// avoir physiquement reçu le versement du vendeur, 2) il saisit la somme
+// reçue. Le logiciel la compare aussitôt au montant attendu : si tout
+// correspond, le versement est enregistré directement ; sinon, une boîte
+// d'alerte explique où se trouve l'écart (paiement mobile oublié, double
+// comptage…) avant de laisser l'administrateur corriger ou confirmer quand
+// même (l'écart est alors tracé normalement, comme un manque/excédent).
+// ---------------------------------------------------------------------------
+
+function VersementSecurityModal({ vendor, summary, initialMontant, onClose, onConfirm, submitting }) {
+  const [step, setStep] = useState("confirm"); // "confirm" -> "amount" -> "mismatch"
+  const [montantInput, setMontantInput] = useState(initialMontant || "");
+  const [error, setError] = useState("");
+
+  const montantAttendu = summary.montantAVerserEspeces;
+  const ecartActuel = Number(montantInput) - montantAttendu;
+
+  const verifierMontant = () => {
+    const n = Number(montantInput);
+    if (montantInput === "" || Number.isNaN(n)) { setError("Indique un montant valide."); return; }
+    if (n < 0) { setError("Le montant ne peut pas être négatif."); return; }
+    setError("");
+    if (Math.abs(n - montantAttendu) < 1) onConfirm(n);
+    else setStep("mismatch");
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(27,42,74,0.55)", zIndex: 300, display: "flex", alignItems: "flex-start", justifyContent: "center", overflowY: "auto", padding: "40px 16px" }}>
+      <div style={{ background: "#fff", borderRadius: 16, maxWidth: 440, width: "100%", padding: 24, position: "relative" }}>
+        <button onClick={onClose} style={{ position: "absolute", top: 16, right: 16, background: "none", border: "none", cursor: "pointer", color: "#8A93A3" }}>
+          <X size={20} />
+        </button>
+
+        {step === "confirm" && (
+          <>
+            <h3 style={{ margin: "0 0 4px", fontFamily: "Cambria, Georgia, serif", fontSize: 18, color: "#1B2A4A", display: "flex", alignItems: "center", gap: 8 }}>
+              <AlertTriangle size={20} style={{ color: "#D9A441" }} /> Vérification du versement
+            </h3>
+            <div style={{ fontSize: 13.5, color: "#5B6472", margin: "12px 0 20px", lineHeight: 1.5 }}>
+              As-tu bien reçu, en main propre, le versement de <strong style={{ color: "#1B2A4A" }}>{vendorFullName(vendor)}</strong> ?
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <Button variant="ghost" onClick={onClose}>Non, pas encore</Button>
+              <Button variant="primary" onClick={() => setStep("amount")}>Oui, je l'ai reçu</Button>
+            </div>
+          </>
+        )}
+
+        {step === "amount" && (
+          <>
+            <h3 style={{ margin: "0 0 4px", fontFamily: "Cambria, Georgia, serif", fontSize: 18, color: "#1B2A4A" }}>Montant reçu</h3>
+            <div style={{ fontSize: 12.5, color: "#8A93A3", margin: "6px 0 16px" }}>
+              Montant attendu en espèces pour {vendorFullName(vendor)} : <strong style={{ color: "#1B2A4A" }}>{fmtMoney(montantAttendu)}</strong>
+            </div>
+            <Label>Somme réellement reçue (F)</Label>
+            <TextInput
+              type="number" autoFocus value={montantInput}
+              onChange={(e) => setMontantInput(e.target.value)}
+              placeholder="0" style={{ width: "100%", marginBottom: 12 }}
+            />
+            {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <Button variant="ghost" onClick={() => setStep("confirm")} disabled={submitting}>Retour</Button>
+              <Button variant="primary" onClick={verifierMontant} disabled={submitting}>Vérifier et enregistrer</Button>
+            </div>
+          </>
+        )}
+
+        {step === "mismatch" && (
+          <>
+            <h3 style={{ margin: "0 0 4px", fontFamily: "Cambria, Georgia, serif", fontSize: 18, color: "#C1554A", display: "flex", alignItems: "center", gap: 8 }}>
+              <AlertTriangle size={20} /> Écart détecté
+            </h3>
+            <div style={{ fontSize: 13.5, color: "#5B6472", margin: "10px 0 14px", lineHeight: 1.5 }}>
+              Le montant saisi ne correspond pas au montant attendu par le logiciel. Vérifie où se situe l'erreur avant de continuer :
+            </div>
+            <div style={{ background: "#FBECEA", border: "1px solid #F0CFC9", borderRadius: 10, padding: "12px 14px", marginBottom: 14, fontSize: 13 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ color: "#5B6472" }}>Attendu en espèces</span>
+                <strong style={{ color: "#1B2A4A" }}>{fmtMoney(montantAttendu)}</strong>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ color: "#5B6472" }}>Saisi</span>
+                <strong style={{ color: "#1B2A4A" }}>{fmtMoney(Number(montantInput))}</strong>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 6, borderTop: "1px solid #F0CFC9" }}>
+                <span style={{ color: "#5B6472" }}>Écart</span>
+                <strong style={{ color: "#C1554A" }}>{ecartActuel > 0 ? "+" : ""}{fmtMoney(ecartActuel)}</strong>
+              </div>
+            </div>
+            <div style={{ fontSize: 12.5, color: "#8A93A3", marginBottom: 18, lineHeight: 1.5 }}>
+              {ecartActuel < 0
+                ? <>Il manque {fmtMoney(Math.abs(ecartActuel))}. Vérifie qu'aucun paiement mobile n'a été oublié (total mobile déjà enregistré pour ce vendeur : {fmtMoney(summary.totalMobile)}) et recompte les espèces avec le vendeur.</>
+                : <>Il y a {fmtMoney(ecartActuel)} en trop. Vérifie qu'aucun montant n'a été compté deux fois, ou qu'un paiement mobile n'a pas aussi été remis en espèces par erreur.</>}
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <Button variant="ghost" onClick={() => setStep("amount")} disabled={submitting}>Corriger le montant</Button>
+              <Button variant="primary" onClick={() => onConfirm(Number(montantInput))} disabled={submitting}>
+                Confirmer quand même (écart enregistré)
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, setDay: setDayProp, activeVendor, currentUser, today }) {
   const { showToast } = useToast();
   const [viewDate, setViewDate] = useState(today);
@@ -6667,6 +6782,7 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
   const [correctionInputs, setCorrectionInputs] = useState({});
   const [correcting, setCorrecting] = useState(null); // id de la ligne en cours de correction (anti double-clic)
   const [versementSubmitting, setVersementSubmitting] = useState(false); // anti double-clic sur "Enregistrer le versement"
+  const [versementModalOpen, setVersementModalOpen] = useState(false); // boîte de double vérification (réception + montant)
 
   const vendor = isAdmin ? activeVendors.find((v) => v.id === selectedVendorId) : activeVendor;
 
@@ -6847,13 +6963,13 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
     if (removed) store.logActivity(currentUser, "remove_mobile_payment", `Paiement mobile de ${removed.montant} FCFA (${removed.numero}) supprimé pour ${vendor.nom}.`);
   };
 
-  const enregistrerVersement = async () => {
+  const enregistrerVersement = async (montantSaisi) => {
     if (!isAdmin) return;
     // Anti double-clic : un second appel pendant l'écriture du premier
     // dupliquait l'entrée dans le journal d'activité pour le même versement.
     if (versementSubmitting) return;
-    const montant = Number(montantVerseInput);
-    if (Number.isNaN(montant) || montantVerseInput === "") return;
+    const montant = Number(montantSaisi);
+    if (Number.isNaN(montant) || montantSaisi === "" || montantSaisi === undefined) return;
     if (montant < 0) {
       showToast("Le montant versé en espèces ne peut pas être négatif.", "error");
       return;
@@ -6865,7 +6981,9 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
       versements[vendor.id] = { ...current, montantVerseEspeces: montant, validePar: currentUser?.username || null, heureVersement: nowHHMM() };
       const dayApres = { ...day, versements };
       await setDay(dayApres);
-      store.logActivity(currentUser, "enregistrer_versement", `Versement en espèces de ${montant} FCFA enregistré pour ${vendor.nom}.`);
+      setMontantVerseInput(String(montant));
+      setVersementModalOpen(false);
+      store.logActivity(currentUser, "enregistrer_versement", `Versement en espèces de ${montant} FCFA enregistré pour ${vendor.nom} (double vérification effectuée).`);
 
       // Alerte écart de caisse : si le montant versé s'écarte trop de ce qui
       // était attendu (au-delà de 2000 FCFA ou de 10% du montant attendu, le
@@ -7071,15 +7189,25 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
           </div>
 
           {isAdmin ? (
-            <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
-              <div style={{ flex: "1 1 160px" }}>
-                <Label>Montant réellement remis en espèces</Label>
-                <TextInput type="number" value={montantVerseInput} onChange={(e) => setMontantVerseInput(e.target.value)} placeholder="0" />
-              </div>
-              <Button onClick={enregistrerVersement} disabled={versementSubmitting}>Enregistrer le versement</Button>
+            <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <Button onClick={() => setVersementModalOpen(true)} disabled={versementSubmitting}>
+                <CheckCircle2 size={15} /> {summary.finalise ? "Modifier le versement" : "Enregistrer le versement"}
+              </Button>
+              <span style={{ fontSize: 12, color: "#8A93A3", fontStyle: "italic" }}>Confirmation en deux étapes avant enregistrement</span>
             </div>
           ) : (
             !summary.finalise && <div style={{ fontSize: 12.5, color: "#8A93A3", fontStyle: "italic" }}>En attente de saisie du versement par l'administration.</div>
+          )}
+
+          {versementModalOpen && (
+            <VersementSecurityModal
+              vendor={vendor}
+              summary={summary}
+              initialMontant={montantVerseInput}
+              submitting={versementSubmitting}
+              onClose={() => setVersementModalOpen(false)}
+              onConfirm={(montant) => enregistrerVersement(montant)}
+            />
           )}
 
           {summary.finalise && (
@@ -7424,6 +7552,96 @@ function caisseVendorColumns(metric) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Clôture de la journée — l'administrateur déclare la somme qu'il a
+// physiquement entre les mains ; le logiciel la compare à ce qu'il a
+// lui-même calculé (espèces nettes attendues, dépenses déjà déduites) et
+// signale aussitôt un éventuel écart avant de permettre de clôturer.
+// ---------------------------------------------------------------------------
+
+function ClotureJourneeModal({ especesAttendues, onClose, onConfirm, submitting }) {
+  const [step, setStep] = useState("amount"); // "amount" -> "mismatch"
+  const [montantInput, setMontantInput] = useState("");
+  const [error, setError] = useState("");
+
+  const ecart = Number(montantInput) - especesAttendues;
+
+  const verifier = () => {
+    const n = Number(montantInput);
+    if (montantInput === "" || Number.isNaN(n)) { setError("Indique la somme entre les mains."); return; }
+    if (n < 0) { setError("Le montant ne peut pas être négatif."); return; }
+    setError("");
+    if (Math.abs(n - especesAttendues) < 1) onConfirm(n);
+    else setStep("mismatch");
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(27,42,74,0.55)", zIndex: 300, display: "flex", alignItems: "flex-start", justifyContent: "center", overflowY: "auto", padding: "40px 16px" }}>
+      <div style={{ background: "#fff", borderRadius: 16, maxWidth: 440, width: "100%", padding: 24, position: "relative" }}>
+        <button onClick={onClose} style={{ position: "absolute", top: 16, right: 16, background: "none", border: "none", cursor: "pointer", color: "#8A93A3" }}>
+          <X size={20} />
+        </button>
+
+        {step === "amount" && (
+          <>
+            <h3 style={{ margin: "0 0 4px", fontFamily: "Cambria, Georgia, serif", fontSize: 18, color: "#1B2A4A" }}>Clôturer la journée</h3>
+            <div style={{ fontSize: 12.5, color: "#8A93A3", margin: "6px 0 16px" }}>
+              Espèces nettes attendues (selon le logiciel, dépenses déjà retirées) : <strong style={{ color: "#1B2A4A" }}>{fmtMoney(especesAttendues)}</strong>
+            </div>
+            <Label>Somme actuellement entre les mains (F)</Label>
+            <TextInput
+              type="number" autoFocus value={montantInput}
+              onChange={(e) => setMontantInput(e.target.value)}
+              placeholder="0" style={{ width: "100%", marginBottom: 12 }}
+            />
+            {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <Button variant="ghost" onClick={onClose} disabled={submitting}>Annuler</Button>
+              <Button variant="primary" onClick={verifier} disabled={submitting}>Vérifier et clôturer</Button>
+            </div>
+          </>
+        )}
+
+        {step === "mismatch" && (
+          <>
+            <h3 style={{ margin: "0 0 4px", fontFamily: "Cambria, Georgia, serif", fontSize: 18, color: "#C1554A", display: "flex", alignItems: "center", gap: 8 }}>
+              <AlertTriangle size={20} /> Écart détecté avant clôture
+            </h3>
+            <div style={{ fontSize: 13.5, color: "#5B6472", margin: "10px 0 14px", lineHeight: 1.5 }}>
+              La somme entre les mains ne correspond pas à ce que le logiciel attend. Vérifie où se situe l'erreur avant de clôturer :
+            </div>
+            <div style={{ background: "#FBECEA", border: "1px solid #F0CFC9", borderRadius: 10, padding: "12px 14px", marginBottom: 14, fontSize: 13 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ color: "#5B6472" }}>Attendu par le logiciel</span>
+                <strong style={{ color: "#1B2A4A" }}>{fmtMoney(especesAttendues)}</strong>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ color: "#5B6472" }}>Entre les mains</span>
+                <strong style={{ color: "#1B2A4A" }}>{fmtMoney(Number(montantInput))}</strong>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 6, borderTop: "1px solid #F0CFC9" }}>
+                <span style={{ color: "#5B6472" }}>Écart</span>
+                <strong style={{ color: "#C1554A" }}>{ecart > 0 ? "+" : ""}{fmtMoney(ecart)}</strong>
+              </div>
+            </div>
+            <div style={{ fontSize: 12.5, color: "#8A93A3", marginBottom: 18, lineHeight: 1.5 }}>
+              {ecart < 0
+                ? <>Il manque {fmtMoney(Math.abs(ecart))}. Vérifie les versements de chaque vendeur (onglet Retour du soir) et les dépenses déjà déduites du jour.</>
+                : <>Il y a {fmtMoney(ecart)} en trop. Vérifie qu'aucune dépense n'a été oubliée, ou qu'un versement n'a pas été compté deux fois.</>}
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <Button variant="ghost" onClick={() => setStep("amount")} disabled={submitting}>Corriger le montant</Button>
+              <Button variant="primary" onClick={() => onConfirm(Number(montantInput))} disabled={submitting}>
+                Clôturer quand même (écart enregistré)
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWithdrawals, notifications, setNotifications, daysList, today, currentUser }) {
   const [viewDate, setViewDate] = useState(today);
   const [pastDay, setPastDay] = useState(null);
@@ -7455,6 +7673,9 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
   const [label, setLabel] = useState("");
   const [montant, setMontant] = useState("");
   const [allDays, setAllDays] = useState(null);
+  const [clotureModalOpen, setClotureModalOpen] = useState(false);
+  const [clotureSubmitting, setClotureSubmitting] = useState(false);
+  const [activityLog, setActivityLog] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -7462,6 +7683,20 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
       setAllDays(loaded);
     })();
   }, [daysList]);
+
+  // Journal d'activité filtré côté client sur les seuls événements liés à
+  // la caisse (versements, dépenses, retraits, clôtures…) — sert à la fois
+  // à l'affichage "Dernières modifications" et à son impression.
+  useEffect(() => {
+    (async () => {
+      try {
+        setActivityLog(await store.getActivityLog());
+      } catch (err) {
+        console.error("Erreur chargement journal d'activité (caisse) :", err);
+        setActivityLog([]);
+      }
+    })();
+  }, []);
 
   // Détail dépliable d'une carte de la Caisse (CA, écart, dépenses, mobile,
   // espèces nettes) sur une période choisie — avec ventilation par vendeur
@@ -7533,6 +7768,42 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
   const totalNetADeposer = totalEspeces - totalDepenses;
   const especesNettes = totalNetADeposer;
 
+  // Clôture de la journée : la somme déclarée "entre les mains" par
+  // l'administrateur est comparée aux espèces nettes calculées par le
+  // logiciel (versements du jour moins dépenses). L'écart, s'il existe,
+  // est conservé tel quel — clôturer n'efface jamais un écart, il le trace.
+  const cloture = day.cloture || null;
+
+  const clore = async (sommeEnMains) => {
+    if (clotureSubmitting) return;
+    setClotureSubmitting(true);
+    try {
+      const ecart = sommeEnMains - especesNettes;
+      const statut = Math.abs(ecart) < 1 ? "equilibre" : ecart > 0 ? "exces" : "manque";
+      await setDay({
+        ...day,
+        cloture: {
+          sommeEnMains, especesAttendues: especesNettes, ecart, statut,
+          clorePar: currentUser?.username || null, heureCloture: nowHHMM(),
+        },
+      });
+      store.logActivity(
+        currentUser, "cloture_journee",
+        `Journée du ${fmtDateFr(viewDate)} clôturée — somme en main ${fmtMoney(sommeEnMains)} (attendu ${fmtMoney(especesNettes)}, écart ${ecart > 0 ? "+" : ""}${fmtMoney(ecart)}).`
+      );
+      setClotureModalOpen(false);
+    } finally {
+      setClotureSubmitting(false);
+    }
+  };
+
+  const reouvrirJournee = async () => {
+    const ok = window.confirm(`Rouvrir la journée du ${fmtDateFr(viewDate)} ? La clôture actuelle sera supprimée et pourra être refaite.`);
+    if (!ok) return;
+    await setDay({ ...day, cloture: null });
+    store.logActivity(currentUser, "reouverture_journee", `Journée du ${fmtDateFr(viewDate)} rouverte pour modification.`);
+  };
+
   const daysWithToday = allDays ? (allDays.some((d) => d.date === today) ? allDays : [...allDays, dayProp]) : [dayProp];
   const depensesSemaine = sumExpensesOverRange(daysWithToday, getCurrentWeekRange(today));
   const depensesMois = sumExpensesOverRange(daysWithToday, getCurrentMonthRange(today));
@@ -7593,6 +7864,15 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
     }
   };
 
+  // Dernières modifications côté caisse pour la date affichée (versements,
+  // dépenses, retraits, paiements mobiles, clôtures…) — extraites du journal
+  // d'activité global, filtrées côté client sur les types d'événements
+  // pertinents et sur le jour consulté.
+  const caisseActivityDuJour = (activityLog || [])
+    .filter((e) => CAISSE_EVENT_TYPES.includes(e.eventType))
+    .filter((e) => isoFromDate(new Date(e.createdAt)) === viewDate)
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+
   // Impression / export PDF de la situation de caisse du jour — même
   // principe que pour les rapports et l'inventaire.
   const printRef = useRef(null);
@@ -7603,6 +7883,21 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
     window.print();
     const cleanup = () => {
       printRef.current?.removeAttribute("data-print-active");
+      document.body.classList.remove("printing-section");
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+  };
+
+  // Impression séparée du journal des dernières modifications côté caisse.
+  const printActivityRef = useRef(null);
+  const printActivite = () => {
+    if (!printActivityRef.current) return;
+    document.body.classList.add("printing-section");
+    printActivityRef.current.setAttribute("data-print-active", "true");
+    window.print();
+    const cleanup = () => {
+      printActivityRef.current?.removeAttribute("data-print-active");
       document.body.classList.remove("printing-section");
       window.removeEventListener("afterprint", cleanup);
     };
@@ -7701,6 +7996,32 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
                 w.approvedBy || "—",
               ])}
             />
+          )}
+        </Card>
+
+        <Card title="Clôture de la journée">
+          {cloture ? (
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 13, color: "#5B6472" }}>Espèces nettes attendues (logiciel)</span>
+                <strong style={{ fontSize: 13, color: "#1B2A4A" }}>{fmtMoney(cloture.especesAttendues)}</strong>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 13, color: "#5B6472" }}>Somme déclarée entre les mains</span>
+                <strong style={{ fontSize: 13, color: "#1B2A4A" }}>{fmtMoney(cloture.sommeEnMains)}</strong>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 13, color: "#5B6472" }}>Écart</span>
+                <strong style={{ fontSize: 13, color: cloture.statut === "equilibre" ? "#3F8361" : "#C1554A" }}>
+                  {cloture.statut === "equilibre" ? "Équilibré" : `${cloture.ecart > 0 ? "+" : ""}${fmtMoney(cloture.ecart)}`}
+                </strong>
+              </div>
+              <div style={{ fontSize: 12, color: "#8A93A3", marginTop: 8 }}>
+                Clôturée par <strong>{cloture.clorePar || "—"}</strong> à {cloture.heureCloture || "—"}
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: 13, color: "#8A93A3", fontStyle: "italic" }}>Journée non clôturée.</div>
           )}
         </Card>
 
@@ -7954,6 +8275,113 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
           />
         )}
       </Card>
+
+      <Card title="Clôture de la journée">
+        {cloture ? (
+          <div>
+            <div
+              style={{
+                padding: "14px 16px", borderRadius: 10, marginBottom: 14,
+                background: cloture.statut === "equilibre" ? "#EAF4EE" : "#FBECEA",
+                border: `1px solid ${cloture.statut === "equilibre" ? "#CDE7D6" : "#F0CFC9"}`,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 13, color: "#5B6472" }}>Espèces nettes attendues</span>
+                <strong style={{ fontSize: 13, color: "#1B2A4A" }}>{fmtMoney(cloture.especesAttendues)}</strong>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 13, color: "#5B6472" }}>Somme entre les mains</span>
+                <strong style={{ fontSize: 13, color: "#1B2A4A" }}>{fmtMoney(cloture.sommeEnMains)}</strong>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 13, color: "#5B6472" }}>Écart</span>
+                <strong style={{ fontSize: 15, color: cloture.statut === "equilibre" ? "#3F8361" : "#C1554A" }}>
+                  {cloture.statut === "equilibre" ? "Équilibré" : `${cloture.ecart > 0 ? "+" : ""}${fmtMoney(cloture.ecart)}`}
+                </strong>
+              </div>
+              <div style={{ fontSize: 12, color: "#8A93A3", marginTop: 8 }}>
+                Clôturée par <strong>{cloture.clorePar || "—"}</strong> à {cloture.heureCloture || "—"}
+              </div>
+            </div>
+            <Button variant="ghost" onClick={reouvrirJournee}>
+              <RotateCcw size={14} /> Rouvrir la journée
+            </Button>
+          </div>
+        ) : (
+          <div>
+            <div style={{ fontSize: 13, color: "#5B6472", marginBottom: 14 }}>
+              Déclare la somme que tu as actuellement entre les mains : le logiciel la compare à ses propres calculs
+              (versements du jour moins dépenses) et signale tout écart avant de clôturer.
+            </div>
+            <Button onClick={() => setClotureModalOpen(true)} disabled={clotureSubmitting}>
+              <CheckCircle2 size={15} /> Clôturer la journée
+            </Button>
+          </div>
+        )}
+      </Card>
+
+      {clotureModalOpen && (
+        <ClotureJourneeModal
+          especesAttendues={especesNettes}
+          submitting={clotureSubmitting}
+          onClose={() => setClotureModalOpen(false)}
+          onConfirm={(sommeEnMains) => clore(sommeEnMains)}
+        />
+      )}
+
+      <Card
+        title="Dernières modifications — Caisse"
+        right={
+          <Button variant="ghost" onClick={printActivite} style={{ padding: "6px 12px", fontSize: 12.5 }}>
+            <Printer size={14} /> Imprimer
+          </Button>
+        }
+      >
+        {caisseActivityDuJour.length === 0 ? (
+          <EmptyState text="Aucune modification côté caisse pour cette date." />
+        ) : (
+          <Table
+            headers={["Heure", "Compte", "Événement", "Détail"]}
+            rows={caisseActivityDuJour.map((e) => [
+              new Date(e.createdAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }),
+              e.username,
+              <span key="b" style={{ fontSize: 12, fontWeight: 700, color: eventBadgeColor(e.eventType) }}>
+                {EVENT_LABELS[e.eventType] || e.eventType}
+              </span>,
+              e.description,
+            ])}
+          />
+        )}
+      </Card>
+
+      <div ref={printActivityRef} style={{ display: "none" }}>
+        <Card>
+          <div style={{ textAlign: "center", marginBottom: 6 }}>
+            <div style={{ fontFamily: "Cambria, Georgia, serif", fontSize: 21, fontWeight: 700, color: "#1B2A4A" }}>
+              Dernières modifications — Caisse — {fmtDateFr(viewDate)}
+            </div>
+            <div style={{ fontSize: 12, color: "#8A93A3" }}>
+              Document généré le {fmtDateFr(today)}{currentUser?.username ? ` par ${currentUser.username}` : ""}
+            </div>
+          </div>
+        </Card>
+        <Card title="Journal des modifications">
+          {caisseActivityDuJour.length === 0 ? (
+            <EmptyState text="Aucune modification côté caisse pour cette date." />
+          ) : (
+            <Table
+              headers={["Heure", "Compte", "Événement", "Détail"]}
+              rows={caisseActivityDuJour.map((e) => [
+                new Date(e.createdAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }),
+                e.username,
+                EVENT_LABELS[e.eventType] || e.eventType,
+                e.description,
+              ])}
+            />
+          )}
+        </Card>
+      </div>
       </div>
     </div>
   );
@@ -9220,7 +9648,22 @@ const EVENT_LABELS = {
   send_attachment: "Pièce jointe envoyée",
   edit_message: "Message modifié",
   delete_message: "Message supprimé",
+  cloture_journee: "Journée clôturée",
+  reouverture_journee: "Journée rouverte",
 };
+
+// Types d'événements du journal d'activité qui concernent la Caisse — utilisé
+// pour extraire "les dernières modifications côté caisse" (versements,
+// dépenses, retraits, paiements mobiles, clôtures) indépendamment du reste
+// du journal (ventes, comptes, messagerie…).
+const CAISSE_EVENT_TYPES = [
+  "retour_du_soir", "correction_retour_du_soir",
+  "add_mobile_payment", "remove_mobile_payment",
+  "enregistrer_versement",
+  "add_expense", "remove_expense",
+  "withdrawal_requested", "withdrawal_status",
+  "cloture_journee", "reouverture_journee",
+];
 
 function eventBadgeColor(eventType) {
   if (eventType === "login") return "#3F8361";
