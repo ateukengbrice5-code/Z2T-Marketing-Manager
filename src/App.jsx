@@ -7002,6 +7002,14 @@ function RetourDuSoir({ isAdmin, vendors, products, setProducts, day: dayProp, s
           });
         } catch (err) { console.error("Notification d'écart de caisse impossible", err); }
       }
+    } catch (err) {
+      console.error("Échec de l'enregistrement du versement", err);
+      showToast(
+        err?.message
+          ? `Le versement n'a pas pu être enregistré : ${err.message}`
+          : "Le versement n'a pas pu être enregistré. Vérifie ta connexion et réessaie.",
+        "error"
+      );
     } finally {
       setVersementSubmitting(false);
     }
@@ -7559,8 +7567,19 @@ function caisseVendorColumns(metric) {
 // signale aussitôt un éventuel écart avant de permettre de clôturer.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Double vérification de la clôture de journée, sur le même principe que
+// celle du versement du soir : 1) l'administrateur confirme avoir recompté
+// lui-même, physiquement, la caisse avant de clôturer, 2) il saisit la somme
+// comptée. Le logiciel la compare aussitôt aux espèces nettes attendues :
+// si tout correspond, la clôture est enregistrée directement ; sinon, une
+// boîte d'alerte explique où se trouve l'écart avant de laisser
+// l'administrateur corriger ou clôturer quand même (l'écart est alors tracé
+// normalement, comme un manque/excédent).
+// ---------------------------------------------------------------------------
+
 function ClotureJourneeModal({ especesAttendues, onClose, onConfirm, submitting }) {
-  const [step, setStep] = useState("amount"); // "amount" -> "mismatch"
+  const [step, setStep] = useState("confirm"); // "confirm" -> "amount" -> "mismatch"
   const [montantInput, setMontantInput] = useState("");
   const [error, setError] = useState("");
 
@@ -7582,6 +7601,21 @@ function ClotureJourneeModal({ especesAttendues, onClose, onConfirm, submitting 
           <X size={20} />
         </button>
 
+        {step === "confirm" && (
+          <>
+            <h3 style={{ margin: "0 0 4px", fontFamily: "Cambria, Georgia, serif", fontSize: 18, color: "#1B2A4A", display: "flex", alignItems: "center", gap: 8 }}>
+              <AlertTriangle size={20} style={{ color: "#D9A441" }} /> Vérification de la clôture
+            </h3>
+            <div style={{ fontSize: 13.5, color: "#5B6472", margin: "12px 0 20px", lineHeight: 1.5 }}>
+              As-tu recompté toi-même, physiquement, la somme actuellement en caisse avant de clôturer la journée ?
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <Button variant="ghost" onClick={onClose}>Non, pas encore</Button>
+              <Button variant="primary" onClick={() => setStep("amount")}>Oui, je l'ai recomptée</Button>
+            </div>
+          </>
+        )}
+
         {step === "amount" && (
           <>
             <h3 style={{ margin: "0 0 4px", fontFamily: "Cambria, Georgia, serif", fontSize: 18, color: "#1B2A4A" }}>Clôturer la journée</h3>
@@ -7596,7 +7630,7 @@ function ClotureJourneeModal({ especesAttendues, onClose, onConfirm, submitting 
             />
             {error && <div style={{ color: "#C1554A", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <Button variant="ghost" onClick={onClose} disabled={submitting}>Annuler</Button>
+              <Button variant="ghost" onClick={() => setStep("confirm")} disabled={submitting}>Retour</Button>
               <Button variant="primary" onClick={verifier} disabled={submitting}>Vérifier et clôturer</Button>
             </div>
           </>
