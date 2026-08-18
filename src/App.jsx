@@ -7806,7 +7806,12 @@ function Caisse({ vendors, day: dayProp, setDay: setDayProp, withdrawals, setWit
   // l'administrateur est comparée aux espèces nettes calculées par le
   // logiciel (versements du jour moins dépenses). L'écart, s'il existe,
   // est conservé tel quel — clôturer n'efface jamais un écart, il le trace.
-  const cloture = day.cloture || null;
+  // On ne considère la journée comme "clôturée" que si l'objet contient
+  // vraiment une heure de clôture — un objet day.cloture vide ou incomplet
+  // renvoyé par la base ne doit pas faire disparaître le bouton "Clôturer
+  // la journée" (bug corrigé : le simple test `day.cloture || null`
+  // traitait n'importe quel objet, même vide, comme une clôture existante).
+  const cloture = day.cloture && day.cloture.heureCloture ? day.cloture : null;
 
   const clore = async (sommeEnMains) => {
     if (clotureSubmitting) return;
