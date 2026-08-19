@@ -5,7 +5,7 @@ import { supabase } from "./supabase.js";
 // d'utilisateur (aucun vrai e-mail requis, pour rester simple). En coulisses,
 // on fabrique une adresse technique invisible pour Supabase.
 // -----------------------------------------------------------------------------
-/ Ce petit wrapper appelle l'Edge Function "detect-anomalies" via le client
+// Ce petit wrapper appelle l'Edge Function "detect-anomalies" via le client
 // Supabase déjà utilisé dans le reste du fichier (celui créé par
 // createClient(...) — souvent nommé `supabase`). Il n'y a rien à modifier
 // ailleurs : `supabase.functions.invoke` attache automatiquement le jeton
