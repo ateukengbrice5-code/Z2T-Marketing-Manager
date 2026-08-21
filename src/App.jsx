@@ -4192,6 +4192,30 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
     }
   };
 
+  // Réinitialise le compte de connexion d'un vendeur (identifiants supprimés)
+  // sans toucher à sa fiche (nom, pièce d'identité, photo, historique, présence).
+  // Utile quand un vendeur a perdu ou oublié ses accès : plutôt que de
+  // supprimer puis recréer tout le vendeur, on retire juste le compte lié —
+  // le bouton d'envoi de lien d'invitation réapparaît alors automatiquement.
+  const resetVendorAccount = async (accountId, nomVendeur) => {
+    const ok = window.confirm(
+      `Réinitialiser le compte de connexion de ${nomVendeur} ?\n\n` +
+      `Son nom d'utilisateur et son mot de passe actuels seront supprimés et ne fonctionneront plus. ` +
+      `La fiche du vendeur (identité, historique, présence) reste intacte. ` +
+      `Tu pourras ensuite lui envoyer un nouveau lien d'invitation pour qu'il choisisse de nouveaux identifiants.`
+    );
+    if (!ok) return;
+    try {
+      await store.deleteAccount(accountId);
+      await reloadVendors();
+      await reloadAccounts();
+      store.logActivity(currentUser, "reset_vendor_account", `Compte de connexion réinitialisé : ${nomVendeur}.`);
+      showToast(`Compte de ${nomVendeur} réinitialisé — tu peux maintenant lui envoyer un nouveau lien d'invitation.`, "success");
+    } catch (e) {
+      setError(e.message || "Erreur lors de la réinitialisation du compte.");
+    }
+  };
+
   // La création de comptes gestionnaire n'est plus proposée dans l'interface ;
   // cette fonction ne fait plus que permettre de retirer un compte existant.
   const removeManager = async (id, name) => {
@@ -4351,9 +4375,14 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
                   <Eye size={15} />
                 </button>,
                 u ? (
-                  <button key="conv" onClick={() => convertToMessenger(u.id, v.nom)} title="Passer en compte messagerie uniquement" style={{ ...iconBtnStyle, color: "#5B6472" }}>
-                    <MessageSquare size={15} />
-                  </button>
+                  <div key="acct-actions" style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    <button onClick={() => resetVendorAccount(u.id, v.nom)} title="Réinitialiser le compte (supprime les identifiants pour pouvoir renvoyer un lien d'invitation)" style={{ ...iconBtnStyle, color: "#C79A3A" }}>
+                      <RotateCcw size={15} />
+                    </button>
+                    <button onClick={() => convertToMessenger(u.id, v.nom)} title="Passer en compte messagerie uniquement" style={{ ...iconBtnStyle, color: "#5B6472" }}>
+                      <MessageSquare size={15} />
+                    </button>
+                  </div>
                 ) : invite ? (
                   <div key="invite-actions" style={{ display: "flex", gap: 4, alignItems: "center" }}>
                     <button onClick={() => copyInvite(invite.url)} title={`Copier le lien d'invitation (valide jusqu'au ${invite.expiresAt ? formatDateFR(isoFromDate(new Date(invite.expiresAt))) : "—"})`} style={{ ...iconBtnStyle, color: "#3F9C6D" }}>
@@ -4373,12 +4402,15 @@ function Vendeurs({ vendors, reloadVendors, isAdmin, currentUser, daysList }) {
             })}
           />
         )}
-        {Object.keys(inviteUrls).length > 0 && (
-          <div style={{ marginTop: 14, fontSize: 12, color: "#8A93A3" }}>
-            Clique l'icône <Link2 size={11} style={{ verticalAlign: "middle" }} /> pour copier le lien d'un vendeur et le lui envoyer (WhatsApp, SMS…) : il choisira lui-même son nom d'utilisateur et son mot de passe.
-            Le lien expire 7 jours après sa création — l'icône <X size={11} style={{ verticalAlign: "middle" }} /> permet de le révoquer avant terme si besoin.
-          </div>
-        )}
+        <div style={{ marginTop: 14, fontSize: 12, color: "#8A93A3" }}>
+          L'icône <RotateCcw size={11} style={{ verticalAlign: "middle" }} /> réinitialise le compte d'un vendeur (ses identifiants sont supprimés, sa fiche reste intacte) : le bouton d'envoi de lien réapparaît aussitôt pour lui renvoyer une invitation.
+          {Object.keys(inviteUrls).length > 0 && (
+            <>
+              {" "}Clique l'icône <Link2 size={11} style={{ verticalAlign: "middle" }} /> pour copier le lien d'un vendeur et le lui envoyer (WhatsApp, SMS…) : il choisira lui-même son nom d'utilisateur et son mot de passe.
+              Le lien expire 7 jours après sa création — l'icône <X size={11} style={{ verticalAlign: "middle" }} /> permet de le révoquer avant terme si besoin.
+            </>
+          )}
+        </div>
       </Card>
 
       {ficheVendorId && (
